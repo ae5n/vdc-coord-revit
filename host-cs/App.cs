@@ -46,9 +46,19 @@ namespace RevitSuite.Host
                     ToolTip = "Export grid line geometry details across host and linked models."
                 };
 
+                var footingZoneButton = new PushButtonData(
+                    "RevitSuite_FootingZone",
+                    "Footing Zones",
+                    assemblyPath,
+                    "RevitSuite.Host.Commands.FootingZoneCommand")
+                {
+                    ToolTip = "Create transparent influence zones for foundations and selected slabs."
+                };
+
                 panel.AddItem(createViewsButton);
                 panel.AddItem(levelReportButton);
                 panel.AddItem(gridReportButton);
+                panel.AddItem(footingZoneButton);
 
                 return Result.Succeeded;
             }

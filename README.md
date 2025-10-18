@@ -11,6 +11,6 @@
 PS C:\Dev\revit-suite> .\deploy.ps1    # build + install (rerun after code changes)
 PS C:\Dev\revit-suite> .\engine.ps1    # start the Python engine (leave running, add -PythonExe if needed)
 ```
-Open Revit and use the **Revit Suite → Automation** ribbon buttons (`Create Views`, `Level Report`, `Grid Report`).
+Open Revit and use the **Revit Suite → Automation** ribbon buttons (`Create Views`, `Level Report`, `Grid Report`, `Footing Zones`).
 
 Logs: `%LOCALAPPDATA%\RevitSuite\logs\` (host) and the engine console.

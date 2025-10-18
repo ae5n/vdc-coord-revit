@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -54,6 +53,7 @@ namespace RevitSuite.Host.Services
                     var requestBytes = Encoding.UTF8.GetBytes(requestJson);
                     client.Write(requestBytes, 0, requestBytes.Length);
                     client.Flush();
+                    client.WaitForPipeDrain();
                     LogManager.Info(correlationId, $"Request sent: {requestJson}");
 
                     var responseJson = ReadMessageWithTimeout(client, _responseTimeout, correlationId);
