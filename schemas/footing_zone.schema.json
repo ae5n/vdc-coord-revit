@@ -1,0 +1,43 @@
+{
+  "$id": "https://revit-suite/schemas/footing_zone.schema.json",
+  "title": "FootingZoneInput",
+  "x-version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "clearDepth": {
+      "type": "number",
+      "minimum": 0,
+      "default": 5.0,
+      "description": "Vertical depth of the influence zone below the footing or slab in feet."
+    },
+    "slopeRatio": {
+      "type": "number",
+      "minimum": 0,
+      "default": 1.0,
+      "description": "Horizontal to vertical slope ratio used to expand the zone footprint."
+    },
+    "verticalOffset": {
+      "type": "number",
+      "default": 0.0,
+      "description": "Offset applied above the bottom of the footing or slab before expanding the zone."
+    },
+    "transparency": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 50,
+      "description": "Transparency percentage applied to the generated DirectShape geometry."
+    },
+    "includeFootings": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to automatically include all structural foundations in the active document."
+    },
+    "promptForSlabs": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to prompt the user to manually select slabs/floors after the dialog closes."
+    }
+  },
+  "additionalProperties": false
+}

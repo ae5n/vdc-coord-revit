@@ -1,13 +1,16 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
+using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
-using Microsoft.VisualBasic;
+using RevitSuite.Host.Config;
 using RevitSuite.Host.Logging;
+using RevitSuite.Host.UI;
 
 namespace RevitSuite.Host.Commands
 {
@@ -29,54 +32,21 @@ namespace RevitSuite.Host.Commands
                     return Result.Failed;
                 }
 
+                var defaults = LoadDefaults();
+                var parameters = PromptForParameters(data.Application, defaults);
+                if (parameters == null)
+                {
+                    LogManager.Info(correlationId, "FootingZoneCommand cancelled by user.");
+                    return Result.Cancelled;
+                }
+
                 var doc = uiDoc.Document;
 
-                if (!TryPromptForParameters("Enter clear depth (feet):", 5.0, out var clearDepth))
-                {
-                    return Result.Cancelled;
-                }
+                var slabs = parameters.PromptForSlabs
+                    ? PromptForSlabs(uiDoc, "Select slabs/floors to include (Esc to finish).")
+                    : new List<Element>();
 
-                if (!TryPromptForParameters("Enter slope ratio (horizontal per vertical):", 1.0, out var slopeRatio))
-                {
-                    return Result.Cancelled;
-                }
-
-                if (!TryPromptForParameters("Enter vertical offset from footing/slab bottom (feet):", 0.0, out var zOffset))
-                {
-                    return Result.Cancelled;
-                }
-
-                if (!TryPromptForInt("Enter transparency (0-100):", 50, 0, 100, out var transparency))
-                {
-                    return Result.Cancelled;
-                }
-
-                var includeFootings = PromptYesNo("Include structural foundations?", true);
-                var includeSlabs = PromptYesNo("Select slabs/floors to include?", false);
-
-                var slabs = new List<Element>();
-                if (includeSlabs)
-                {
-                    try
-                    {
-                        var references = uiDoc.Selection.PickObjects(ObjectType.Element, new FloorSelectionFilter(),
-                            "Select slabs/floors to include (Esc to finish).");
-                        foreach (var reference in references)
-                        {
-                            var element = doc.GetElement(reference);
-                            if (element != null)
-                            {
-                                slabs.Add(element);
-                            }
-                        }
-                    }
-                    catch (Autodesk.Revit.Exceptions.OperationCanceledException)
-                    {
-                        // User cancelled selection – proceed with whatever was selected.
-                    }
-                }
-
-                var footings = includeFootings
+                var footings = parameters.IncludeFootings
                     ? new FilteredElementCollector(doc)
                         .OfCategory(BuiltInCategory.OST_StructuralFoundation)
                         .WhereElementIsNotElementType()
@@ -87,7 +57,7 @@ namespace RevitSuite.Host.Commands
                 if (footings.Count == 0 && slabs.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No footings or slabs selected to process.");
-                    LogManager.Warn(correlationId, "No elements to process for footing zones.");
+                    LogManager.Warn(correlationId, "No elements available for footing zones.");
                     return Result.Cancelled;
                 }
 
@@ -99,25 +69,21 @@ namespace RevitSuite.Host.Commands
                 {
                     tx.Start();
 
-                    var materialId = EnsureMaterial(doc, "Zone Influence – Transparent", transparency, new Color((byte)0, (byte)170, (byte)255));
+                    var materialId = EnsureMaterial(doc, "Zone Influence – Transparent", parameters.Transparency,
+                        new Autodesk.Revit.DB.Color((byte)0, (byte)170, (byte)255));
                     var hostCategoryId = new ElementId(BuiltInCategory.OST_GenericModel);
 
-                    if (includeFootings)
+                    foreach (var footing in footings)
                     {
-                        foreach (var footing in footings)
+                        if (!TryCreateFootingZone(doc, footing, hostCategoryId, materialId, parameters, createdFootingZones, skippedElements))
                         {
-                            if (!TryCreateFootingZone(doc, footing, hostCategoryId, materialId, clearDepth, slopeRatio,
-                                    zOffset, createdFootingZones, skippedElements))
-                            {
-                                skippedElements.Add(footing.Id);
-                            }
+                            skippedElements.Add(footing.Id);
                         }
                     }
 
                     foreach (var slab in slabs)
                     {
-                        if (!TryCreateSlabZone(doc, slab, hostCategoryId, materialId, clearDepth, slopeRatio, zOffset,
-                                createdSlabZones, skippedElements))
+                        if (!TryCreateSlabZone(doc, slab, hostCategoryId, materialId, parameters, createdSlabZones))
                         {
                             skippedElements.Add(slab.Id);
                         }
@@ -126,10 +92,11 @@ namespace RevitSuite.Host.Commands
                     tx.Commit();
                 }
 
-                var summary = $"Created {createdFootingZones.Count} footing zone(s) and {createdSlabZones.Count} slab zone(s)." +
-                              (skippedElements.Count > 0
-                                  ? $"\nSkipped {skippedElements.Count} element(s)."
-                                  : string.Empty);
+                var summary = $"Created {createdFootingZones.Count} footing zone(s) and {createdSlabZones.Count} slab zone(s).";
+                if (skippedElements.Count > 0)
+                {
+                    summary += $"\nSkipped {skippedElements.Count} element(s).";
+                }
 
                 TaskDialog.Show("RevitSuite", summary);
                 LogManager.Info(correlationId, summary);
@@ -145,36 +112,90 @@ namespace RevitSuite.Host.Commands
             }
         }
 
+        private static FootingZoneConfig LoadDefaults()
+        {
+            try
+            {
+                var assemblyPath = Assembly.GetExecutingAssembly().Location;
+                var baseDir = Path.GetDirectoryName(assemblyPath) ?? string.Empty;
+                var schemaPath = Path.Combine(baseDir, "schemas", "footing_zone.schema.json");
+                return FootingZoneConfig.LoadFromSchema(schemaPath);
+            }
+            catch
+            {
+                return FootingZoneConfig.LoadFromSchema(string.Empty);
+            }
+        }
+
+        private static FootingZoneParameters? PromptForParameters(UIApplication application, FootingZoneConfig defaults)
+        {
+            using (var form = new FootingZoneForm())
+            {
+                form.SetDefaults(
+                    defaults.ClearDepth,
+                    defaults.SlopeRatio,
+                    defaults.VerticalOffset,
+                    defaults.Transparency,
+                    defaults.IncludeFootings,
+                    defaults.PromptForSlabs);
+
+                var owner = new RevitWindow(application.MainWindowHandle);
+                var result = form.ShowDialog(owner);
+                return result == DialogResult.OK ? form.Parameters : null;
+            }
+        }
+
+        private static List<Element> PromptForSlabs(UIDocument uiDoc, string prompt)
+        {
+            var slabs = new List<Element>();
+            try
+            {
+                var references = uiDoc.Selection.PickObjects(ObjectType.Element, new FloorSelectionFilter(), prompt);
+                foreach (var reference in references)
+                {
+                    var element = uiDoc.Document.GetElement(reference);
+                    if (element != null)
+                    {
+                        slabs.Add(element);
+                    }
+                }
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+            {
+                // User cancelled selection; that's acceptable.
+            }
+
+            return slabs;
+        }
+
         private static bool TryCreateFootingZone(
             Document doc,
             FamilyInstance footing,
             ElementId categoryId,
             ElementId materialId,
-            double clearDepth,
-            double slopeRatio,
-            double zOffset,
+            FootingZoneParameters parameters,
             IList<ElementId> created,
             IList<ElementId> skipped)
         {
-            var box = footing.get_BoundingBox(null);
-            if (box == null)
+            var boundingBox = footing.get_BoundingBox(null);
+            if (boundingBox == null)
             {
                 return false;
             }
 
-            var (length, width) = GetFootingLengthWidth(footing, box);
+            var (length, width) = GetFootingLengthWidth(footing, boundingBox);
             if (length == null || width == null)
             {
                 return false;
             }
 
-            var (center, rotation) = GetFootingCenterAndRotation(footing, box);
+            var (center, rotation) = GetFootingCenterAndRotation(footing, boundingBox);
 
-            var topOffset = (box.Min.Z - center.Z) - zOffset;
-            var bottomOffset = topOffset - clearDepth;
+            var topOffset = (boundingBox.Min.Z - center.Z) - parameters.VerticalOffset;
+            var bottomOffset = topOffset - parameters.ClearDepth;
 
-            var bottomLength = length.Value + 2.0 * slopeRatio * clearDepth;
-            var bottomWidth = width.Value + 2.0 * slopeRatio * clearDepth;
+            var bottomLength = length.Value + 2.0 * parameters.SlopeRatio * parameters.ClearDepth;
+            var bottomWidth = width.Value + 2.0 * parameters.SlopeRatio * parameters.ClearDepth;
 
             var topLoopLocal = CreateRectangleLoop(length.Value, width.Value, topOffset);
             var bottomLoopLocal = CreateRectangleLoop(bottomLength, bottomWidth, bottomOffset);
@@ -183,11 +204,11 @@ namespace RevitSuite.Host.Commands
             var transform = Transform.CreateTranslation(center)
                 .Multiply(Transform.CreateRotation(XYZ.BasisZ, rotation));
 
-            var ds = DirectShape.CreateElement(doc, categoryId);
+            var directShape = DirectShape.CreateElement(doc, categoryId);
             if (solid != null)
             {
-                var transformedSolid = SolidUtils.CreateTransformed(solid, transform);
-                ds.SetShape(new List<GeometryObject> { transformedSolid });
+                var transformed = SolidUtils.CreateTransformed(solid, transform);
+                directShape.SetShape(new List<GeometryObject> { transformed });
             }
             else
             {
@@ -197,11 +218,11 @@ namespace RevitSuite.Host.Commands
                     return false;
                 }
 
-                ds.SetShape(geometry);
+                directShape.SetShape(geometry);
             }
 
-            SetComments(ds, "Footing Influence (transparent)");
-            created.Add(ds.Id);
+            SetComments(directShape, "Footing Influence (transparent)");
+            created.Add(directShape.Id);
             return true;
         }
 
@@ -210,32 +231,29 @@ namespace RevitSuite.Host.Commands
             Element slab,
             ElementId categoryId,
             ElementId materialId,
-            double clearDepth,
-            double slopeRatio,
-            double zOffset,
-            IList<ElementId> created,
-            IList<ElementId> skipped)
+            FootingZoneParameters parameters,
+            IList<ElementId> created)
         {
-            var box = slab.get_BoundingBox(null);
-            if (box == null)
+            var boundingBox = slab.get_BoundingBox(null);
+            if (boundingBox == null)
             {
                 return false;
             }
 
-            var length = box.Max.X - box.Min.X;
-            var width = box.Max.Y - box.Min.Y;
+            var length = boundingBox.Max.X - boundingBox.Min.X;
+            var width = boundingBox.Max.Y - boundingBox.Min.Y;
             var center = new XYZ(
-                (box.Min.X + box.Max.X) / 2.0,
-                (box.Min.Y + box.Max.Y) / 2.0,
-                (box.Min.Z + box.Max.Z) / 2.0);
+                (boundingBox.Min.X + boundingBox.Max.X) / 2.0,
+                (boundingBox.Min.Y + boundingBox.Max.Y) / 2.0,
+                (boundingBox.Min.Z + boundingBox.Max.Z) / 2.0);
 
-            var bottomElevation = GetParameterDouble(slab, new object[] { "Elevation at Bottom" }) ?? box.Min.Z;
+            var bottom = GetParameterDouble(slab, new object[] { "Elevation at Bottom" }) ?? boundingBox.Min.Z;
 
-            var topOffset = (bottomElevation - center.Z) - zOffset;
-            var bottomOffset = topOffset - clearDepth;
+            var topOffset = (bottom - center.Z) - parameters.VerticalOffset;
+            var bottomOffset = topOffset - parameters.ClearDepth;
 
-            var bottomLength = length + 2.0 * slopeRatio * clearDepth;
-            var bottomWidth = width + 2.0 * slopeRatio * clearDepth;
+            var bottomLength = length + 2.0 * parameters.SlopeRatio * parameters.ClearDepth;
+            var bottomWidth = width + 2.0 * parameters.SlopeRatio * parameters.ClearDepth;
 
             var topLoopLocal = CreateRectangleLoop(length, width, topOffset);
             var bottomLoopLocal = CreateRectangleLoop(bottomLength, bottomWidth, bottomOffset);
@@ -243,11 +261,11 @@ namespace RevitSuite.Host.Commands
             var solid = CreateLoft(topLoopLocal, bottomLoopLocal, materialId);
             var transform = Transform.CreateTranslation(center);
 
-            var ds = DirectShape.CreateElement(doc, categoryId);
+            var directShape = DirectShape.CreateElement(doc, categoryId);
             if (solid != null)
             {
-                var transformedSolid = SolidUtils.CreateTransformed(solid, transform);
-                ds.SetShape(new List<GeometryObject> { transformedSolid });
+                var transformed = SolidUtils.CreateTransformed(solid, transform);
+                directShape.SetShape(new List<GeometryObject> { transformed });
             }
             else
             {
@@ -257,11 +275,11 @@ namespace RevitSuite.Host.Commands
                     return false;
                 }
 
-                ds.SetShape(geometry);
+                directShape.SetShape(geometry);
             }
 
-            SetComments(ds, "Slab Influence (transparent, bbox)");
-            created.Add(ds.Id);
+            SetComments(directShape, "Slab Influence (transparent, bbox)");
+            created.Add(directShape.Id);
             return true;
         }
 
@@ -273,22 +291,22 @@ namespace RevitSuite.Host.Commands
             try
             {
                 var loft = GeometryCreationUtilities.CreateLoftGeometry(loops, options);
-                if (loft is Solid singleSolid)
+                if (loft is Solid solid)
                 {
-                    return singleSolid;
+                    return solid;
                 }
 
                 if (loft is IList<Solid> solidList && solidList.Count > 0)
                 {
                     return solidList[0];
                 }
-
-                return null;
             }
             catch
             {
-                return null;
+                // Ignore and fall back to tessellated geometry.
             }
+
+            return null;
         }
 
         private static IList<GeometryObject>? CreateFrustumMesh(
@@ -297,32 +315,32 @@ namespace RevitSuite.Host.Commands
             Transform transform,
             ElementId materialId)
         {
+            var topPoints = TransformCurveLoop(topLoop, transform).ToList();
+            var bottomPoints = TransformCurveLoop(bottomLoop, transform).ToList();
+            if (topPoints.Count < 3 || topPoints.Count != bottomPoints.Count)
+            {
+                return null;
+            }
+
             var builder = new TessellatedShapeBuilder
             {
                 Target = TessellatedShapeBuilderTarget.AnyGeometry,
                 Fallback = TessellatedShapeBuilderFallback.Mesh
             };
+
             builder.OpenConnectedFaceSet(false);
 
-            var topWorld = TransformCurveLoop(topLoop, transform).ToList();
-            var bottomWorld = TransformCurveLoop(bottomLoop, transform).ToList();
-
-            if (topWorld.Count != bottomWorld.Count || topWorld.Count < 3)
+            for (int i = 1; i < topPoints.Count - 1; i++)
             {
-                return null;
+                builder.AddFace(new TessellatedFace(new List<XYZ> { topPoints[0], topPoints[i], topPoints[i + 1] }, materialId));
+                builder.AddFace(new TessellatedFace(new List<XYZ> { bottomPoints[i + 1], bottomPoints[i], bottomPoints[0] }, materialId));
             }
 
-            for (int i = 1; i < topWorld.Count - 1; i++)
+            for (int i = 0; i < topPoints.Count; i++)
             {
-                builder.AddFace(new TessellatedFace(new List<XYZ> { topWorld[0], topWorld[i], topWorld[i + 1] }, materialId));
-                builder.AddFace(new TessellatedFace(new List<XYZ> { bottomWorld[i + 1], bottomWorld[i], bottomWorld[0] }, materialId));
-            }
-
-            for (int i = 0; i < topWorld.Count; i++)
-            {
-                var i2 = (i + 1) % topWorld.Count;
-                builder.AddFace(new TessellatedFace(new List<XYZ> { topWorld[i], topWorld[i2], bottomWorld[i2] }, materialId));
-                builder.AddFace(new TessellatedFace(new List<XYZ> { topWorld[i], bottomWorld[i2], bottomWorld[i] }, materialId));
+                var i2 = (i + 1) % topPoints.Count;
+                builder.AddFace(new TessellatedFace(new List<XYZ> { topPoints[i], topPoints[i2], bottomPoints[i2] }, materialId));
+                builder.AddFace(new TessellatedFace(new List<XYZ> { topPoints[i], bottomPoints[i2], bottomPoints[i] }, materialId));
             }
 
             builder.CloseConnectedFaceSet();
@@ -439,7 +457,7 @@ namespace RevitSuite.Host.Commands
                     }
                     catch
                     {
-                        // Ignore conversion failures, try next key.
+                        // ignore and try next
                     }
                 }
             }
@@ -447,37 +465,40 @@ namespace RevitSuite.Host.Commands
             return null;
         }
 
-        private static ElementId EnsureMaterial(Document doc, string name, int transparency, Color color)
+        private static ElementId EnsureMaterial(Document doc, string name, int transparency, Autodesk.Revit.DB.Color color)
         {
-            var collector = new FilteredElementCollector(doc).OfClass(typeof(Material));
-            foreach (Material material in collector)
-            {
-                if (material.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        material.Transparency = transparency;
-                        material.Color = color;
-                    }
-                    catch
-                    {
-                        // Ignore material property update issues.
-                    }
+            var existing = new FilteredElementCollector(doc)
+                .OfClass(typeof(Material))
+                .Cast<Material>()
+                .FirstOrDefault(m => m.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
-                    return material.Id;
+            if (existing != null)
+            {
+                try
+                {
+                    existing.Transparency = transparency;
+                    existing.Color = color;
                 }
+                catch
+                {
+                    // ignore updates
+                }
+
+                return existing.Id;
             }
 
             var materialId = Material.Create(doc, name);
-            var created = (Material)doc.GetElement(materialId);
-            try
+            if (doc.GetElement(materialId) is Material created)
             {
-                created.Transparency = transparency;
-                created.Color = color;
-            }
-            catch
-            {
-                // Ignore material property update issues.
+                try
+                {
+                    created.Transparency = transparency;
+                    created.Color = color;
+                }
+                catch
+                {
+                    // ignore updates
+                }
             }
 
             return materialId;
@@ -494,79 +515,35 @@ namespace RevitSuite.Host.Commands
                 }
                 catch
                 {
-                    // Ignore comment set failures.
+                    // ignore
                 }
             }
         }
 
-        private static bool TryPromptForParameters(string prompt, double defaultValue, out double value)
+    private class FloorSelectionFilter : ISelectionFilter
+    {
+        public bool AllowElement(Element elem)
         {
-            while (true)
-            {
-                var input = Interaction.InputBox(prompt, "RevitSuite", defaultValue.ToString(CultureInfo.InvariantCulture));
-                if (string.IsNullOrWhiteSpace(input))
-                {
-                    value = defaultValue;
-                    return false;
-                }
-
-                if (double.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-                {
-                    return true;
-                }
-
-                TaskDialog.Show("RevitSuite", "Please enter a valid number.");
-            }
-        }
-
-        private static bool TryPromptForInt(string prompt, int defaultValue, int min, int max, out int value)
-        {
-            while (true)
-            {
-                var input = Interaction.InputBox(prompt, "RevitSuite", defaultValue.ToString(CultureInfo.InvariantCulture));
-                if (string.IsNullOrWhiteSpace(input))
-                {
-                    value = defaultValue;
-                    return false;
-                }
-
-                if (int.TryParse(input, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
-                {
-                    value = Math.Max(min, Math.Min(max, value));
-                    return true;
-                }
-
-                TaskDialog.Show("RevitSuite", "Please enter a valid integer.");
-            }
-        }
-
-        private static bool PromptYesNo(string question, bool defaultYes)
-        {
-            var dialog = new TaskDialog("RevitSuite")
-            {
-                MainInstruction = question,
-                CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No,
-                DefaultButton = defaultYes ? TaskDialogResult.Yes : TaskDialogResult.No
-            };
-
-            var result = dialog.Show();
-            return result == TaskDialogResult.Yes;
-        }
-
-        private class FloorSelectionFilter : ISelectionFilter
-        {
-            public bool AllowElement(Element elem)
-            {
-                if (elem is Floor)
+            if (elem is Floor)
                 {
                     return true;
                 }
 
                 return elem.Category != null &&
                        elem.Category.Id.Value == (int)BuiltInCategory.OST_Floors;
-            }
+        }
 
-            public bool AllowReference(Reference reference, XYZ position) => false;
+        public bool AllowReference(Reference reference, XYZ position) => false;
+    }
+
+    private sealed class RevitWindow : IWin32Window
+    {
+        public IntPtr Handle { get; }
+
+        public RevitWindow(IntPtr handle)
+        {
+            Handle = handle;
         }
     }
+}
 }

@@ -165,7 +165,7 @@ namespace RevitSuite.Host.Commands
                     ["endX"] = end?.X,
                     ["endY"] = end?.Y,
                     ["endZ"] = end?.Z,
-                    ["gridId"] = grid.Id.IntegerValue,
+                    ["gridId"] = grid.Id.Value,
                     ["gridUniqueId"] = grid.UniqueId
                 });
             }

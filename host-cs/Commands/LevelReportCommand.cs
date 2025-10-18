@@ -138,7 +138,7 @@ namespace RevitSuite.Host.Commands
                     ["type"] = type,
                     ["level"] = level.Name,
                     ["elevationFt"] = level.Elevation,
-                    ["levelId"] = level.Id.IntegerValue,
+                    ["levelId"] = level.Id.Value,
                     ["levelUniqueId"] = level.UniqueId
                 });
             }
