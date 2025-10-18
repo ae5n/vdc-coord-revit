@@ -1,0 +1,36 @@
+{
+  "$id": "https://revit-suite/schemas/create_views.schema.json",
+  "title": "CreateViewsInput",
+  "x-version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "default": "1.0.0"
+    },
+    "levelName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact Revit level name to host the created view."
+    },
+    "viewType": {
+      "type": "string",
+      "enum": [
+        "FloorPlan",
+        "CeilingPlan"
+      ],
+      "description": "Revit ViewFamily to create."
+    },
+    "scale": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "View scale denominator (e.g., 96 for 1/8\" = 1'-0\")."
+    }
+  },
+  "required": [
+    "levelName",
+    "viewType",
+    "scale"
+  ],
+  "additionalProperties": false
+}

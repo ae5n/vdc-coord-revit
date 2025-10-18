@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cs:build",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "build/scripts/build.ps1"
+      ],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "addon:install",
+      "type": "shell",
+      "dependsOn": "cs:build",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "build/scripts/install.ps1"
+      ]
+    },
+    {
+      "label": "addon:deploy",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "build/scripts/deploy.ps1"
+      ]
+    },
+    {
+      "label": "engine:run",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "engine-py/server.py"
+      ]
+    }
+  ]
+}
