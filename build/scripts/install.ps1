@@ -7,7 +7,8 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $buildOutput = [System.IO.Path]::Combine(
     $repoRoot,
-    "host-cs",
+    "src",
+    "RevitSuite.Host",
     "bin",
     "Release",
     "net48",
@@ -25,10 +26,9 @@ New-Item -ItemType Directory -Force -Path $payloadDir | Out-Null
 
 $destinationDll = Join-Path $payloadDir "RevitSuite.Host.dll"
 Copy-Item -Force $buildOutput $destinationDll
-Copy-Item -Recurse -Force (Join-Path $repoRoot "engine-py") (Join-Path $payloadDir "python")
 Copy-Item -Recurse -Force (Join-Path $repoRoot "schemas") (Join-Path $payloadDir "schemas")
 
-$templatePath = Join-Path $repoRoot "host-cs/AddinManifest/RevitSuite.addin.tpl"
+$templatePath = Join-Path $repoRoot "src/RevitSuite.Host/AddinManifest/RevitSuite.addin.tpl"
 $addinTemplate = Get-Content $templatePath -Raw
 
 $dllPath = Join-Path $payloadDir "RevitSuite.Host.dll"

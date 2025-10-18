@@ -35,14 +35,6 @@
         "-File",
         "build/scripts/deploy.ps1"
       ]
-    },
-    {
-      "label": "engine:run",
-      "type": "shell",
-      "command": "python",
-      "args": [
-        "engine-py/server.py"
-      ]
     }
   ]
 }

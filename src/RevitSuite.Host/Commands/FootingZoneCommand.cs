@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -112,37 +110,22 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private static FootingZoneConfig LoadDefaults()
-        {
-            try
-            {
-                var assemblyPath = Assembly.GetExecutingAssembly().Location;
-                var baseDir = Path.GetDirectoryName(assemblyPath) ?? string.Empty;
-                var schemaPath = Path.Combine(baseDir, "schemas", "footing_zone.schema.json");
-                return FootingZoneConfig.LoadFromSchema(schemaPath);
-            }
-            catch
-            {
-                return FootingZoneConfig.LoadFromSchema(string.Empty);
-            }
-        }
+        private static FootingZoneConfig LoadDefaults() => FootingZoneConfig.Load();
 
         private static FootingZoneParameters? PromptForParameters(UIApplication application, FootingZoneConfig defaults)
         {
-            using (var form = new FootingZoneForm())
-            {
-                form.SetDefaults(
-                    defaults.ClearDepth,
-                    defaults.SlopeRatio,
-                    defaults.VerticalOffset,
-                    defaults.Transparency,
-                    defaults.IncludeFootings,
-                    defaults.PromptForSlabs);
+            using var form = new FootingZoneForm();
+            form.SetDefaults(
+                defaults.ClearDepth,
+                defaults.SlopeRatio,
+                defaults.VerticalOffset,
+                defaults.Transparency,
+                defaults.IncludeFootings,
+                defaults.PromptForSlabs);
 
-                var owner = new RevitWindow(application.MainWindowHandle);
-                var result = form.ShowDialog(owner);
-                return result == DialogResult.OK ? form.Parameters : null;
-            }
+            var owner = new RevitWindow(application.MainWindowHandle);
+            var result = form.ShowDialog(owner);
+            return result == DialogResult.OK ? form.Parameters : null;
         }
 
         private static List<Element> PromptForSlabs(UIDocument uiDoc, string prompt)

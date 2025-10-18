@@ -5,15 +5,13 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using RevitSuite.Host.Logging;
-using RevitSuite.Host.Services;
+using RevitSuite.Host.Config;
 
 namespace RevitSuite.Host.Commands
 {
     [Transaction(TransactionMode.Manual)]
     public class CreateViewsCommand : IExternalCommand
     {
-        private const string PipeName = "RevitSuitePipe";
-
         public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
         {
             var correlationId = Guid.NewGuid().ToString("N");
@@ -30,25 +28,9 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var doc = uiDoc.Document;
-                var payload = new Dictionary<string, object?>
-                {
-                    ["schemaVersion"] = "1.0.0",
-                    ["levelName"] = "LEVEL 01",
-                    ["viewType"] = "FloorPlan",
-                    ["scale"] = 96
-                };
+                var config = CreateViewsConfig.Load();
 
-                var client = new PipeClient(PipeName);
-                var plan = client.Call<CreateViewsPlan>("create_views", payload, correlationId)
-                           ?? new CreateViewsPlan();
-
-                if (plan.Actions.Count == 0)
-                {
-                    TaskDialog.Show("RevitSuite", "Engine returned no actions.");
-                    LogManager.Warn(correlationId, "No actions received from engine.");
-                    return Result.Cancelled;
-                }
-
+                var targetViewName = $"Plan - {config.LevelName}";
                 var viewFamilyTypes = CacheViewFamilyTypes(doc);
                 var existingNames = new HashSet<string>(
                     new FilteredElementCollector(doc)
@@ -63,37 +45,29 @@ namespace RevitSuite.Host.Commands
                 {
                     transaction.Start();
 
-                    foreach (var action in plan.Actions)
+                    if (existingNames.Contains(targetViewName))
                     {
-                        var detail = action.CreateView;
-                        if (detail == null)
-                        {
-                            continue;
-                        }
-
-                        if (existingNames.Contains(detail.Name))
-                        {
-                            LogManager.Warn(correlationId, $"View '{detail.Name}' already exists. Skipping.");
-                            continue;
-                        }
-
-                        var level = FindLevel(doc, detail.LevelName);
+                        LogManager.Warn(correlationId, $"View '{targetViewName}' already exists. Skipping creation.");
+                    }
+                    else
+                    {
+                        var level = FindLevel(doc, config.LevelName);
                         if (level == null)
                         {
-                            throw new InvalidOperationException($"Level not found: {detail.LevelName}");
+                            throw new InvalidOperationException($"Level not found: {config.LevelName}");
                         }
 
-                        var viewFamilyType = ResolveViewFamilyType(viewFamilyTypes, detail.Type);
+                        var viewFamilyType = ResolveViewFamilyType(viewFamilyTypes, config.ViewType);
                         if (viewFamilyType == null)
                         {
-                            throw new InvalidOperationException($"No ViewFamilyType found for {detail.Type}");
+                            throw new InvalidOperationException($"No ViewFamilyType found for {config.ViewType}");
                         }
 
                         var view = ViewPlan.Create(doc, viewFamilyType.Id, level.Id);
-                        view.Name = detail.Name;
-                        view.Scale = Math.Max(1, detail.Scale);
+                        view.Name = targetViewName;
+                        view.Scale = Math.Max(1, config.Scale);
 
-                        existingNames.Add(detail.Name);
+                        existingNames.Add(targetViewName);
                         createdCount++;
                     }
 
@@ -107,13 +81,6 @@ namespace RevitSuite.Host.Commands
                 TaskDialog.Show("RevitSuite", resultMessage);
                 LogManager.Info(correlationId, resultMessage);
                 return Result.Succeeded;
-            }
-            catch (EngineUnavailableException ex)
-            {
-                message = ex.Message;
-                TaskDialog.Show("RevitSuite", ex.Message);
-                LogManager.Warn(correlationId, "Engine unavailable: " + ex.Message);
-                return Result.Cancelled;
             }
             catch (Exception ex)
             {
@@ -168,23 +135,5 @@ namespace RevitSuite.Host.Commands
 
             return null;
         }
-    }
-
-    public class CreateViewsPlan
-    {
-        public List<CreateViewsAction> Actions { get; set; } = new List<CreateViewsAction>();
-    }
-
-    public class CreateViewsAction
-    {
-        public CreateViewDetail? CreateView { get; set; }
-    }
-
-    public class CreateViewDetail
-    {
-        public string Name { get; set; } = string.Empty;
-        public string LevelName { get; set; } = string.Empty;
-        public string Type { get; set; } = "FloorPlan";
-        public int Scale { get; set; } = 96;
     }
 }

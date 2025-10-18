@@ -31,7 +31,7 @@ namespace RevitSuite.Host
                         assemblyPath,
                         "RevitSuite.Host.Commands.CreateViewsCommand")
                     {
-                        ToolTip = "Create floor or ceiling plan views using the Python engine."
+                        ToolTip = "Create floor or ceiling plan views using schema defaults."
                     });
                 SetButtonIcon(createViewsButton, "CV", Color.FromRgb(0x2B, 0x7B, 0xBA));
 
