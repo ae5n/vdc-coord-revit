@@ -19,7 +19,7 @@ class PipeServer:
                         request = json.loads(raw.decode("utf-8"))
 
                         def respond(payload: Dict[str, Any]) -> None:
-                            message = json.dumps(payload) + "\n"
+                            message = json.dumps(payload)
                             connection.send_bytes(message.encode("utf-8"))
 
                         yield request, respond

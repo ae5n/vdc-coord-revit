@@ -7,11 +7,13 @@ from core.ipc.namedpipe import PipeServer
 from core import logger
 from tools.create_views.app import handle as handle_create_views
 from tools.level_report.app import handle as handle_level_report
+from tools.grid_report.app import handle as handle_grid_report
 
 PIPE_NAME = "RevitSuitePipe"
 HANDLERS: Dict[str, Callable[[Dict[str, Any], str], Dict[str, Any]]] = {
     "create_views": handle_create_views,
     "level_report": handle_level_report,
+    "grid_report": handle_grid_report,
 }
 
 

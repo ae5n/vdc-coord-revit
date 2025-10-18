@@ -37,8 +37,18 @@ namespace RevitSuite.Host
                     ToolTip = "Export a sorted CSV of levels across host and linked models."
                 };
 
+                var gridReportButton = new PushButtonData(
+                    "RevitSuite_GridReport",
+                    "Grid Report",
+                    assemblyPath,
+                    "RevitSuite.Host.Commands.GridReportCommand")
+                {
+                    ToolTip = "Export grid line geometry details across host and linked models."
+                };
+
                 panel.AddItem(createViewsButton);
                 panel.AddItem(levelReportButton);
+                panel.AddItem(gridReportButton);
 
                 return Result.Succeeded;
             }

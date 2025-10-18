@@ -2,10 +2,11 @@ using System;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RevitSuite.Host.Logging;
-using System.Threading.Tasks;
 
 namespace RevitSuite.Host.Services
 {
@@ -42,68 +43,43 @@ namespace RevitSuite.Host.Services
                     client.Connect((int)_timeout.TotalMilliseconds);
                     client.ReadMode = PipeTransmissionMode.Message;
 
-                    using (var reader = new StreamReader(client, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true))
-                    using (var writer = new StreamWriter(client, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), 4096, leaveOpen: true)
+                    var request = new PipeRequest
                     {
-                        AutoFlush = true
-                    })
+                        Method = method,
+                        Payload = payload,
+                        CorrelationId = correlationId
+                    };
+
+                    var requestJson = JsonConvert.SerializeObject(request, SerializerSettings);
+                    var requestBytes = Encoding.UTF8.GetBytes(requestJson);
+                    client.Write(requestBytes, 0, requestBytes.Length);
+                    client.Flush();
+                    LogManager.Info(correlationId, $"Request sent: {requestJson}");
+
+                    var responseJson = ReadMessageWithTimeout(client, _responseTimeout, correlationId);
+                    LogManager.Info(correlationId, $"Response received: {responseJson}");
+
+                    var response = JsonConvert.DeserializeObject<PipeResponseEnvelope>(responseJson);
+                    if (response == null)
                     {
-                        var request = new PipeRequest
-                        {
-                            Method = method,
-                            Payload = payload,
-                            CorrelationId = correlationId
-                        };
-
-                        var requestJson = JsonConvert.SerializeObject(request, SerializerSettings);
-                        writer.WriteLine(requestJson);
-                        LogManager.Info(correlationId, $"Request sent: {requestJson}");
-
-                        var responseTask = reader.ReadLineAsync();
-                        var completedTask = Task
-                            .WhenAny(responseTask, Task.Delay(_responseTimeout))
-                            .ConfigureAwait(false)
-                            .GetAwaiter()
-                            .GetResult();
-
-                        if (completedTask != responseTask)
-                        {
-                            var timeoutMessage =
-                                $"Engine did not respond within {_responseTimeout.TotalSeconds:N0} seconds. " +
-                                "Ensure the Python engine window is running and responsive.";
-                            throw new EngineUnavailableException(timeoutMessage, new TimeoutException(timeoutMessage));
-                        }
-
-                        var responseLine = responseTask.ConfigureAwait(false).GetAwaiter().GetResult();
-                        if (responseLine == null)
-                        {
-                            throw new InvalidOperationException("No response from engine.");
-                        }
-
-                        LogManager.Info(correlationId, $"Response received: {responseLine}");
-
-                        var response = JsonConvert.DeserializeObject<PipeResponseEnvelope>(responseLine);
-                        if (response == null)
-                        {
-                            throw new InvalidOperationException("Engine returned malformed JSON.");
-                        }
-
-                        if (response.Ok)
-                        {
-                            if (response.Result == null || response.Result.Type == JTokenType.Null)
-                            {
-                                return default;
-                            }
-
-                            return response.Result.ToObject<T>();
-                        }
-
-                        var errorMessage = string.IsNullOrWhiteSpace(response.Error)
-                            ? "Unknown error"
-                            : response.Error!;
-
-                        throw new InvalidOperationException("Engine error: " + errorMessage);
+                        throw new InvalidOperationException("Engine returned malformed JSON.");
                     }
+
+                    if (response.Ok)
+                    {
+                        if (response.Result == null || response.Result.Type == JTokenType.Null)
+                        {
+                            return default;
+                        }
+
+                        return response.Result.ToObject<T>();
+                    }
+
+                    var errorMessage = string.IsNullOrWhiteSpace(response.Error)
+                        ? "Unknown error"
+                        : response.Error!;
+
+                    throw new InvalidOperationException("Engine error: " + errorMessage);
                 }
             }
             catch (TimeoutException tex)
@@ -125,6 +101,49 @@ namespace RevitSuite.Host.Services
 
         private string GetOfflineMessage() =>
             $"Unable to reach the RevitSuite engine (pipe '{_pipeName}'). Start it via VS Code task 'engine:run' or run 'python engine-py/server.py'.";
+
+        private static string ReadMessageWithTimeout(NamedPipeClientStream client, TimeSpan timeout, string correlationId)
+        {
+            var buffer = new byte[8192];
+            using var ms = new MemoryStream();
+            var deadline = DateTime.UtcNow + timeout;
+
+            while (true)
+            {
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    var timeoutMessage =
+                        $"Engine did not respond within {timeout.TotalSeconds:N0} seconds. " +
+                        "Ensure the Python engine window is running and responsive.";
+                    throw new EngineUnavailableException(timeoutMessage, new TimeoutException(timeoutMessage));
+                }
+
+                var readTask = client.ReadAsync(buffer, 0, buffer.Length);
+                if (!readTask.Wait(remaining))
+                {
+                    var timeoutMessage =
+                        $"Engine did not respond within {timeout.TotalSeconds:N0} seconds. " +
+                        "Ensure the Python engine window is running and responsive.";
+                    throw new EngineUnavailableException(timeoutMessage, new TimeoutException(timeoutMessage));
+                }
+
+                var bytesRead = readTask.Result;
+                if (bytesRead == 0)
+                {
+                    throw new InvalidOperationException("No response from engine.");
+                }
+
+                ms.Write(buffer, 0, bytesRead);
+
+                if (client.IsMessageComplete)
+                {
+                    break;
+                }
+            }
+
+            return Encoding.UTF8.GetString(ms.ToArray());
+        }
 
         private class PipeRequest
         {
