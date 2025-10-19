@@ -31,11 +31,14 @@ namespace RevitSuite.Host.Commands
                     return Result.Failed;
                 }
 
+                var document = uiDoc.Document;
+                var defaultFileName = BuildDefaultFileName(document);
+
                 var dialog = new SaveFileDialog
                 {
                     Title = "Export Level Report",
                     Filter = "CSV Files (*.csv)|*.csv",
-                    FileName = "LevelReport.csv",
+                    FileName = defaultFileName,
                     AddExtension = true,
                     DefaultExt = "csv",
                     OverwritePrompt = true
@@ -53,7 +56,7 @@ namespace RevitSuite.Host.Commands
                 var precision = config.Precision;
                 var maxPreview = config.MaxPreviewRows;
 
-                var levelRecords = CollectLevelRecords(uiDoc.Document, includeLinked);
+                var levelRecords = CollectLevelRecords(document, includeLinked);
 
                 if (levelRecords.Count == 0)
                 {
@@ -62,20 +65,16 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
-                var sortedRecords = levelRecords
-                    .OrderBy(r => r.Model, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(r => r.ElevationFt)
-                    .ThenBy(r => r.LevelName, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                var pivotTable = BuildPivotTable(levelRecords);
 
-                WriteCsv(targetPath, sortedRecords, precision);
+                WritePivotCsv(targetPath, pivotTable, precision);
 
-                var previewCount = Math.Min(maxPreview, sortedRecords.Count);
+                var previewCount = Math.Min(maxPreview, pivotTable.Rows.Count);
                 LogManager.Info(correlationId,
-                    $"Level report exported to '{targetPath}' with {sortedRecords.Count} row(s). Preview rows: {previewCount}");
+                    $"Level report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Preview rows: {previewCount}");
 
                 TaskDialog.Show("RevitSuite",
-                    $"Level report written to:\n{targetPath}\nRows: {sortedRecords.Count}");
+                    $"Level report written to:\n{targetPath}\nRows: {pivotTable.Rows.Count}");
 
                 return Result.Succeeded;
             }
@@ -118,6 +117,57 @@ namespace RevitSuite.Host.Commands
             return result;
         }
 
+        private static PivotTable BuildPivotTable(IReadOnlyCollection<LevelRecord> records)
+        {
+            var models = records
+                .GroupBy(r => r.ModelId, StringComparer.OrdinalIgnoreCase)
+                .Select(group =>
+                {
+                    var exemplar = group.First();
+                    return new ModelDescriptor(group.Key, exemplar.Model, exemplar.Type);
+                })
+                .OrderBy(descriptor =>
+                    string.Equals(descriptor.Type, "Host", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(descriptor => descriptor.Model, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var rows = records
+                .GroupBy(r => r.LevelName, StringComparer.OrdinalIgnoreCase)
+                .Select(CreatePivotRow)
+                .ToList();
+
+            rows.Sort((left, right) =>
+            {
+                var elevationCompare = left.SortElevation.CompareTo(right.SortElevation);
+                if (elevationCompare != 0)
+                {
+                    return elevationCompare;
+                }
+
+                return string.Compare(left.LevelName, right.LevelName, StringComparison.OrdinalIgnoreCase);
+            });
+
+            return new PivotTable(models, rows);
+        }
+
+        private static LevelPivotRow CreatePivotRow(IGrouping<string, LevelRecord> group)
+        {
+            var recordsByModel = new Dictionary<string, LevelRecord>(StringComparer.OrdinalIgnoreCase);
+            foreach (var record in group)
+            {
+                if (!recordsByModel.ContainsKey(record.ModelId))
+                {
+                    recordsByModel[record.ModelId] = record;
+                }
+            }
+
+            var hostRecord = group.FirstOrDefault(r =>
+                string.Equals(r.Type, "Host", StringComparison.OrdinalIgnoreCase));
+            var sortElevation = hostRecord?.ElevationFt ?? recordsByModel.Values.Min(r => r.ElevationFt);
+
+            return new LevelPivotRow(group.Key, sortElevation, recordsByModel);
+        }
+
         private static void AppendLevelsFromDocument(Document doc, string type, IList<LevelRecord> sink)
         {
             var modelName = doc.Title;
@@ -142,7 +192,7 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private static void WriteCsv(string path, IReadOnlyList<LevelRecord> records, int precision)
+        private static void WritePivotCsv(string path, PivotTable table, int precision)
         {
             var directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory))
@@ -151,22 +201,28 @@ namespace RevitSuite.Host.Commands
             }
 
             using var writer = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            writer.WriteLine("Model,Type,Level,Elevation_ft,Elevation_ft_in,LevelId,LevelUniqueId,ModelId");
+            var header = new List<string> { "Level" };
+            header.AddRange(table.Models.Select(model => model.Model));
+            WriteCsvLine(writer, header.ToArray());
 
-            foreach (var record in records)
+            foreach (var row in table.Rows)
             {
-                var elevationRounded = Math.Round(record.ElevationFt, precision);
-                var elevationFeetInches = FormatFeetInches(record.ElevationFt, precision);
+                var values = new List<string> { row.LevelName };
+                foreach (var model in table.Models)
+                {
+                    if (row.Records.TryGetValue(model.ModelId, out var record))
+                    {
+                        var elevationRounded = Math.Round(record.ElevationFt, precision);
+                        var elevationFeetInches = FormatFeetInches(record.ElevationFt, precision);
+                        values.Add($"{elevationRounded.ToString(CultureInfo.InvariantCulture)} ft ({elevationFeetInches})");
+                    }
+                    else
+                    {
+                        values.Add(string.Empty);
+                    }
+                }
 
-                WriteCsvLine(writer,
-                    record.Model,
-                    record.Type,
-                    record.LevelName,
-                    elevationRounded.ToString(CultureInfo.InvariantCulture),
-                    elevationFeetInches,
-                    record.LevelId.ToString(CultureInfo.InvariantCulture),
-                    record.LevelUniqueId,
-                    record.ModelId);
+                WriteCsvLine(writer, values.ToArray());
             }
         }
 
@@ -205,6 +261,75 @@ namespace RevitSuite.Host.Commands
             }
 
             return value;
+        }
+
+        private static string BuildDefaultFileName(Document document)
+        {
+            var baseName = string.IsNullOrWhiteSpace(document.PathName)
+                ? document.Title
+                : Path.GetFileNameWithoutExtension(document.PathName);
+
+            if (string.IsNullOrWhiteSpace(baseName))
+            {
+                baseName = "Model";
+            }
+
+            var sanitized = SanitizeFileName(baseName);
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            return $"{sanitized}_Levels_{timestamp}.csv";
+        }
+
+        private static string SanitizeFileName(string value)
+        {
+            var invalidChars = Path.GetInvalidFileNameChars();
+            var builder = new StringBuilder(value.Length);
+
+            foreach (var ch in value)
+            {
+                builder.Append(Array.IndexOf(invalidChars, ch) >= 0 ? '_' : ch);
+            }
+
+            return builder.Length == 0 ? "Model" : builder.ToString();
+        }
+
+        private sealed class PivotTable
+        {
+            public PivotTable(IReadOnlyList<ModelDescriptor> models, IReadOnlyList<LevelPivotRow> rows)
+            {
+                Models = models;
+                Rows = rows;
+            }
+
+            public IReadOnlyList<ModelDescriptor> Models { get; }
+            public IReadOnlyList<LevelPivotRow> Rows { get; }
+        }
+
+        private sealed class LevelPivotRow
+        {
+            public LevelPivotRow(string levelName, double sortElevation, IDictionary<string, LevelRecord> records)
+            {
+                LevelName = levelName;
+                SortElevation = sortElevation;
+                Records = new Dictionary<string, LevelRecord>(records, StringComparer.OrdinalIgnoreCase);
+            }
+
+            public string LevelName { get; }
+            public double SortElevation { get; }
+            public IReadOnlyDictionary<string, LevelRecord> Records { get; }
+        }
+
+        private sealed class ModelDescriptor
+        {
+            public ModelDescriptor(string modelId, string model, string type)
+            {
+                ModelId = modelId;
+                Model = model;
+                Type = type;
+            }
+
+            public string ModelId { get; }
+            public string Model { get; }
+            public string Type { get; }
         }
 
         private class LevelRecord
