@@ -20,10 +20,9 @@ revit-suite/
 ## Commands & Defaults
 | Ribbon Panel | Command | Description | Schema |
 | --- | --- | --- | --- |
-| Automation | Create Views | Creates a floor/ceiling plan based on schema defaults. | `schemas/create_views.schema.json` |
 | Automation | Footing Zones | Generates transparent influence volumes for foundations/slabs. | `schemas/footing_zone.schema.json` |
-| Reports | Level Report | Exports level data (host + optional linked) to CSV. | `schemas/level_report.schema.json` |
-| Reports | Grid Report | Exports grid geometry (host + optional linked) to CSV. | `schemas/grid_report.schema.json` |
+| Reports ▾ | Level Report | Exports level data (host + optional linked) to CSV. | `schemas/level_report.schema.json` |
+| Reports ▾ | Grid Report | Exports grid geometry (host + optional linked) to CSV. | `schemas/grid_report.schema.json` |
 
 Update command behaviour by editing the corresponding schema defaults—no code changes required.
 

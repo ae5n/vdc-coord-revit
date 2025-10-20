@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Reflection;
-using System.Windows.Media;
 using Autodesk.Revit.UI;
 using RevitSuite.Host.UI;
 
@@ -23,18 +22,6 @@ namespace RevitSuite.Host
 
                 var assemblyPath = Assembly.GetExecutingAssembly().Location;
 
-                var createViewsButton = AddButton(
-                    automationPanel,
-                    new PushButtonData(
-                        "RevitSuite_CreateViews",
-                        "Create Views",
-                        assemblyPath,
-                        "RevitSuite.Host.Commands.CreateViewsCommand")
-                    {
-                        ToolTip = "Create floor or ceiling plan views using schema defaults."
-                    });
-                SetButtonIcon(createViewsButton, "CV", Color.FromRgb(0x2B, 0x7B, 0xBA));
-
                 var footingZoneButton = AddButton(
                     automationPanel,
                     new PushButtonData(
@@ -43,33 +30,45 @@ namespace RevitSuite.Host
                         assemblyPath,
                         "RevitSuite.Host.Commands.FootingZoneCommand")
                     {
-                        ToolTip = "Create transparent influence zones for foundations and selected slabs."
+                        ToolTip = "Create transparent influence zones for foundations and selected slabs.",
+                        LongDescription = "Generate transparent influence zones around foundations and slabs using schema defaults."
                     });
-                SetButtonIcon(footingZoneButton, "FZ", Color.FromRgb(0x38, 0x8E, 0x3C));
+                ApplyIcons(footingZoneButton, RibbonIconFactory.FootingZones);
+
+                var reportsDropdown = AddPulldownButton(
+                    reportsPanel,
+                    new PulldownButtonData("RevitSuite_ModelReports", "Model Reports")
+                    {
+                        ToolTip = "Export CSV reports for levels and grids from a single menu.",
+                        LongDescription = "Access all model reports from one dropdown. Each report uses schema defaults for filtering and formatting."
+                    });
+                ApplyIcons(reportsDropdown, RibbonIconFactory.ReportsHub);
 
                 var levelReportButton = AddButton(
-                    reportsPanel,
+                    reportsDropdown,
                     new PushButtonData(
                         "RevitSuite_LevelReport",
                         "Level Report",
                         assemblyPath,
                         "RevitSuite.Host.Commands.LevelReportCommand")
                     {
-                        ToolTip = "Export a sorted CSV of levels across host and linked models."
+                        ToolTip = "Export a sorted CSV of levels across host and linked models.",
+                        LongDescription = "Collect host and linked level data using schema-driven filters. Output is sorted by model then elevation for quick QA."
                     });
-                SetButtonIcon(levelReportButton, "LR", Color.FromRgb(0x87, 0x52, 0xB0));
+                ApplyIcons(levelReportButton, RibbonIconFactory.LevelReport);
 
                 var gridReportButton = AddButton(
-                    reportsPanel,
+                    reportsDropdown,
                     new PushButtonData(
                         "RevitSuite_GridReport",
                         "Grid Report",
                         assemblyPath,
                         "RevitSuite.Host.Commands.GridReportCommand")
                     {
-                        ToolTip = "Export grid line geometry details across host and linked models."
+                        ToolTip = "Export grid line geometry details across host and linked models.",
+                        LongDescription = "Capture grid names, origins, and orientations from host plus linked models using schema defaults."
                     });
-                SetButtonIcon(gridReportButton, "GR", Color.FromRgb(0xF2, 0x7F, 0x0C));
+                ApplyIcons(gridReportButton, RibbonIconFactory.GridReport);
 
                 return Result.Succeeded;
             }
@@ -111,10 +110,28 @@ namespace RevitSuite.Host
                    ?? throw new InvalidOperationException("Failed to add ribbon button.");
         }
 
-        private static void SetButtonIcon(PushButton button, string glyph, Color background)
+        private static PushButton AddButton(PulldownButton dropdown, PushButtonData data)
         {
-            button.LargeImage = RibbonIconFactory.CreateLargeIcon(glyph, background);
-            button.Image = RibbonIconFactory.CreateSmallIcon(glyph, background);
+            return dropdown.AddPushButton(data) as PushButton
+                   ?? throw new InvalidOperationException("Failed to add dropdown button.");
+        }
+
+        private static PulldownButton AddPulldownButton(RibbonPanel panel, PulldownButtonData data)
+        {
+            return panel.AddItem(data) as PulldownButton
+                   ?? throw new InvalidOperationException("Failed to add ribbon dropdown.");
+        }
+
+        private static void ApplyIcons(PushButton button, RibbonIconFactory.IconSet icons)
+        {
+            button.LargeImage = icons.LargeImage;
+            button.Image = icons.SmallImage;
+        }
+
+        private static void ApplyIcons(PulldownButton button, RibbonIconFactory.IconSet icons)
+        {
+            button.LargeImage = icons.LargeImage;
+            button.Image = icons.SmallImage;
         }
     }
 }
