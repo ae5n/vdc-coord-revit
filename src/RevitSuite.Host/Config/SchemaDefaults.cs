@@ -41,14 +41,24 @@ namespace RevitSuite.Host.Config
 
         public static string GetString(JObject properties, string name, string fallback)
         {
-            var token = properties[name]? ["default"] ?? properties[name]? ["const"];
+            if (!properties.TryGetValue(name, out var propertyToken) || propertyToken == null)
+            {
+                return fallback;
+            }
+
+            var token = propertyToken["default"] ?? propertyToken["const"];
             var value = token?.ToString();
             return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
         }
 
         public static double GetDouble(JObject properties, string name, double fallback)
         {
-            var token = properties[name]? ["default"];
+            if (!properties.TryGetValue(name, out var propertyToken) || propertyToken == null)
+            {
+                return fallback;
+            }
+
+            var token = propertyToken["default"];
             if (token != null && double.TryParse(token.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
             {
                 return value;
@@ -59,7 +69,12 @@ namespace RevitSuite.Host.Config
 
         public static int GetInt(JObject properties, string name, int fallback)
         {
-            var token = properties[name]? ["default"];
+            if (!properties.TryGetValue(name, out var propertyToken) || propertyToken == null)
+            {
+                return fallback;
+            }
+
+            var token = propertyToken["default"];
             if (token != null && int.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
             {
                 return value;
@@ -70,7 +85,12 @@ namespace RevitSuite.Host.Config
 
         public static bool GetBool(JObject properties, string name, bool fallback)
         {
-            var token = properties[name]? ["default"];
+            if (!properties.TryGetValue(name, out var propertyToken) || propertyToken == null)
+            {
+                return fallback;
+            }
+
+            var token = propertyToken["default"];
             if (token != null && bool.TryParse(token.ToString(), out var value))
             {
                 return value;

@@ -23,8 +23,9 @@ revit-suite/
 | Automation | Footing Zones | Generates transparent influence volumes for foundations/slabs. | `schemas/footing_zone.schema.json` |
 | Reports ▾ | Level Report | Exports level data (host + optional linked) to CSV. | `schemas/level_report.schema.json` |
 | Reports ▾ | Grid Report | Exports grid geometry (host + optional linked) to CSV. | `schemas/grid_report.schema.json` |
+| Views | Copy Linked Views | Copy selected plan/3D views or view sets from links into the host document. | UI-driven |
 
-Update command behaviour by editing the corresponding schema defaults—no code changes required.
+Schema-driven commands (Footing Zones, Level Report, Grid Report) pick up changes from their JSON defaults. Copy Linked Views is fully UI-driven and surfaces any named view sets exposed by Revit for one-click copying.
 
 ## Quick Start
 

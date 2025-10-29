@@ -212,9 +212,8 @@ namespace RevitSuite.Host.Commands
                 {
                     if (row.Records.TryGetValue(model.ModelId, out var record))
                     {
-                        var elevationRounded = Math.Round(record.ElevationFt, precision);
                         var elevationFeetInches = FormatFeetInches(record.ElevationFt, precision);
-                        values.Add($"{elevationRounded.ToString(CultureInfo.InvariantCulture)} ft ({elevationFeetInches})");
+                        values.Add(elevationFeetInches);
                     }
                     else
                     {

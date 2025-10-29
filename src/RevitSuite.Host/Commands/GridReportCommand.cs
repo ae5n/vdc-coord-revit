@@ -811,7 +811,6 @@ namespace RevitSuite.Host.Commands
             ApplyDiscrepancies(analytics, discrepancies);
             var modelQuality = CalculateModelQuality(table, analytics);
             var spacingIssues = AnalyzeGridSpacing(table, analytics);
-            var missingIssues = AnalyzeMissingGrids(table, analytics);
 
             using var writer = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
             writer.WriteLine("<!DOCTYPE html>");
@@ -840,12 +839,12 @@ namespace RevitSuite.Host.Commands
             var spacingData = BuildGridSpacingData(table, analytics);
 
             writer.WriteLine("<h2>Grid Spacing by Model</h2>");
-            writer.WriteLine("<p>Distance (ft) between consecutive grids. Red = differs from consensus by >0.01 ft.</p>");
+            writer.WriteLine("<p>Distance (ft-in) between consecutive grids. Red = differs from consensus by >0.01 ft.</p>");
 
             writer.WriteLine("<table>");
             writer.WriteLine("<tr>");
             writer.WriteLine("<th>Grid Pair</th>");
-            writer.WriteLine("<th class=\"num\">Consensus</th>");
+            writer.WriteLine("<th class=\"num\">Consensus (ft-in)</th>");
 
             foreach (var model in table.Models.OrderBy(m => m.Type == "Host" ? 0 : 1).ThenBy(m => m.Model))
             {
@@ -858,7 +857,7 @@ namespace RevitSuite.Host.Commands
             {
                 writer.WriteLine("<tr>");
                 writer.WriteLine("<td><strong>" + EscapeHtml(spacing.GridA) + " ↔ " + EscapeHtml(spacing.GridB) + "</strong></td>");
-                writer.WriteLine("<td class=\"num\">" + spacing.ConsensusSpacing.ToString("F3") + " (" + FormatFeetInches(spacing.ConsensusSpacing) + ")</td>");
+                writer.WriteLine("<td class=\"num\">" + FormatFeetInches(spacing.ConsensusSpacing) + "</td>");
 
                 foreach (var model in table.Models.OrderBy(m => m.Type == "Host" ? 0 : 1).ThenBy(m => m.Model))
                 {
@@ -866,7 +865,7 @@ namespace RevitSuite.Host.Commands
                     {
                         var diff = Math.Abs(modelSpacing - spacing.ConsensusSpacing);
                         var cellClass = diff > 0.01 ? "num bad" : "num";
-                        writer.WriteLine("<td class=\"" + cellClass + "\">" + modelSpacing.ToString("F3") + " (" + FormatFeetInches(modelSpacing) + ")</td>");
+                        writer.WriteLine("<td class=\"" + cellClass + "\">" + FormatFeetInches(modelSpacing) + "</td>");
                     }
                     else
                     {
@@ -878,27 +877,6 @@ namespace RevitSuite.Host.Commands
             }
 
             writer.WriteLine("</table>");
-
-            if (missingIssues.Count > 0)
-            {
-                writer.WriteLine("<h2>Missing Grids from Host</h2>");
-                writer.WriteLine("<table>");
-                writer.WriteLine("<tr><th>Grid</th><th>Present In</th></tr>");
-
-                // Only show grids missing from host model
-                var missingFromHost = missingIssues.Where(i => i.MissingFromModels.Any(m =>
-                    table.Models.Any(model => model.Model == m && model.Type == "Host"))).ToList();
-
-                foreach (var issue in missingFromHost)
-                {
-                    writer.WriteLine("<tr class=\"bad\">");
-                    writer.WriteLine("<td><strong>" + EscapeHtml(issue.GridName) + "</strong></td>");
-                    writer.WriteLine("<td>" + string.Join(", ", issue.PresentInModels.Select(EscapeHtml)) + "</td>");
-                    writer.WriteLine("</tr>");
-                }
-
-                writer.WriteLine("</table>");
-            }
 
             writer.WriteLine("</body>");
             writer.WriteLine("</html>");

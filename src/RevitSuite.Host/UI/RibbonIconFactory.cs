@@ -23,11 +23,13 @@ namespace RevitSuite.Host.UI
         public static IconSet ReportsHub => _reportsHub ??= CreateReportsHubIconSet();
         public static IconSet LevelReport => _levelReport ??= CreateLevelReportIconSet();
         public static IconSet GridReport => _gridReport ??= CreateGridReportIconSet();
+        public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
 
         private static IconSet? _footingZones;
         private static IconSet? _reportsHub;
         private static IconSet? _levelReport;
         private static IconSet? _gridReport;
+        private static IconSet? _copyLinkedViews;
 
         private static IconSet CreateFootingZonesIconSet()
         {
@@ -59,6 +61,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0xB5, 0x33, 0x1A),
                 Color.FromRgb(0xF2, 0x86, 0x3E),
                 DrawGridReportContent);
+        }
+
+        private static IconSet CreateCopyLinkedViewsIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x1E, 0x3C, 0x5A),
+                Color.FromRgb(0x45, 0x8A, 0xD1),
+                DrawCopyLinkedViewsContent);
         }
 
         private static IconSet CreateIconSet(
@@ -253,6 +263,52 @@ namespace RevitSuite.Host.UI
             };
             highlightPen.Freeze();
             dc.DrawRectangle(null, highlightPen, new Rect(width * 0.34, height * 0.34, width * 0.32, height * 0.32));
+        }
+
+        private static void DrawCopyLinkedViewsContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+
+            var backBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255));
+            backBrush.Freeze();
+            var backRect = new Rect(width * 0.18, height * 0.34, width * 0.40, height * 0.40);
+            dc.DrawRoundedRectangle(backBrush, null, backRect, min * 0.10, min * 0.10);
+
+            var cardBrush = new SolidColorBrush(Color.FromArgb(225, 255, 255, 255));
+            cardBrush.Freeze();
+            var cardPen = new Pen(new SolidColorBrush(Color.FromArgb(180, 255, 255, 255)), min * 0.05);
+            cardPen.Freeze();
+            var cardRect = new Rect(width * 0.34, height * 0.20, width * 0.44, height * 0.54);
+            dc.DrawRoundedRectangle(cardBrush, cardPen, cardRect, min * 0.12, min * 0.12);
+
+            var headerBrush = new SolidColorBrush(Color.FromArgb(140, 88, 133, 196));
+            headerBrush.Freeze();
+            dc.DrawRoundedRectangle(headerBrush, null, new Rect(width * 0.38, height * 0.26, width * 0.32, height * 0.10), min * 0.05, min * 0.05);
+
+            var rowBrush = new SolidColorBrush(Color.FromArgb(110, 71, 166, 255));
+            rowBrush.Freeze();
+            dc.DrawRoundedRectangle(rowBrush, null, new Rect(width * 0.38, height * 0.40, width * 0.20, height * 0.08), min * 0.04, min * 0.04);
+            dc.DrawRoundedRectangle(rowBrush, null, new Rect(width * 0.38, height * 0.52, width * 0.24, height * 0.08), min * 0.04, min * 0.04);
+
+            var arrowPen = new Pen(new SolidColorBrush(Color.FromRgb(255, 213, 94)), min * 0.12)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            arrowPen.Freeze();
+            dc.DrawLine(arrowPen, new Point(width * 0.26, height * 0.42), new Point(width * 0.46, height * 0.34));
+
+            var arrowHead = new StreamGeometry();
+            using (var ctx = arrowHead.Open())
+            {
+                ctx.BeginFigure(new Point(width * 0.46, height * 0.34), true, true);
+                ctx.LineTo(new Point(width * 0.40, height * 0.30), true, false);
+                ctx.LineTo(new Point(width * 0.44, height * 0.44), true, false);
+            }
+            arrowHead.Freeze();
+            var arrowFill = new SolidColorBrush(Color.FromRgb(255, 213, 94));
+            arrowFill.Freeze();
+            dc.DrawGeometry(arrowFill, null, arrowHead);
         }
     }
 }

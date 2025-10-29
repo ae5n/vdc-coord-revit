@@ -11,6 +11,7 @@ namespace RevitSuite.Host
         private const string TabName = "Revit Suite";
         private const string AutomationPanelName = "Automation";
         private const string ReportsPanelName = "Reports";
+        private const string ViewsPanelName = "Views";
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -19,6 +20,7 @@ namespace RevitSuite.Host
                 TryCreateTab(application);
                 var automationPanel = GetOrCreatePanel(application, AutomationPanelName);
                 var reportsPanel = GetOrCreatePanel(application, ReportsPanelName);
+                var viewsPanel = GetOrCreatePanel(application, ViewsPanelName);
 
                 var assemblyPath = Assembly.GetExecutingAssembly().Location;
 
@@ -69,6 +71,19 @@ namespace RevitSuite.Host
                         LongDescription = "Capture grid names, origins, and orientations from host plus linked models using schema defaults."
                     });
                 ApplyIcons(gridReportButton, RibbonIconFactory.GridReport);
+
+                var copyLinkedViewsButton = AddButton(
+                    viewsPanel,
+                    new PushButtonData(
+                        "RevitSuite_CopyLinkedViews",
+                        "Copy Linked Views",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.CopyLinkedViewsCommand")
+                    {
+                        ToolTip = "Copy plan and 3D views from linked models into the host project.",
+                        LongDescription = "Select loaded link models, filter by supported view types, and copy either individual views or entire view sets into the host document."
+                    });
+                ApplyIcons(copyLinkedViewsButton, RibbonIconFactory.CopyLinkedViews);
 
                 return Result.Succeeded;
             }
