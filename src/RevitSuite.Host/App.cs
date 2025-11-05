@@ -72,6 +72,20 @@ namespace RevitSuite.Host
                     });
                 ApplyIcons(gridReportButton, RibbonIconFactory.GridReport);
 
+                var sharedCoordinatesReportButton = AddButton(
+                    reportsDropdown,
+                    new PushButtonData(
+                        "RevitSuite_SharedCoordinatesReport",
+                        "Shared Coordinates",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.SharedCoordinatesReportCommand")
+                    {
+                        ToolTip = "Export shared coordinate data for host and linked models.",
+                        LongDescription =
+                            "Report project base point and survey point values for the host model plus any loaded links, including shared offsets."
+                    });
+                ApplyIcons(sharedCoordinatesReportButton, RibbonIconFactory.SharedCoordinatesReport);
+
                 var copyLinkedViewsButton = AddButton(
                     viewsPanel,
                     new PushButtonData(

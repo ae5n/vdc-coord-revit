@@ -23,12 +23,14 @@ namespace RevitSuite.Host.UI
         public static IconSet ReportsHub => _reportsHub ??= CreateReportsHubIconSet();
         public static IconSet LevelReport => _levelReport ??= CreateLevelReportIconSet();
         public static IconSet GridReport => _gridReport ??= CreateGridReportIconSet();
+        public static IconSet SharedCoordinatesReport => _sharedCoordinatesReport ??= CreateSharedCoordinatesReportIconSet();
         public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
 
         private static IconSet? _footingZones;
         private static IconSet? _reportsHub;
         private static IconSet? _levelReport;
         private static IconSet? _gridReport;
+        private static IconSet? _sharedCoordinatesReport;
         private static IconSet? _copyLinkedViews;
 
         private static IconSet CreateFootingZonesIconSet()
@@ -61,6 +63,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0xB5, 0x33, 0x1A),
                 Color.FromRgb(0xF2, 0x86, 0x3E),
                 DrawGridReportContent);
+        }
+
+        private static IconSet CreateSharedCoordinatesReportIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x1D, 0x4F, 0x7A),
+                Color.FromRgb(0x3D, 0xA3, 0xC8),
+                DrawSharedCoordinatesReportContent);
         }
 
         private static IconSet CreateCopyLinkedViewsIconSet()
@@ -263,6 +273,64 @@ namespace RevitSuite.Host.UI
             };
             highlightPen.Freeze();
             dc.DrawRectangle(null, highlightPen, new Rect(width * 0.34, height * 0.34, width * 0.32, height * 0.32));
+        }
+
+        private static void DrawSharedCoordinatesReportContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+            var center = new Point(width * 0.52, height * 0.54);
+
+            var axisPen = new Pen(new SolidColorBrush(Color.FromArgb(215, 255, 255, 255)), min * 0.06)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            axisPen.Freeze();
+            dc.DrawLine(axisPen, new Point(center.X, height * 0.30), new Point(center.X, height * 0.80));
+            dc.DrawLine(axisPen, new Point(width * 0.26, center.Y), new Point(width * 0.78, center.Y));
+
+            var orbitPen = new Pen(new SolidColorBrush(Color.FromArgb(160, 255, 255, 255)), min * 0.04)
+            {
+                DashStyle = new DashStyle(new[] { 1.0, 1.05 }, 0),
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            orbitPen.Freeze();
+            dc.DrawEllipse(null, orbitPen, center, min * 0.30, min * 0.30);
+
+            var hostPoint = new Point(center.X - min * 0.16, center.Y - min * 0.12);
+            var linkPoint = new Point(center.X + min * 0.20, center.Y + min * 0.16);
+
+            var connectorPen = new Pen(new SolidColorBrush(Color.FromArgb(210, 64, 198, 247)), min * 0.05)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            connectorPen.Freeze();
+            dc.DrawLine(connectorPen, hostPoint, linkPoint);
+
+            var hostHalo = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
+            hostHalo.Freeze();
+            var hostBrush = new SolidColorBrush(Color.FromArgb(235, 255, 255, 255));
+            hostBrush.Freeze();
+            dc.DrawEllipse(hostHalo, null, hostPoint, min * 0.12, min * 0.12);
+            dc.DrawEllipse(hostBrush, null, hostPoint, min * 0.07, min * 0.07);
+
+            var linkHalo = new SolidColorBrush(Color.FromArgb(120, 64, 198, 247));
+            linkHalo.Freeze();
+            var linkBrush = new SolidColorBrush(Color.FromRgb(64, 198, 247));
+            linkBrush.Freeze();
+            dc.DrawEllipse(linkHalo, null, linkPoint, min * 0.11, min * 0.11);
+            dc.DrawEllipse(linkBrush, null, linkPoint, min * 0.06, min * 0.06);
+
+            var tickPen = new Pen(new SolidColorBrush(Color.FromArgb(230, 255, 255, 255)), min * 0.045)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            tickPen.Freeze();
+            dc.DrawLine(tickPen, new Point(center.X, height * 0.34), new Point(center.X + min * 0.14, height * 0.34));
+            dc.DrawLine(tickPen, new Point(width * 0.30, center.Y), new Point(width * 0.30, center.Y - min * 0.14));
         }
 
         private static void DrawCopyLinkedViewsContent(DrawingContext dc, double width, double height)
