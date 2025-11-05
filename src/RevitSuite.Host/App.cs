@@ -12,6 +12,7 @@ namespace RevitSuite.Host
         private const string AutomationPanelName = "Automation";
         private const string ReportsPanelName = "Reports";
         private const string ViewsPanelName = "Views";
+        private const string ExportsPanelName = "Exports";
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -21,6 +22,7 @@ namespace RevitSuite.Host
                 var automationPanel = GetOrCreatePanel(application, AutomationPanelName);
                 var reportsPanel = GetOrCreatePanel(application, ReportsPanelName);
                 var viewsPanel = GetOrCreatePanel(application, ViewsPanelName);
+                var exportsPanel = GetOrCreatePanel(application, ExportsPanelName);
 
                 var assemblyPath = Assembly.GetExecutingAssembly().Location;
 
@@ -85,6 +87,19 @@ namespace RevitSuite.Host
                             "Report project base point and survey point values for the host model plus any loaded links, including shared offsets."
                     });
                 ApplyIcons(sharedCoordinatesReportButton, RibbonIconFactory.SharedCoordinatesReport);
+
+                var nwcBatchExportButton = AddButton(
+                    exportsPanel,
+                    new PushButtonData(
+                        "RevitSuite_NwcBatchExport",
+                        "NWC Batch Export",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.NwcBatchExportCommand")
+                    {
+                        ToolTip = "Export selected 3D views or entire view sets to Navisworks NWC files.",
+                        LongDescription = "Choose view-type groupings and individual 3D views, then export them to NWC with shared coordinates and link conversion enabled."
+                    });
+                ApplyIcons(nwcBatchExportButton, RibbonIconFactory.NwcBatchExport);
 
                 var copyLinkedViewsButton = AddButton(
                     viewsPanel,

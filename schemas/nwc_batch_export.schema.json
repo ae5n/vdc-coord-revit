@@ -1,0 +1,110 @@
+{
+  "$id": "https://revit-suite/schemas/nwc_batch_export.schema.json",
+  "title": "NwcBatchExportInput",
+  "x-version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "default": "1.0.0"
+    },
+    "groupParameterName": {
+      "type": "string",
+      "default": "Type",
+      "description": "Name of the parameter used to group 3D views in the picker UI."
+    },
+    "coordinates": {
+      "type": "string",
+      "enum": [
+        "Shared",
+        "Project",
+        "Internal"
+      ],
+      "default": "Shared",
+      "description": "Coordinate system used during export."
+    },
+    "exportScope": {
+      "type": "string",
+      "enum": [
+        "Model",
+        "View",
+        "Selection"
+      ],
+      "default": "View",
+      "description": "Scope of elements to export."
+    },
+    "parameters": {
+      "type": "string",
+      "enum": [
+        "All",
+        "Elements",
+        "None"
+      ],
+      "default": "Elements",
+      "description": "Which parameters to include in the export."
+    },
+    "exportLinks": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to convert linked models during export."
+    },
+    "exportParts": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to export construction parts."
+    },
+    "exportElementIds": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to include element IDs."
+    },
+    "convertElementProperties": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to convert element properties."
+    },
+    "exportRoomAsAttribute": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to export rooms as attributes."
+    },
+    "exportRoomGeometry": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to export room geometry."
+    },
+    "exportUrls": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to convert URLs."
+    },
+    "divideFileIntoLevels": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to divide the file into levels."
+    },
+    "findMissingMaterials": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to search for missing materials."
+    },
+    "convertLights": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to convert lights."
+    },
+    "convertLinkedCadFormats": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to convert linked CAD formats."
+    },
+    "facetingFactor": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 20,
+      "default": 1.0,
+      "description": "Faceting factor applied during export."
+    }
+  },
+  "additionalProperties": false
+}

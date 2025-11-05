@@ -24,9 +24,10 @@ revit-suite/
 | Reports ▾ | Level Report | Exports level data (host + optional linked) to CSV. | `schemas/level_report.schema.json` |
 | Reports ▾ | Grid Report | Exports grid geometry (host + optional linked) to CSV. | `schemas/grid_report.schema.json` |
 | Reports ▾ | Shared Coordinate Report | Compares host/link base & survey points in a pivoted CSV + HTML heatmap. | `schemas/shared_coordinates_report.schema.json` |
+| Exports | NWC Batch Export | Batch-export selected 3D view sets to NWC with shared coordinates. | `schemas/nwc_batch_export.schema.json` |
 | Views | Copy Linked Views | Copy selected plan/3D views or view sets from links into the host document. | UI-driven |
 
-Schema-driven commands (Footing Zones, Level Report, Grid Report, Shared Coordinate Report) pick up changes from their JSON defaults. Copy Linked Views is fully UI-driven and surfaces any named view sets exposed by Revit for one-click copying. Shared Coordinate Report produces both a pivoted CSV (points in rows, models in columns) and an HTML comparison view with host deltas highlighted for quick QA.
+Schema-driven commands (Footing Zones, Level Report, Grid Report, Shared Coordinate Report, NWC Batch Export) pick up changes from their JSON defaults. Copy Linked Views is fully UI-driven and surfaces any named view sets exposed by Revit for one-click copying. Shared Coordinate Report produces both a pivoted CSV (points in rows, models in columns) and an HTML comparison view with host deltas highlighted for quick QA.
 
 ## Quick Start
 

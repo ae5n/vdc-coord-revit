@@ -24,6 +24,7 @@ namespace RevitSuite.Host.UI
         public static IconSet LevelReport => _levelReport ??= CreateLevelReportIconSet();
         public static IconSet GridReport => _gridReport ??= CreateGridReportIconSet();
         public static IconSet SharedCoordinatesReport => _sharedCoordinatesReport ??= CreateSharedCoordinatesReportIconSet();
+        public static IconSet NwcBatchExport => _nwcBatchExport ??= CreateNwcBatchExportIconSet();
         public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
 
         private static IconSet? _footingZones;
@@ -31,6 +32,7 @@ namespace RevitSuite.Host.UI
         private static IconSet? _levelReport;
         private static IconSet? _gridReport;
         private static IconSet? _sharedCoordinatesReport;
+        private static IconSet? _nwcBatchExport;
         private static IconSet? _copyLinkedViews;
 
         private static IconSet CreateFootingZonesIconSet()
@@ -71,6 +73,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0x1D, 0x4F, 0x7A),
                 Color.FromRgb(0x3D, 0xA3, 0xC8),
                 DrawSharedCoordinatesReportContent);
+        }
+
+        private static IconSet CreateNwcBatchExportIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x23, 0x3A, 0x4E),
+                Color.FromRgb(0x3B, 0x68, 0x8F),
+                DrawNwcBatchExportContent);
         }
 
         private static IconSet CreateCopyLinkedViewsIconSet()
@@ -331,6 +341,72 @@ namespace RevitSuite.Host.UI
             tickPen.Freeze();
             dc.DrawLine(tickPen, new Point(center.X, height * 0.34), new Point(center.X + min * 0.14, height * 0.34));
             dc.DrawLine(tickPen, new Point(width * 0.30, center.Y), new Point(width * 0.30, center.Y - min * 0.14));
+        }
+
+        private static void DrawNwcBatchExportContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+            var gridBrush = new SolidColorBrush(Color.FromArgb(140, 255, 255, 255));
+            gridBrush.Freeze();
+            var gridPen = new Pen(new SolidColorBrush(Color.FromArgb(210, 255, 255, 255)), min * 0.05)
+            {
+                DashStyle = new DashStyle(new[] { 1.0, 1.2 }, 0)
+            };
+            gridPen.Freeze();
+
+            for (var i = 0; i < 4; i++)
+            {
+                var offset = width * (0.24 + i * 0.18);
+                dc.DrawLine(gridPen, new Point(offset, height * 0.28), new Point(offset, height * 0.74));
+            }
+
+            for (var i = 0; i < 4; i++)
+            {
+                var offset = height * (0.28 + i * 0.18);
+                dc.DrawLine(gridPen, new Point(width * 0.24, offset), new Point(width * 0.76, offset));
+            }
+
+            var cubeBrush = new SolidColorBrush(Color.FromArgb(220, 255, 255, 255));
+            cubeBrush.Freeze();
+            var cubePen = new Pen(new SolidColorBrush(Color.FromArgb(230, 35, 56, 79)), min * 0.05);
+            cubePen.Freeze();
+
+            var baseRect = new Rect(width * 0.36, height * 0.40, width * 0.32, height * 0.24);
+            dc.DrawRoundedRectangle(cubeBrush, cubePen, baseRect, min * 0.08, min * 0.08);
+
+            var topRect = new Rect(width * 0.30, height * 0.32, width * 0.32, height * 0.24);
+            dc.PushOpacity(0.85);
+            dc.DrawRoundedRectangle(cubeBrush, cubePen, topRect, min * 0.08, min * 0.08);
+            dc.Pop();
+
+            var arrowPen = new Pen(new SolidColorBrush(Color.FromRgb(255, 214, 94)), min * 0.09)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            arrowPen.Freeze();
+
+            var arrowStart = new Point(width * 0.28, height * 0.76);
+            var arrowEnd = new Point(width * 0.72, height * 0.76);
+            dc.DrawLine(arrowPen, arrowStart, arrowEnd);
+
+            var arrowHead = new StreamGeometry();
+            using (var ctx = arrowHead.Open())
+            {
+                ctx.BeginFigure(new Point(width * 0.72, height * 0.76), true, true);
+                ctx.LineTo(new Point(width * 0.66, height * 0.70), true, false);
+                ctx.LineTo(new Point(width * 0.66, height * 0.82), true, false);
+            }
+            arrowHead.Freeze();
+            var arrowFill = new SolidColorBrush(Color.FromRgb(255, 214, 94));
+            arrowFill.Freeze();
+            dc.DrawGeometry(arrowFill, null, arrowHead);
+
+            var dotBrush = new SolidColorBrush(Color.FromRgb(96, 205, 255));
+            dotBrush.Freeze();
+            var dotRadius = min * 0.05;
+            dc.DrawEllipse(dotBrush, null, new Point(width * 0.36, height * 0.76), dotRadius, dotRadius);
+            dc.DrawEllipse(dotBrush, null, new Point(width * 0.52, height * 0.76), dotRadius, dotRadius);
         }
 
         private static void DrawCopyLinkedViewsContent(DrawingContext dc, double width, double height)
