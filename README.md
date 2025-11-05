@@ -52,8 +52,11 @@ Schema-driven commands (Footing Zones, Level Report, Grid Report, Shared Coordin
 # Deploy to Revit (installs to %APPDATA%\Autodesk\Revit\Addins\2025)
 .\deploy.ps1
 
-# For different Revit version:
+# For different Revit version (auto-resolves API dir if using the default install path):
 .\deploy.ps1 -RevitYear 2024
+
+# Explicit API folder (when Revit lives in a custom location):
+.\deploy.ps1 -RevitYear 2024 -ApiDir "D:\Apps\Autodesk\Revit 2024"
 ```
 
 ---
@@ -62,8 +65,8 @@ Schema-driven commands (Footing Zones, Level Report, Grid Report, Shared Coordin
 
 | Command | What it does |
 |---------|--------------|
-| `.\build\scripts\build.ps1` | **Build only** - compiles to `bin/Release/net48/` (works while Revit running) |
-| `.\deploy.ps1` | **Build + Deploy** - compiles and installs to Revit Addins folder |
+| `.\build\scripts\build.ps1 [-RevitYear ####] [-ApiDir path]` | **Build only** - compiles to `bin/Release/net48/`. Supplying a year/path sets `REVIT_API_DIR` before building. |
+| `.\deploy.ps1 [-RevitYear ####] [-ApiDir path]` | **Build + Deploy** - builds with the resolved API directory and installs to the appropriate Revit Addins folder. |
 
 ## Workflow
 
@@ -76,7 +79,7 @@ Schema-driven commands (Footing Zones, Level Report, Grid Report, Shared Coordin
 6. Test immediately ✓
 
 ### For Production
-1. Run: `.\deploy.ps1`
+1. Run: `.\deploy.ps1 [-RevitYear ####]`
 2. Restart Revit
 3. Add-in loads automatically ✓
 
