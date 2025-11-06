@@ -12,6 +12,11 @@ namespace RevitSuite.Host.Commands
     [Transaction(TransactionMode.Manual)]
     public class CopyLinkedViewsCommand : IExternalCommand
     {
+        private static readonly char[] InvalidNameCharacters = new[]
+        {
+            '\\', '/', ':', ';', '|', ',', '[', ']', '{', '}', '<', '>', '?', '"'
+        };
+
         private static readonly HashSet<ViewType> SupportedViewTypes = new HashSet<ViewType>
         {
             ViewType.FloorPlan,
@@ -170,16 +175,17 @@ namespace RevitSuite.Host.Commands
 
         private static string? GetSyntheticViewSetKey(View view)
         {
-            if (view.ViewType != ViewType.ThreeD)
-            {
-                return null;
-            }
-
             foreach (Parameter parameter in view.Parameters)
             {
                 if (!parameter.HasValue ||
-                    parameter.StorageType != StorageType.String ||
-                    !parameter.Definition.Name.Equals("Type", StringComparison.OrdinalIgnoreCase))
+                    parameter.StorageType != StorageType.String)
+                {
+                    continue;
+                }
+
+                var definitionName = parameter.Definition?.Name;
+                if (string.IsNullOrWhiteSpace(definitionName) ||
+                    !definitionName.Equals("Type", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -279,12 +285,12 @@ namespace RevitSuite.Host.Commands
                     continue;
                 }
 
-                var baseName = group.Key;
-                var displayName = $"Type: {baseName}";
+                var baseName = SanitizeName(group.Key);
+                var displayName = $"Type - {baseName}";
                 var suffix = 2;
                 while (existingNames.Contains(displayName))
                 {
-                    displayName = $"Type: {baseName} ({suffix})";
+                    displayName = $"Type - {baseName} ({suffix})";
                     suffix++;
                 }
 
@@ -662,14 +668,17 @@ namespace RevitSuite.Host.Commands
 
         private static View? FindHostViewByName(Document hostDocument, string name)
         {
+            var sanitizedName = SanitizeName(name);
             return new FilteredElementCollector(hostDocument)
                 .OfClass(typeof(View))
                 .Cast<View>()
-                .FirstOrDefault(view => !view.IsTemplate && view.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(view => !view.IsTemplate && view.Name.Equals(sanitizedName, StringComparison.OrdinalIgnoreCase));
         }
 
         private static string BuildUniqueName(string baseName, ISet<string> usedNames)
         {
+            baseName = SanitizeName(baseName);
+
             if (!usedNames.Contains(baseName))
             {
                 usedNames.Add(baseName);
@@ -741,6 +750,22 @@ namespace RevitSuite.Host.Commands
             {
                 return obj.Value.GetHashCode();
             }
+        }
+
+        private static string SanitizeName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "Untitled";
+            }
+
+            var sanitized = value.Trim();
+            foreach (var ch in InvalidNameCharacters)
+            {
+                sanitized = sanitized.Replace(ch, '_');
+            }
+
+            return sanitized;
         }
 
     }
