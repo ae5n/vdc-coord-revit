@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
@@ -40,17 +41,37 @@ namespace RevitSuite.Host.Commands
 
                 var doc = uiDoc.Document;
 
-                var slabs = parameters.PromptForSlabs
-                    ? PromptForSlabs(uiDoc, "Select slabs/floors to include (Esc to finish).")
-                    : new List<Element>();
+                var slabs = new List<Element>();
+                if (parameters.PromptForSlabs)
+                {
+                    TaskDialog.Show("RevitSuite", "Select slabs or floors to include and press Finish or Esc when done.");
+                    slabs = PromptForSlabs(uiDoc, "Select slabs/floors to include (Esc to finish).");
+                }
 
-                var footings = parameters.IncludeFootings
-                    ? new FilteredElementCollector(doc)
-                        .OfCategory(BuiltInCategory.OST_StructuralFoundation)
-                        .WhereElementIsNotElementType()
-                        .OfType<FamilyInstance>()
-                        .ToList()
-                    : new List<FamilyInstance>();
+                var footingMap = new Dictionary<int, FamilyInstance>();
+
+                if (parameters.IncludeFootings)
+                {
+                    foreach (var footing in new FilteredElementCollector(doc)
+                                 .OfCategory(BuiltInCategory.OST_StructuralFoundation)
+                                 .WhereElementIsNotElementType()
+                                 .OfType<FamilyInstance>())
+                    {
+                        footingMap[footing.Id.IntegerValue] = footing;
+                    }
+                }
+
+                if (parameters.PromptForFootings)
+                {
+                    TaskDialog.Show("RevitSuite", "Select foundations to include and press Finish or Esc when done.");
+                    var manualFootings = PromptForFootings(uiDoc, "Select foundations to include (Esc to finish).");
+                    foreach (var footing in manualFootings)
+                    {
+                        footingMap[footing.Id.IntegerValue] = footing;
+                    }
+                }
+
+                var footings = footingMap.Values.ToList();
 
                 if (footings.Count == 0 && slabs.Count == 0)
                 {
@@ -91,6 +112,23 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var summary = $"Created {createdFootingZones.Count} footing zone(s) and {createdSlabZones.Count} slab zone(s).";
+                if (parameters.IncludeFootings && parameters.PromptForFootings)
+                {
+                    summary += "\nFoundations were auto-detected and any manually selected foundations were merged.";
+                }
+                else if (parameters.PromptForFootings)
+                {
+                    summary += "\nFoundations were selected manually.";
+                }
+                else if (parameters.IncludeFootings)
+                {
+                    summary += "\nFoundations were auto-detected.";
+                }
+
+                if (parameters.PromptForSlabs)
+                {
+                    summary += "\nSlabs/Floors were selected manually.";
+                }
                 if (skippedElements.Count > 0)
                 {
                     summary += $"\nSkipped {skippedElements.Count} element(s).";
@@ -121,6 +159,7 @@ namespace RevitSuite.Host.Commands
                 defaults.VerticalOffset,
                 defaults.Transparency,
                 defaults.IncludeFootings,
+                defaults.PromptForFootings,
                 defaults.PromptForSlabs);
 
             var owner = new RevitWindow(application.MainWindowHandle);
@@ -149,6 +188,28 @@ namespace RevitSuite.Host.Commands
             }
 
             return slabs;
+        }
+
+        private static List<FamilyInstance> PromptForFootings(UIDocument uiDoc, string prompt)
+        {
+            var footings = new List<FamilyInstance>();
+            try
+            {
+                var references = uiDoc.Selection.PickObjects(ObjectType.Element, new FootingSelectionFilter(), prompt);
+                foreach (var reference in references)
+                {
+                    if (uiDoc.Document.GetElement(reference) is FamilyInstance footing)
+                    {
+                        footings.Add(footing);
+                    }
+                }
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+            {
+                // User cancelled selection; that's acceptable.
+            }
+
+            return footings;
         }
 
         private static bool TryCreateFootingZone(
@@ -188,6 +249,9 @@ namespace RevitSuite.Host.Commands
                 .Multiply(Transform.CreateRotation(XYZ.BasisZ, rotation));
 
             var directShape = DirectShape.CreateElement(doc, categoryId);
+            directShape.Name = $"Zone of Influence - {footing.Name}";
+            directShape.ApplicationId = "RevitSuite.ZoneOfInfluence";
+            directShape.ApplicationDataId = footing.UniqueId;
             if (solid != null)
             {
                 var transformed = SolidUtils.CreateTransformed(solid, transform);
@@ -204,7 +268,8 @@ namespace RevitSuite.Host.Commands
                 directShape.SetShape(geometry);
             }
 
-            SetComments(directShape, "Footing Influence (transparent)");
+            var comment = $"Zone of Influence for {footing.Name}";
+            SetInstanceParameters(directShape, comment, directShape.Id.IntegerValue, footing.Id.IntegerValue, footing.UniqueId);
             created.Add(directShape.Id);
             return true;
         }
@@ -245,6 +310,9 @@ namespace RevitSuite.Host.Commands
             var transform = Transform.CreateTranslation(center);
 
             var directShape = DirectShape.CreateElement(doc, categoryId);
+            directShape.Name = $"Zone of Influence - {slab.Name}";
+            directShape.ApplicationId = "RevitSuite.ZoneOfInfluence";
+            directShape.ApplicationDataId = slab.UniqueId;
             if (solid != null)
             {
                 var transformed = SolidUtils.CreateTransformed(solid, transform);
@@ -261,7 +329,8 @@ namespace RevitSuite.Host.Commands
                 directShape.SetShape(geometry);
             }
 
-            SetComments(directShape, "Slab Influence (transparent, bbox)");
+            var comment = $"Zone of Influence for {slab.Name}";
+            SetInstanceParameters(directShape, comment, directShape.Id.IntegerValue, slab.Id.IntegerValue, slab.UniqueId);
             created.Add(directShape.Id);
             return true;
         }
@@ -503,6 +572,36 @@ namespace RevitSuite.Host.Commands
             }
         }
 
+        private static void SetInstanceParameters(Element element, string description, int zoneElementId, int sourceElementId, string sourceUniqueId)
+        {
+            var commentsText = $"{description} | Source Element Id {sourceElementId} | Source UniqueId {sourceUniqueId}";
+            SetComments(element, commentsText);
+            SetParameterValue(element, BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS, () => commentsText);
+            SetParameterValue(element, BuiltInParameter.ALL_MODEL_MARK, () => zoneElementId.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static void SetParameterValue(Element element, BuiltInParameter parameterId, Func<string> valueFactory)
+        {
+            try
+            {
+                var parameter = element.get_Parameter(parameterId);
+                if (parameter == null || parameter.IsReadOnly || parameter.StorageType != StorageType.String)
+                {
+                    return;
+                }
+
+                var value = valueFactory();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    parameter.Set(value);
+                }
+            }
+            catch
+            {
+                // Ignore parameter copy failures.
+            }
+        }
+
     private class FloorSelectionFilter : ISelectionFilter
     {
         public bool AllowElement(Element elem)
@@ -514,6 +613,30 @@ namespace RevitSuite.Host.Commands
 
                 return elem.Category != null &&
                        elem.Category.Id.Value == (int)BuiltInCategory.OST_Floors;
+        }
+
+        public bool AllowReference(Reference reference, XYZ position) => false;
+    }
+
+    private class FootingSelectionFilter : ISelectionFilter
+    {
+        public bool AllowElement(Element elem)
+        {
+            if (elem is FamilyInstance instance &&
+                instance.Category != null &&
+                instance.Category.Id.IntegerValue == (int)BuiltInCategory.OST_StructuralFoundation)
+            {
+                return true;
+            }
+
+            if (elem is Floor floor &&
+                floor.Category != null &&
+                floor.Category.Id.IntegerValue == (int)BuiltInCategory.OST_StructuralFoundation)
+            {
+                return true;
+            }
+
+            return false;
         }
 
         public bool AllowReference(Reference reference, XYZ position) => false;

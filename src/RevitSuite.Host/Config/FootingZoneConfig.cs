@@ -9,6 +9,7 @@ namespace RevitSuite.Host.Config
         public double VerticalOffset { get; }
         public int Transparency { get; }
         public bool IncludeFootings { get; }
+        public bool PromptForFootings { get; }
         public bool PromptForSlabs { get; }
 
         private FootingZoneConfig(
@@ -17,6 +18,7 @@ namespace RevitSuite.Host.Config
             double verticalOffset,
             int transparency,
             bool includeFootings,
+            bool promptForFootings,
             bool promptForSlabs)
         {
             ClearDepth = clearDepth;
@@ -24,6 +26,7 @@ namespace RevitSuite.Host.Config
             VerticalOffset = verticalOffset;
             Transparency = transparency;
             IncludeFootings = includeFootings;
+            PromptForFootings = promptForFootings;
             PromptForSlabs = promptForSlabs;
         }
 
@@ -36,6 +39,7 @@ namespace RevitSuite.Host.Config
             var verticalOffset = SchemaDefaults.GetDouble(properties, "verticalOffset", 0.0);
             var transparency = Math.Max(0, Math.Min(100, SchemaDefaults.GetInt(properties, "transparency", 50)));
             var includeFootings = SchemaDefaults.GetBool(properties, "includeFootings", true);
+            var promptForFootings = SchemaDefaults.GetBool(properties, "promptForFootings", false);
             var promptForSlabs = SchemaDefaults.GetBool(properties, "promptForSlabs", false);
 
             return new FootingZoneConfig(
@@ -44,6 +48,7 @@ namespace RevitSuite.Host.Config
                 verticalOffset,
                 transparency,
                 includeFootings,
+                promptForFootings,
                 promptForSlabs);
         }
     }

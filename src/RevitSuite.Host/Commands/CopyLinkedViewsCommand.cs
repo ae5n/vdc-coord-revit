@@ -549,7 +549,14 @@ namespace RevitSuite.Host.Commands
             SetParameterValue(targetView, BuiltInParameter.VIEW_DISCIPLINE, () => sourceView.get_Parameter(BuiltInParameter.VIEW_DISCIPLINE)?.AsInteger());
             SetParameterValue(targetView, BuiltInParameter.VIEW_SCALE, () => sourceView.Scale);
 
-            targetView.DisplayStyle = sourceView.DisplayStyle;
+            try
+            {
+                targetView.DisplayStyle = sourceView.DisplayStyle;
+            }
+            catch
+            {
+                // Some plan types lock display style (e.g., ceiling plans with templates). Ignore if read-only.
+            }
             targetView.PartsVisibility = sourceView.PartsVisibility;
 
             try

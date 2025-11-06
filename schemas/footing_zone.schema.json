@@ -33,6 +33,11 @@
       "default": true,
       "description": "Whether to automatically include all structural foundations in the active document."
     },
+    "promptForFootings": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to prompt the user to manually select additional structural foundations."
+    },
     "promptForSlabs": {
       "type": "boolean",
       "default": false,

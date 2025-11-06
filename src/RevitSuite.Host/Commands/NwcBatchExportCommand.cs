@@ -191,8 +191,16 @@ namespace RevitSuite.Host.Commands
                     else
                     {
                         failed.Add(new ExportResult(view, fullPath, 0));
-                        LogManager.Warn(correlationId, $"Export failed for view '{view.Name}' (file missing or export returned false).");
+                        LogManager.Warn(correlationId, $"Export failed for view '{view.Name}' (file missing after export).");
                     }
+                }
+                catch (Autodesk.Revit.Exceptions.OptionalFunctionalityNotAvailableException ex)
+                {
+                    failed.Add(new ExportResult(view, string.Empty, 0));
+                    var message = "Navisworks Exporter is not available in this Revit installation.";
+                    LogManager.Error(correlationId, message, ex);
+                    TaskDialog.Show("RevitSuite - NWC Export", message);
+                    break;
                 }
                 catch (Exception ex)
                 {

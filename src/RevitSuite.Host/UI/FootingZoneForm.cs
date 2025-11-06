@@ -11,8 +11,26 @@ namespace RevitSuite.Host.UI
         private readonly TextBox _slopeRatioBox = new TextBox();
         private readonly TextBox _offsetBox = new TextBox();
         private readonly TextBox _transparencyBox = new TextBox();
-        private readonly CheckBox _includeFootingsCheck = new CheckBox { Text = "Include structural foundations" };
-        private readonly CheckBox _includeSlabsCheck = new CheckBox { Text = "Prompt to select slabs/floors" };
+        private readonly CheckBox _includeFootingsCheck = new CheckBox
+        {
+            Text = "Automatically include all structural foundations",
+            AutoSize = true,
+            MaximumSize = new Size(360, 0)
+        };
+
+        private readonly CheckBox _promptFootingsCheck = new CheckBox
+        {
+            Text = "Prompt to select foundations manually",
+            AutoSize = true,
+            MaximumSize = new Size(360, 0)
+        };
+
+        private readonly CheckBox _includeSlabsCheck = new CheckBox
+        {
+            Text = "Prompt to select slabs/floors manually",
+            AutoSize = true,
+            MaximumSize = new Size(360, 0)
+        };
         private readonly Button _okButton = new Button { Text = "OK", Width = 90 };
         private readonly Button _cancelButton = new Button { Text = "Cancel", Width = 90 };
 
@@ -31,29 +49,23 @@ namespace RevitSuite.Host.UI
             AutoSize = true;
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
-            var layout = new TableLayoutPanel
+            var numericLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 6,
+                RowCount = 4,
                 AutoSize = true
             };
 
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+            numericLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+            numericLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
 
-            AddLabeledRow(layout, "Clear depth (ft):", _clearDepthBox, 0);
-            AddLabeledRow(layout, "Slope ratio (h/v):", _slopeRatioBox, 1);
-            AddLabeledRow(layout, "Vertical offset (ft):", _offsetBox, 2);
-            AddLabeledRow(layout, "Transparency (0-100):", _transparencyBox, 3);
+            AddLabeledRow(numericLayout, "Clear depth (ft):", _clearDepthBox, 0);
+            AddLabeledRow(numericLayout, "Slope ratio (h/v):", _slopeRatioBox, 1);
+            AddLabeledRow(numericLayout, "Vertical offset (ft):", _offsetBox, 2);
+            AddLabeledRow(numericLayout, "Transparency (0-100):", _transparencyBox, 3);
 
-            _includeFootingsCheck.Margin = new Padding(0, 6, 0, 0);
-            layout.Controls.Add(_includeFootingsCheck, 0, 4);
-            layout.SetColumnSpan(_includeFootingsCheck, 2);
-
-            _includeSlabsCheck.Margin = new Padding(0, 6, 0, 0);
-            layout.Controls.Add(_includeSlabsCheck, 0, 5);
-            layout.SetColumnSpan(_includeSlabsCheck, 2);
+            var selectionGroup = BuildSelectionGroup();
 
             var buttonPanel = new FlowLayoutPanel
             {
@@ -76,26 +88,29 @@ namespace RevitSuite.Host.UI
             var container = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                RowCount = 2,
+                RowCount = 3,
                 ColumnCount = 1,
                 AutoSize = true
             };
             container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            container.Controls.Add(layout, 0, 0);
-            container.Controls.Add(buttonPanel, 0, 1);
+            container.Controls.Add(numericLayout, 0, 0);
+            container.Controls.Add(selectionGroup, 0, 1);
+            container.Controls.Add(buttonPanel, 0, 2);
 
             Controls.Add(container);
         }
 
-        public void SetDefaults(double clearDepth, double slopeRatio, double offset, int transparency, bool includeFootings, bool includeSlabs)
+        public void SetDefaults(double clearDepth, double slopeRatio, double offset, int transparency, bool includeFootings, bool promptForFootings, bool includeSlabs)
         {
             _clearDepthBox.Text = clearDepth.ToString(CultureInfo.InvariantCulture);
             _slopeRatioBox.Text = slopeRatio.ToString(CultureInfo.InvariantCulture);
             _offsetBox.Text = offset.ToString(CultureInfo.InvariantCulture);
             _transparencyBox.Text = transparency.ToString(CultureInfo.InvariantCulture);
             _includeFootingsCheck.Checked = includeFootings;
+            _promptFootingsCheck.Checked = promptForFootings;
             _includeSlabsCheck.Checked = includeSlabs;
         }
 
@@ -154,8 +169,46 @@ namespace RevitSuite.Host.UI
                 VerticalOffset = offset,
                 Transparency = transparency,
                 IncludeFootings = _includeFootingsCheck.Checked,
+                PromptForFootings = _promptFootingsCheck.Checked,
                 PromptForSlabs = _includeSlabsCheck.Checked
             };
+        }
+
+        private GroupBox BuildSelectionGroup()
+        {
+            var group = new GroupBox
+            {
+                Text = "Element Selection",
+                Dock = DockStyle.Fill,
+                AutoSize = true
+            };
+
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                AutoSize = true
+            };
+
+            var infoLabel = new Label
+            {
+                Text = "Choose how foundations and slabs are gathered. Manual prompts let you pick additional elements after closing this dialog.",
+                AutoSize = true,
+                MaximumSize = new Size(360, 0),
+                Margin = new Padding(10, 8, 10, 4)
+            };
+
+            _includeFootingsCheck.Margin = new Padding(12, 6, 10, 0);
+            _promptFootingsCheck.Margin = new Padding(12, 2, 10, 0);
+            _includeSlabsCheck.Margin = new Padding(12, 2, 10, 10);
+
+            layout.Controls.Add(infoLabel);
+            layout.Controls.Add(_includeFootingsCheck);
+            layout.Controls.Add(_promptFootingsCheck);
+            layout.Controls.Add(_includeSlabsCheck);
+
+            group.Controls.Add(layout);
+            return group;
         }
 
         private static bool TryParseDouble(string text, out double value, double minimum)
@@ -197,6 +250,7 @@ namespace RevitSuite.Host.UI
         public double VerticalOffset { get; set; }
         public int Transparency { get; set; }
         public bool IncludeFootings { get; set; }
+        public bool PromptForFootings { get; set; }
         public bool PromptForSlabs { get; set; }
     }
 }
