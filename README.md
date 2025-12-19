@@ -1,4 +1,4 @@
-# Revit Suite
+# VDC Coordination Revit Add-in
 
 Schema-driven Revit automation hosted entirely inside a single C# add-in. The repository contains the host project, shared configuration schemas, and tooling for build/install.
 
