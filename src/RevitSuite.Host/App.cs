@@ -39,6 +39,19 @@ namespace RevitSuite.Host
                     });
                 ApplyIcons(footingZoneButton, RibbonIconFactory.FootingZones);
 
+                var qaqcButton = AddButton(
+                    automationPanel,
+                    new PushButtonData(
+                        "RevitSuite_QAQC",
+                        "QA/QC",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.QaqcCommand")
+                    {
+                        ToolTip = "QA/QC - Verify field survey measurements against model coordinates.",
+                        LongDescription = "Export control points to CSV template, import field data from layout team, calculate deviations, and visualize results with color-coding and deviation indicators."
+                    });
+                ApplyIcons(qaqcButton, RibbonIconFactory.QAQC);
+
                 var reportsDropdown = AddPulldownButton(
                     reportsPanel,
                     new PulldownButtonData("RevitSuite_ModelReports", "Model Reports")

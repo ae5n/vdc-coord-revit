@@ -1,0 +1,170 @@
+{
+  "$id": "https://revit-suite/schemas/qaqc.schema.json",
+  "title": "QaqcConfig",
+  "x-version": "2.0.0",
+  "type": "object",
+  "properties": {
+    "defaults": {
+      "type": "object",
+      "description": "Default settings applied to all categories unless overridden.",
+      "properties": {
+        "toleranceGreen": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.01,
+          "description": "Maximum deviation (ft) for green status. Default: 0.01 ft ≈ 1/8 inch."
+        },
+        "toleranceYellow": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.05,
+          "description": "Maximum deviation (ft) for yellow status. Default: 0.05 ft ≈ 5/8 inch."
+        },
+        "comparisonMethod": {
+          "type": "string",
+          "enum": ["horizontal", "vertical", "total"],
+          "default": "horizontal",
+          "description": "How to calculate deviation: 'horizontal' (E/N only), 'vertical' (elevation only), or 'total' (3D distance)."
+        },
+        "coordinatePrecision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6,
+          "default": 3,
+          "description": "Decimal places for coordinate values in CSV export."
+        },
+        "visualizationTransparency": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 50,
+          "description": "Transparency percentage for deviation indicator DirectShapes."
+        },
+        "createDeviationArrows": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to create 3D arrow DirectShapes showing deviation vectors."
+        },
+        "arrowScaleFactor": {
+          "type": "number",
+          "minimum": 1.0,
+          "default": 10.0,
+          "description": "Scale factor to exaggerate deviation arrows for visibility."
+        }
+      }
+    },
+    "categories": {
+      "type": "object",
+      "description": "Category-specific overrides. Each category can override any default setting.",
+      "properties": {
+        "Footings": {
+          "type": "object",
+          "description": "Settings specific to structural footings.",
+          "properties": {
+            "toleranceGreen": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.01,
+              "description": "Footings: Maximum deviation (ft) for green status."
+            },
+            "toleranceYellow": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.05,
+              "description": "Footings: Maximum deviation (ft) for yellow status."
+            },
+            "comparisonMethod": {
+              "type": "string",
+              "enum": ["horizontal", "vertical", "total"],
+              "default": "horizontal",
+              "description": "Footings: Use horizontal deviation (Easting/Northing only)."
+            }
+          }
+        },
+        "Columns": {
+          "type": "object",
+          "description": "Settings specific to structural columns.",
+          "properties": {
+            "toleranceGreen": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.005,
+              "description": "Columns: Maximum deviation (ft) for green status. Tighter tolerance: 0.005 ft ≈ 1/16 inch."
+            },
+            "toleranceYellow": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.02,
+              "description": "Columns: Maximum deviation (ft) for yellow status."
+            },
+            "comparisonMethod": {
+              "type": "string",
+              "enum": ["horizontal", "vertical", "total"],
+              "default": "total",
+              "description": "Columns: Use total 3D deviation (Easting, Northing, and Elevation)."
+            }
+          }
+        },
+        "Walls": {
+          "type": "object",
+          "description": "Settings specific to walls.",
+          "properties": {
+            "toleranceGreen": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.01,
+              "description": "Walls: Maximum deviation (ft) for green status."
+            },
+            "toleranceYellow": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.05,
+              "description": "Walls: Maximum deviation (ft) for yellow status."
+            },
+            "comparisonMethod": {
+              "type": "string",
+              "enum": ["horizontal", "vertical", "total"],
+              "default": "horizontal",
+              "description": "Walls: Use horizontal deviation."
+            }
+          }
+        },
+        "Floor - Slab on Grade": {
+          "type": "object",
+          "description": "Settings specific to slab-on-grade floors.",
+          "properties": {
+            "toleranceGreen": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.01,
+              "description": "Slab on Grade: Maximum deviation (ft) for green status."
+            },
+            "toleranceYellow": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.05,
+              "description": "Slab on Grade: Maximum deviation (ft) for yellow status."
+            },
+            "comparisonMethod": {
+              "type": "string",
+              "enum": ["horizontal", "vertical", "total"],
+              "default": "horizontal",
+              "description": "Slab on Grade: Use horizontal deviation."
+            }
+          }
+        }
+      }
+    },
+    "defaultFamilyName": {
+      "type": "string",
+      "default": "Control Point",
+      "description": "Default family name for control point selection filter."
+    },
+    "defaultTypeName": {
+      "type": "string",
+      "default": "Coordination Point",
+      "description": "Default family type name for control point selection filter."
+    }
+  },
+  "additionalProperties": false
+}

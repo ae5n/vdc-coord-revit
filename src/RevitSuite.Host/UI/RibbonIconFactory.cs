@@ -20,6 +20,7 @@ namespace RevitSuite.Host.UI
         }
 
         public static IconSet FootingZones => _footingZones ??= CreateFootingZonesIconSet();
+        public static IconSet QAQC => _qaqc ??= CreateQaqcIconSet();
         public static IconSet ReportsHub => _reportsHub ??= CreateReportsHubIconSet();
         public static IconSet LevelReport => _levelReport ??= CreateLevelReportIconSet();
         public static IconSet GridReport => _gridReport ??= CreateGridReportIconSet();
@@ -28,6 +29,7 @@ namespace RevitSuite.Host.UI
         public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
 
         private static IconSet? _footingZones;
+        private static IconSet? _qaqc;
         private static IconSet? _reportsHub;
         private static IconSet? _levelReport;
         private static IconSet? _gridReport;
@@ -41,6 +43,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0x1E, 0x6B, 0x5A),
                 Color.FromRgb(0x3C, 0xB1, 0x88),
                 DrawFootingZoneContent);
+        }
+
+        private static IconSet CreateQaqcIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x15, 0x80, 0x3D),
+                Color.FromRgb(0x22, 0xC5, 0x5E),
+                DrawQaqcContent);
         }
 
         private static IconSet CreateReportsHubIconSet()
@@ -453,6 +463,52 @@ namespace RevitSuite.Host.UI
             var arrowFill = new SolidColorBrush(Color.FromRgb(255, 213, 94));
             arrowFill.Freeze();
             dc.DrawGeometry(arrowFill, null, arrowHead);
+        }
+
+        private static void DrawQaqcContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+
+            // Draw circle background for checkmark
+            var circleBrush = new SolidColorBrush(Color.FromArgb(140, 255, 255, 255));
+            circleBrush.Freeze();
+            var circlePen = new Pen(new SolidColorBrush(Color.FromArgb(210, 255, 255, 255)), min * 0.06);
+            circlePen.Freeze();
+            var center = new Point(width * 0.50, height * 0.50);
+            var radius = min * 0.32;
+            dc.DrawEllipse(circleBrush, circlePen, center, radius, radius);
+
+            // Draw checkmark
+            var checkPen = new Pen(new SolidColorBrush(Color.FromArgb(240, 255, 255, 255)), min * 0.14)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round,
+                LineJoin = PenLineJoin.Round
+            };
+            checkPen.Freeze();
+
+            var checkGeometry = new StreamGeometry();
+            using (var ctx = checkGeometry.Open())
+            {
+                ctx.BeginFigure(new Point(width * 0.32, height * 0.50), false, false);
+                ctx.LineTo(new Point(width * 0.44, height * 0.62), true, false);
+                ctx.LineTo(new Point(width * 0.68, height * 0.38), true, false);
+            }
+            checkGeometry.Freeze();
+            dc.DrawGeometry(null, checkPen, checkGeometry);
+
+            // Draw small deviation arrows at corners
+            var arrowPen = new Pen(new SolidColorBrush(Color.FromArgb(180, 255, 213, 94)), min * 0.06)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            arrowPen.Freeze();
+
+            // Top-left arrow
+            dc.DrawLine(arrowPen, new Point(width * 0.20, height * 0.24), new Point(width * 0.28, height * 0.26));
+            // Bottom-right arrow
+            dc.DrawLine(arrowPen, new Point(width * 0.72, height * 0.74), new Point(width * 0.80, height * 0.76));
         }
     }
 }
