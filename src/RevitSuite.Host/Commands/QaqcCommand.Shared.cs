@@ -153,12 +153,23 @@ namespace RevitSuite.Host.Commands
             return geometryList;
         }
 
-        private void CreateDeviationAnnotations(Document doc, List<DeviationResult> deviations, bool includeElevationAnnotations, string correlationId)
+        private void CreateDeviationAnnotations(
+            Document doc,
+            List<DeviationResult> deviations,
+            bool includeHorizontalAnnotations,
+            bool includeElevationAnnotations,
+            string correlationId)
         {
             var view = doc.ActiveView;
             if (view == null || view.ViewType == ViewType.Schedule || view.ViewType == ViewType.Legend || view.ViewType == ViewType.ThreeD)
             {
                 LogManager.Warn(correlationId, "Active view not suitable for text notes - skipping annotations. Use a plan, section, or elevation view.");
+                return;
+            }
+
+            if (!includeHorizontalAnnotations && !includeElevationAnnotations)
+            {
+                LogManager.Info(correlationId, "No annotation components selected (N/E and Elevation both disabled).");
                 return;
             }
 
@@ -241,22 +252,28 @@ namespace RevitSuite.Host.Commands
 
                 try
                 {
-                    // Convert deviations to feet-inches format (Revit standard)
-                    var eastingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationEasting));
-                    var northingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationNorthing));
+                    var annotationLines = new List<string>();
+                    if (includeHorizontalAnnotations)
+                    {
+                        // Convert deviations to feet-inches format (Revit standard)
+                        var eastingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationEasting));
+                        var northingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationNorthing));
 
-                    // Add +/- signs
-                    var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
-                    var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
+                        // Add +/- signs
+                        var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
+                        var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
+                        annotationLines.Add($"E: {eastingSign}{eastingFtIn}");
+                        annotationLines.Add($"N: {northingSign}{northingFtIn}");
+                    }
 
-                    var annotationText = $"E: {eastingSign}{eastingFtIn}\n" +
-                        $"N: {northingSign}{northingFtIn}";
                     if (includeElevationAnnotations)
                     {
                         var elevationFtIn = FormatFeetInches(Math.Abs(deviation.DeviationElevation));
                         var elevationSign = deviation.DeviationElevation >= 0 ? "+" : "-";
-                        annotationText += $"\nZ: {elevationSign}{elevationFtIn}";
+                        annotationLines.Add($"Z: {elevationSign}{elevationFtIn}");
                     }
+
+                    var annotationText = string.Join("\n", annotationLines);
 
                     // Offset annotation point slightly to the right and up from Control Point
                     var annotationPoint = new XYZ(
@@ -557,7 +574,11 @@ namespace RevitSuite.Host.Commands
                     DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
                 };
                 categoryComboBox.Items.AddRange(new object[] { "Footings", "Columns", "Walls", SogCategoryName, ReadyPointsCategoryName });
-                categoryComboBox.SelectedIndex = 0;
+                categoryComboBox.SelectedItem = ReadyPointsCategoryName;
+                if (categoryComboBox.SelectedIndex < 0)
+                {
+                    categoryComboBox.SelectedIndex = 0;
+                }
                 this.Controls.Add(categoryComboBox);
 
                 pourLabel = new System.Windows.Forms.Label
