@@ -115,6 +115,7 @@ namespace RevitSuite.Host.Commands
                 int duplicatesSkipped = 0;
                 int sogPointIndex = 1;
                 var placedLocations = new List<XYZ>(); // Track all placed point locations
+                var placedPointIds = new List<ElementId>();
                 const double minDistance = 0.01; // Minimum distance between points (0.01 ft = ~1/8 inch)
 
                 using (var tx = new Transaction(doc, "RevitSuite: Place Control Points"))
@@ -178,6 +179,7 @@ namespace RevitSuite.Host.Commands
 
                                 var instance = doc.Create.NewFamilyInstance(corner, modelPointSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
                                 placedLocations.Add(corner); // Track this location
+                                placedPointIds.Add(instance.Id);
 
                                 string pointNumber;
                                 string typeName = null;
@@ -264,6 +266,7 @@ namespace RevitSuite.Host.Commands
                             }
                         }
 
+                        ApplyModelPointOverrides(doc, placedPointIds, correlationId);
                         tx.Commit();
                     }
                     catch (Exception ex)
@@ -380,6 +383,7 @@ namespace RevitSuite.Host.Commands
 
                     var createdCount = 0;
                     var updatedCount = 0;
+                    var touchedPointIds = new List<ElementId>();
                     foreach (var record in records)
                     {
                         if (string.IsNullOrWhiteSpace(record.PointNumber) ||
@@ -420,6 +424,7 @@ namespace RevitSuite.Host.Commands
                             SetParameterByGuid(existingInstance, DeviationEastingGuid, 0.0);
                             SetParameterByGuid(existingInstance, DeviationNorthingGuid, 0.0);
                             SetDeviationElevationParameter(existingInstance, 0.0);
+                            touchedPointIds.Add(existingInstance.Id);
                             updatedCount++;
                             continue;
                         }
@@ -435,9 +440,11 @@ namespace RevitSuite.Host.Commands
                         SetParameterByGuid(newInstance, DeviationEastingGuid, 0.0);
                         SetParameterByGuid(newInstance, DeviationNorthingGuid, 0.0);
                         SetDeviationElevationParameter(newInstance, 0.0);
+                        touchedPointIds.Add(newInstance.Id);
                         createdCount++;
                     }
 
+                    ApplyModelPointOverrides(doc, touchedPointIds, correlationId);
                     tx.Commit();
                     LogManager.Info(correlationId, $"Ready points placement completed. Created: {createdCount}, Updated: {updatedCount}.");
                     TaskDialog.Show("RevitSuite", $"Ready points placement completed.\n\nCreated: {createdCount}\nUpdated: {updatedCount}");
@@ -448,6 +455,37 @@ namespace RevitSuite.Host.Commands
                     tx.RollBack();
                     LogManager.Error(correlationId, "Ready points placement failed.", ex);
                     throw;
+                }
+            }
+        }
+
+        private void ApplyModelPointOverrides(Document doc, IEnumerable<ElementId> pointIds, string correlationId)
+        {
+            var view = doc.ActiveView;
+            if (view == null || view.ViewType == ViewType.Schedule)
+            {
+                return;
+            }
+
+            var modelColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+            var overrides = new OverrideGraphicSettings();
+            overrides.SetProjectionLineColor(modelColor);
+            overrides.SetProjectionLineWeight(5);
+
+            foreach (var pointId in pointIds.Distinct())
+            {
+                if (pointId == null || pointId == ElementId.InvalidElementId)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    view.SetElementOverrides(pointId, overrides);
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warn(correlationId, $"Failed to apply model-point override for {pointId.IntegerValue}: {ex.Message}");
                 }
             }
         }

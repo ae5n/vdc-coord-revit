@@ -126,6 +126,7 @@ namespace RevitSuite.Host.Commands
                         UpdateSharedParameters(doc, deviations, correlationId);
                         ApplyModelPointType(doc, deviations, config, correlationId);
                         PlaceFieldPoints(doc, deviations, config, correlationId);
+                        ApplyGraphicOverrides(doc, deviations, config, correlationId);
                         // CreateDeviationLines(doc, deviations, correlationId); // Temporarily disabled for performance
                         if (config.CreateDeviationArrows)
                         {
@@ -863,10 +864,10 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            var greenColor = new Autodesk.Revit.DB.Color(34, 197, 94);
-            var blueColor = new Autodesk.Revit.DB.Color(59, 130, 246);
-            var yellowColor = new Autodesk.Revit.DB.Color(234, 179, 8);
-            var redColor = new Autodesk.Revit.DB.Color(239, 68, 68);
+            var modelColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+            var verifiedColor = new Autodesk.Revit.DB.Color(59, 130, 246);
+            var deviationColor = new Autodesk.Revit.DB.Color(249, 115, 22);
+            var criticalColor = new Autodesk.Revit.DB.Color(239, 68, 68);
 
             // Build dictionary of field points by Point Number for fast lookup
             var fieldPointsDict = new Dictionary<string, ElementId>(StringComparer.OrdinalIgnoreCase);
@@ -874,7 +875,9 @@ namespace RevitSuite.Host.Commands
                 .OfCategory(BuiltInCategory.OST_Site)
                 .WhereElementIsNotElementType()
                 .OfType<FamilyInstance>()
-                .Where(fi => fi.Symbol?.Name == "Field")
+                .Where(fi =>
+                    fi.Symbol?.Family?.Name == config.DefaultFamilyName &&
+                    (fi.Symbol?.Name == "Verified" || fi.Symbol?.Name == "Deviation" || fi.Symbol?.Name == "Critical" || fi.Symbol?.Name == "Field"))
                 .ToList();
 
             foreach (var fp in fieldPoints)
@@ -890,18 +893,17 @@ namespace RevitSuite.Host.Commands
 
             foreach (var deviation in deviations)
             {
-                var color = deviation.Status switch
+                var asBuiltColor = deviation.Status switch
                 {
-                    ToleranceStatus.Green => greenColor,
-                    ToleranceStatus.Blue => blueColor,
-                    ToleranceStatus.Yellow => yellowColor,
-                    ToleranceStatus.Red => redColor,
-                    _ => greenColor
+                    ToleranceStatus.Blue => verifiedColor,
+                    ToleranceStatus.Yellow => deviationColor,
+                    ToleranceStatus.Red => criticalColor,
+                    _ => modelColor
                 };
 
-                var overrides = new OverrideGraphicSettings();
-                overrides.SetProjectionLineColor(color);
-                overrides.SetProjectionLineWeight(5);
+                var modelOverrides = new OverrideGraphicSettings();
+                modelOverrides.SetProjectionLineColor(modelColor);
+                modelOverrides.SetProjectionLineWeight(5);
 
                 // Apply to model point
                 var modelElement = doc.GetElement(deviation.ElementId);
@@ -909,7 +911,7 @@ namespace RevitSuite.Host.Commands
                 {
                     try
                     {
-                        view.SetElementOverrides(modelElement.Id, overrides);
+                        view.SetElementOverrides(modelElement.Id, modelOverrides);
                     }
                     catch (Exception ex)
                     {
@@ -920,9 +922,13 @@ namespace RevitSuite.Host.Commands
                 // Apply to corresponding field point using fast dictionary lookup
                 if (fieldPointsDict.TryGetValue(deviation.PointNumber, out var fieldPointId))
                 {
+                    var fieldOverrides = new OverrideGraphicSettings();
+                    fieldOverrides.SetProjectionLineColor(asBuiltColor);
+                    fieldOverrides.SetProjectionLineWeight(5);
+
                     try
                     {
-                        view.SetElementOverrides(fieldPointId, overrides);
+                        view.SetElementOverrides(fieldPointId, fieldOverrides);
                     }
                     catch (Exception ex)
                     {

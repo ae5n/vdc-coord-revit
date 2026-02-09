@@ -285,11 +285,35 @@ namespace RevitSuite.Host.Commands
 
                     if (textNote != null)
                     {
+                        var annotationColor = deviation.Status switch
+                        {
+                            ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(59, 130, 246),   // Verified
+                            ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
+                            ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
+                            _ => new Autodesk.Revit.DB.Color(34, 197, 94)                         // Model/default
+                        };
+
+                        var annotationOverrides = new OverrideGraphicSettings();
+                        annotationOverrides.SetProjectionLineColor(annotationColor);
+                        annotationOverrides.SetProjectionLineWeight(3);
+                        try
+                        {
+                            view.SetElementOverrides(textNote.Id, annotationOverrides);
+                        }
+                        catch
+                        {
+                            // If text-note override fails in this view type, keep annotation creation.
+                        }
+
                         // Create a detail line from annotation to model point as a leader
                         try
                         {
                             var leaderLine = Line.CreateBound(annotationPoint, deviation.ModelPoint);
-                            doc.Create.NewDetailCurve(view, leaderLine);
+                            var leaderCurve = doc.Create.NewDetailCurve(view, leaderLine);
+                            if (leaderCurve != null)
+                            {
+                                view.SetElementOverrides(leaderCurve.Id, annotationOverrides);
+                            }
                         }
                         catch
                         {
