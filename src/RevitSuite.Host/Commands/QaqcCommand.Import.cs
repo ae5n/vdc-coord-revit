@@ -22,8 +22,10 @@ namespace RevitSuite.Host.Commands
             Document doc,
             QaqcConfig config,
             string category,
-            double horizontalThreshold,
-            double elevationThreshold,
+            double horizontalVerifiedThreshold,
+            double horizontalCriticalThreshold,
+            double elevationVerifiedThreshold,
+            double elevationCriticalThreshold,
             bool useHorizontalThreshold,
             bool useElevationThreshold,
             bool useSelectedPointThresholds)
@@ -100,8 +102,10 @@ namespace RevitSuite.Host.Commands
                     config,
                     category,
                     correlationId,
-                    horizontalThreshold,
-                    elevationThreshold,
+                    horizontalVerifiedThreshold,
+                    horizontalCriticalThreshold,
+                    elevationVerifiedThreshold,
+                    elevationCriticalThreshold,
                     useHorizontalThreshold,
                     useElevationThreshold,
                     selectedPointNumbers);
@@ -139,20 +143,22 @@ namespace RevitSuite.Host.Commands
                     }
                 }
 
-                var deviationCount = deviations.Count(d => d.Status == ToleranceStatus.Yellow || d.Status == ToleranceStatus.Green);
+                var verifiedCount = deviations.Count(d => d.Status == ToleranceStatus.Blue);
+                var deviationCount = deviations.Count(d => d.Status == ToleranceStatus.Yellow);
                 var redCount = deviations.Count(d => d.Status == ToleranceStatus.Red);
 
                 LogManager.Info(
                     correlationId,
-                    $"Import completed: {deviations.Count} points analyzed. Deviation: {deviationCount}, Critical: {redCount}. Thresholds => Horizontal({useHorizontalThreshold}): {horizontalThreshold}, Elevation({useElevationThreshold}): {elevationThreshold}");
+                    $"Import completed: {deviations.Count} points analyzed. Verified: {verifiedCount}, Deviation: {deviationCount}, Critical: {redCount}.");
                 TaskDialog.Show("RevitSuite",
                     $"Import successful!\n\n" +
                     $"{deviations.Count} Control Points analyzed:\n" +
+                    $"  Verified (<= verified threshold): {verifiedCount}\n" +
                     $"  Deviation (below threshold): {deviationCount}\n" +
                     $"  Critical (above threshold): {redCount}\n\n" +
                     $"Thresholds used:\n" +
-                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"{horizontalThreshold:F3} ft" : "Disabled")}\n" +
-                    $"  Elevation: {(useElevationThreshold ? $"{elevationThreshold:F3} ft" : "Disabled")}");
+                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"Verified <= {horizontalVerifiedThreshold:F3} ft, Critical > {horizontalCriticalThreshold:F3} ft" : "Disabled")}\n" +
+                    $"  Elevation: {(useElevationThreshold ? $"Verified <= {elevationVerifiedThreshold:F3} ft, Critical > {elevationCriticalThreshold:F3} ft" : "Disabled")}");
 
                 return Result.Succeeded;
             }
@@ -370,8 +376,10 @@ namespace RevitSuite.Host.Commands
             QaqcConfig config,
             string category,
             string correlationId,
-            double horizontalThreshold,
-            double elevationThreshold,
+            double horizontalVerifiedThreshold,
+            double horizontalCriticalThreshold,
+            double elevationVerifiedThreshold,
+            double elevationCriticalThreshold,
             bool useHorizontalThreshold,
             bool useElevationThreshold,
             HashSet<string> selectedPointNumbers)
@@ -382,7 +390,7 @@ namespace RevitSuite.Host.Commands
             var categorySettings = config.GetCategorySettings(category);
             LogManager.Info(
                 correlationId,
-                $"Using {category} settings with UI thresholds: Horizontal({useHorizontalThreshold})={horizontalThreshold}, Elevation({useElevationThreshold})={elevationThreshold}. Schema reference: ToleranceGreen={categorySettings.ToleranceGreen}, ToleranceYellow={categorySettings.ToleranceYellow}, ComparisonMethod={categorySettings.ComparisonMethod}");
+                $"Using {category} settings with UI thresholds: Horizontal({useHorizontalThreshold}) Verified<={horizontalVerifiedThreshold}, Critical>{horizontalCriticalThreshold}; Elevation({useElevationThreshold}) Verified<={elevationVerifiedThreshold}, Critical>{elevationCriticalThreshold}. Schema reference: ToleranceGreen={categorySettings.ToleranceGreen}, ToleranceYellow={categorySettings.ToleranceYellow}, ComparisonMethod={categorySettings.ComparisonMethod}");
 
             // Collect all Control Points from document
             var allControlPoints = new FilteredElementCollector(doc)
@@ -451,10 +459,17 @@ namespace RevitSuite.Host.Commands
                 var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
                 var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
 
-                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalThreshold;
-                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationThreshold;
+                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalCriticalThreshold;
+                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationCriticalThreshold;
                 var isCritical = exceedsHorizontal || exceedsElevation;
-                var status = isCritical ? ToleranceStatus.Red : ToleranceStatus.Yellow;
+
+                var withinHorizontalVerified = !useHorizontalThreshold || horizontalDev <= horizontalVerifiedThreshold;
+                var withinElevationVerified = !useElevationThreshold || Math.Abs(devElevation) <= elevationVerifiedThreshold;
+                var isVerified = (useHorizontalThreshold || useElevationThreshold) && withinHorizontalVerified && withinElevationVerified;
+
+                var status = isCritical
+                    ? ToleranceStatus.Red
+                    : (isVerified ? ToleranceStatus.Blue : ToleranceStatus.Yellow);
 
                 // Get model point location
                 XYZ modelPoint = null;
@@ -641,9 +656,9 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _))
+            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _, out _))
             {
-                LogManager.Warn(correlationId, "Could not ensure Model/Deviation/Critical types; model type assignment skipped.");
+                LogManager.Warn(correlationId, "Could not ensure Model/Verified/Deviation/Critical types; model type assignment skipped.");
                 return;
             }
 
@@ -675,9 +690,9 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out var deviationSymbol, out var criticalSymbol))
+            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out var verifiedSymbol, out var deviationSymbol, out var criticalSymbol))
             {
-                LogManager.Error(correlationId, "Failed to create/find Model/Deviation/Critical types for Control Point family.");
+                LogManager.Error(correlationId, "Failed to create/find Model/Verified/Deviation/Critical types for Control Point family.");
                 return;
             }
 
@@ -689,6 +704,7 @@ namespace RevitSuite.Host.Commands
                 .OfType<FamilyInstance>()
                 .Where(fi =>
                     fi.Symbol?.Name == "Field" ||
+                    fi.Symbol?.Name == "Verified" ||
                     fi.Symbol?.Name == "Deviation" ||
                     fi.Symbol?.Name == "Critical")
                 .ToList();
@@ -727,6 +743,7 @@ namespace RevitSuite.Host.Commands
                     var fieldSymbol = deviation.Status switch
                     {
                         ToleranceStatus.Green => modelSymbol,
+                        ToleranceStatus.Blue => verifiedSymbol,
                         ToleranceStatus.Yellow => deviationSymbol,
                         ToleranceStatus.Red => criticalSymbol,
                         _ => modelSymbol
@@ -847,6 +864,7 @@ namespace RevitSuite.Host.Commands
             }
 
             var greenColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+            var blueColor = new Autodesk.Revit.DB.Color(59, 130, 246);
             var yellowColor = new Autodesk.Revit.DB.Color(234, 179, 8);
             var redColor = new Autodesk.Revit.DB.Color(239, 68, 68);
 
@@ -875,6 +893,7 @@ namespace RevitSuite.Host.Commands
                 var color = deviation.Status switch
                 {
                     ToleranceStatus.Green => greenColor,
+                    ToleranceStatus.Blue => blueColor,
                     ToleranceStatus.Yellow => yellowColor,
                     ToleranceStatus.Red => redColor,
                     _ => greenColor
@@ -916,6 +935,7 @@ namespace RevitSuite.Host.Commands
         private void CreateDeviationIndicators(Document doc, List<DeviationResult> deviations, QaqcConfig config, string correlationId)
         {
             var greenMaterialId = EnsureMaterial(doc, "QAQC_Green", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(34, 197, 94));
+            var blueMaterialId = EnsureMaterial(doc, "QAQC_Blue", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(59, 130, 246));
             var yellowMaterialId = EnsureMaterial(doc, "QAQC_Yellow", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(234, 179, 8));
             var redMaterialId = EnsureMaterial(doc, "QAQC_Red", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(239, 68, 68));
 
@@ -929,6 +949,7 @@ namespace RevitSuite.Host.Commands
                     var materialId = deviation.Status switch
                     {
                         ToleranceStatus.Green => greenMaterialId,
+                        ToleranceStatus.Blue => blueMaterialId,
                         ToleranceStatus.Yellow => yellowMaterialId,
                         ToleranceStatus.Red => redMaterialId,
                         _ => greenMaterialId

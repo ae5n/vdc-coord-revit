@@ -43,8 +43,10 @@ namespace RevitSuite.Host.Commands
                 string selectedCategory;
                 QaqcMode selectedMode;
                 int selectedPourNumber;
-                double selectedHorizontalThreshold;
-                double selectedElevationThreshold;
+                double selectedHorizontalVerifiedThreshold;
+                double selectedHorizontalCriticalThreshold;
+                double selectedElevationVerifiedThreshold;
+                double selectedElevationCriticalThreshold;
                 bool selectedUseHorizontalThreshold;
                 bool selectedUseElevationThreshold;
                 bool selectedUseSelectedPointThresholds;
@@ -59,8 +61,10 @@ namespace RevitSuite.Host.Commands
                     selectedCategory = form.SelectedCategory;
                     selectedMode = form.SelectedMode;
                     selectedPourNumber = form.SelectedPourNumber;
-                    selectedHorizontalThreshold = form.SelectedHorizontalThreshold;
-                    selectedElevationThreshold = form.SelectedElevationThreshold;
+                    selectedHorizontalVerifiedThreshold = form.SelectedHorizontalVerifiedThreshold;
+                    selectedHorizontalCriticalThreshold = form.SelectedHorizontalCriticalThreshold;
+                    selectedElevationVerifiedThreshold = form.SelectedElevationVerifiedThreshold;
+                    selectedElevationCriticalThreshold = form.SelectedElevationCriticalThreshold;
                     selectedUseHorizontalThreshold = form.SelectedUseHorizontalThreshold;
                     selectedUseElevationThreshold = form.SelectedUseElevationThreshold;
                     selectedUseSelectedPointThresholds = form.SelectedUseSelectedPointThresholds;
@@ -91,8 +95,10 @@ namespace RevitSuite.Host.Commands
                     doc,
                     config,
                     selectedCategory,
-                    selectedHorizontalThreshold,
-                    selectedElevationThreshold,
+                    selectedHorizontalVerifiedThreshold,
+                    selectedHorizontalCriticalThreshold,
+                    selectedElevationVerifiedThreshold,
+                    selectedElevationCriticalThreshold,
                     selectedUseHorizontalThreshold,
                     selectedUseElevationThreshold,
                     selectedUseSelectedPointThresholds);

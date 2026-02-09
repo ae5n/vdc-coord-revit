@@ -13,6 +13,7 @@ namespace RevitSuite.Host.Commands
     public partial class QaqcCommand
     {
         private static readonly Autodesk.Revit.DB.Color ModelPointColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+        private static readonly Autodesk.Revit.DB.Color VerifiedPointColor = new Autodesk.Revit.DB.Color(59, 130, 246);
         private static readonly Autodesk.Revit.DB.Color DeviationPointColor = new Autodesk.Revit.DB.Color(249, 115, 22);
         private static readonly Autodesk.Revit.DB.Color CriticalPointColor = new Autodesk.Revit.DB.Color(239, 68, 68);
 
@@ -128,6 +129,7 @@ namespace RevitSuite.Host.Commands
                                 controlPointSymbol,
                                 correlationId,
                                 out var modelPointSymbol,
+                                out _,
                                 out _,
                                 out _))
                         {
@@ -353,7 +355,7 @@ namespace RevitSuite.Host.Commands
 
                 try
                 {
-                    if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _))
+                    if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _, out _))
                     {
                         tx.RollBack();
                         return Result.Failed;
@@ -564,14 +566,16 @@ namespace RevitSuite.Host.Commands
             FamilySymbol seedSymbol,
             string correlationId,
             out FamilySymbol modelSymbol,
+            out FamilySymbol verifiedSymbol,
             out FamilySymbol deviationSymbol,
             out FamilySymbol criticalSymbol)
         {
             modelSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Model", "QAQC_Point_Model", ModelPointColor, correlationId);
+            verifiedSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Verified", "QAQC_Point_Verified", VerifiedPointColor, correlationId);
             deviationSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Deviation", "QAQC_Point_Deviation", DeviationPointColor, correlationId);
             criticalSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Critical", "QAQC_Point_Critical", CriticalPointColor, correlationId);
 
-            return modelSymbol != null && deviationSymbol != null && criticalSymbol != null;
+            return modelSymbol != null && verifiedSymbol != null && deviationSymbol != null && criticalSymbol != null;
         }
 
         private FamilySymbol EnsureControlPointTypeSymbol(
