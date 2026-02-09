@@ -46,6 +46,7 @@ namespace RevitSuite.Host.Commands
                 double selectedElevationThreshold;
                 bool selectedUseHorizontalThreshold;
                 bool selectedUseElevationThreshold;
+                bool selectedUseSelectedPointThresholds;
                 using (var form = new QaqcDialog())
                 {
                     if (form.ShowDialog() != DialogResult.OK)
@@ -61,6 +62,7 @@ namespace RevitSuite.Host.Commands
                     selectedElevationThreshold = form.SelectedElevationThreshold;
                     selectedUseHorizontalThreshold = form.SelectedUseHorizontalThreshold;
                     selectedUseElevationThreshold = form.SelectedUseElevationThreshold;
+                    selectedUseSelectedPointThresholds = form.SelectedUseSelectedPointThresholds;
                 }
 
                 LogManager.Info(correlationId, $"QAQC mode: {selectedMode}, Category: {selectedCategory}");
@@ -84,7 +86,8 @@ namespace RevitSuite.Host.Commands
                     selectedHorizontalThreshold,
                     selectedElevationThreshold,
                     selectedUseHorizontalThreshold,
-                    selectedUseElevationThreshold);
+                    selectedUseElevationThreshold,
+                    selectedUseSelectedPointThresholds);
             }
             catch (Exception ex)
             {

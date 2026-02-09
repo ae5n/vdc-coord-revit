@@ -7,6 +7,7 @@ using System.Text;
 using System.Windows.Forms;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
 using RevitSuite.Host.Config;
 using RevitSuite.Host.Logging;
 
@@ -24,7 +25,8 @@ namespace RevitSuite.Host.Commands
             double horizontalThreshold,
             double elevationThreshold,
             bool useHorizontalThreshold,
-            bool useElevationThreshold)
+            bool useElevationThreshold,
+            bool useSelectedPointThresholds)
         {
             try
             {
@@ -51,6 +53,37 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
+                if (!useSelectedPointThresholds)
+                {
+                    var modelPointNumbers = CollectModelPointNumbers(doc, config);
+                    var matchedPointNumbers = new HashSet<string>(
+                        records
+                            .Select(r => r.PointNumber)
+                            .Where(p => !string.IsNullOrWhiteSpace(p) && modelPointNumbers.Contains(p)),
+                        StringComparer.OrdinalIgnoreCase);
+
+                    if (!ShowPointMatchPreview(records, modelPointNumbers, matchedPointNumbers))
+                    {
+                        LogManager.Info(correlationId, "Import cancelled from CSV match preview dialog.");
+                        return Result.Cancelled;
+                    }
+                }
+
+                var pointThresholds = BuildPointThresholdMap(
+                    records,
+                    uiDoc,
+                    doc,
+                    config,
+                    horizontalThreshold,
+                    elevationThreshold,
+                    useSelectedPointThresholds,
+                    correlationId);
+                if (pointThresholds == null)
+                {
+                    LogManager.Info(correlationId, "Import cancelled while configuring selected point thresholds.");
+                    return Result.Cancelled;
+                }
+
                 // Match to elements and calculate deviations
                 var deviations = CalculateDeviations(
                     doc,
@@ -61,7 +94,8 @@ namespace RevitSuite.Host.Commands
                     horizontalThreshold,
                     elevationThreshold,
                     useHorizontalThreshold,
-                    useElevationThreshold);
+                    useElevationThreshold,
+                    pointThresholds);
                 if (deviations.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No matching Control Points found in model.");
@@ -200,7 +234,8 @@ namespace RevitSuite.Host.Commands
             double horizontalThreshold,
             double elevationThreshold,
             bool useHorizontalThreshold,
-            bool useElevationThreshold)
+            bool useElevationThreshold,
+            Dictionary<string, PointThresholdSettings> pointThresholds)
         {
             var deviations = new List<DeviationResult>();
 
@@ -258,8 +293,18 @@ namespace RevitSuite.Host.Commands
                 var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
                 var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
 
-                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalThreshold;
-                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationThreshold;
+                var effectiveHorizontalThreshold = horizontalThreshold;
+                var effectiveElevationThreshold = elevationThreshold;
+                if (pointThresholds != null &&
+                    pointThresholds.TryGetValue(record.PointNumber, out var pointThreshold) &&
+                    pointThreshold != null)
+                {
+                    effectiveHorizontalThreshold = pointThreshold.HorizontalThreshold;
+                    effectiveElevationThreshold = pointThreshold.ElevationThreshold;
+                }
+
+                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > effectiveHorizontalThreshold;
+                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > effectiveElevationThreshold;
                 var isCritical = exceedsHorizontal || exceedsElevation;
                 var status = isCritical ? ToleranceStatus.Red : ToleranceStatus.Yellow;
 
@@ -286,6 +331,130 @@ namespace RevitSuite.Host.Commands
             }
 
             return deviations;
+        }
+
+        private Dictionary<string, PointThresholdSettings> BuildPointThresholdMap(
+            List<ControlPointRecord> records,
+            UIDocument uiDoc,
+            Document doc,
+            QaqcConfig config,
+            double defaultHorizontalThreshold,
+            double defaultElevationThreshold,
+            bool useSelectedPointThresholds,
+            string correlationId)
+        {
+            if (!useSelectedPointThresholds)
+            {
+                return new Dictionary<string, PointThresholdSettings>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            IList<Reference> pickedReferences;
+            try
+            {
+                TaskDialog.Show(
+                    "RevitSuite",
+                    "Select model control points in the view to apply custom thresholds.\nPress Finish when done, or Esc to cancel.");
+                pickedReferences = uiDoc.Selection.PickObjects(
+                    ObjectType.Element,
+                    new ControlPointSelectionFilter(config.DefaultFamilyName),
+                    "Select model control points for custom thresholds.");
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+            {
+                return null;
+            }
+
+            var pointNumbers = new List<string>();
+            foreach (var reference in pickedReferences)
+            {
+                var element = doc.GetElement(reference);
+                var pointNumber = GetParameterValueString(element, PointNumberGuid);
+                if (!string.IsNullOrWhiteSpace(pointNumber))
+                {
+                    pointNumbers.Add(pointNumber);
+                }
+            }
+
+            pointNumbers = pointNumbers
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (pointNumbers.Count == 0)
+            {
+                TaskDialog.Show("RevitSuite", "No valid model control points were selected.");
+                return null;
+            }
+
+            var csvPointNumbers = new HashSet<string>(
+                records
+                    .Select(r => r.PointNumber)
+                    .Where(p => !string.IsNullOrWhiteSpace(p)),
+                StringComparer.OrdinalIgnoreCase);
+
+            var matchedPointNumbers = pointNumbers
+                .Where(csvPointNumbers.Contains)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var skippedCount = pointNumbers.Count - matchedPointNumbers.Count;
+            if (skippedCount > 0)
+            {
+                LogManager.Warn(correlationId, $"{skippedCount} selected model points were not found in CSV by Point Number and will be ignored.");
+            }
+
+            if (matchedPointNumbers.Count == 0)
+            {
+                TaskDialog.Show("RevitSuite", "None of the selected model points match CSV Point Number values.");
+                return null;
+            }
+
+            using (var previewForm = new PointMatchPreviewForm(
+                records,
+                new HashSet<string>(pointNumbers, StringComparer.OrdinalIgnoreCase),
+                new HashSet<string>(matchedPointNumbers, StringComparer.OrdinalIgnoreCase)))
+            {
+                if (previewForm.ShowDialog() != DialogResult.OK)
+                {
+                    return null;
+                }
+            }
+
+            using (var form = new PointThresholdSelectionForm(matchedPointNumbers, defaultHorizontalThreshold, defaultElevationThreshold))
+            {
+                if (form.ShowDialog() != DialogResult.OK)
+                {
+                    return null;
+                }
+
+                var selectedCount = form.SelectedThresholds.Count;
+                LogManager.Info(correlationId, $"Selected point threshold overrides configured: {selectedCount} point(s).");
+                return form.SelectedThresholds;
+            }
+        }
+
+        private HashSet<string> CollectModelPointNumbers(Document doc, QaqcConfig config)
+        {
+            return new HashSet<string>(
+                new FilteredElementCollector(doc)
+                    .OfCategory(BuiltInCategory.OST_Site)
+                    .WhereElementIsNotElementType()
+                    .OfType<FamilyInstance>()
+                    .Where(fi => fi.Symbol?.Family?.Name == config.DefaultFamilyName)
+                    .Select(fi => GetParameterValueString(fi, PointNumberGuid))
+                    .Where(p => !string.IsNullOrWhiteSpace(p)),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        private bool ShowPointMatchPreview(
+            IList<ControlPointRecord> records,
+            HashSet<string> selectedPointNumbers,
+            HashSet<string> matchedPointNumbers)
+        {
+            using (var previewForm = new PointMatchPreviewForm(records, selectedPointNumbers, matchedPointNumbers))
+            {
+                return previewForm.ShowDialog() == DialogResult.OK;
+            }
         }
 
         private void UpdateSharedParameters(Document doc, List<DeviationResult> deviations, string correlationId)

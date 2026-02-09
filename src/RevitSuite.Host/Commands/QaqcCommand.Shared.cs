@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 using Autodesk.Revit.DB;
@@ -452,6 +453,28 @@ namespace RevitSuite.Host.Commands
             }
         }
 
+        private class ControlPointSelectionFilter : ISelectionFilter
+        {
+            private readonly string _familyName;
+
+            public ControlPointSelectionFilter(string familyName)
+            {
+                _familyName = familyName ?? string.Empty;
+            }
+
+            public bool AllowElement(Element elem)
+            {
+                if (!(elem is FamilyInstance instance))
+                {
+                    return false;
+                }
+
+                return string.Equals(instance.Symbol?.Family?.Name, _familyName, StringComparison.OrdinalIgnoreCase);
+            }
+
+            public bool AllowReference(Reference reference, XYZ position) => false;
+        }
+
         private SogSelectionMode? PromptSogSelectionMode()
         {
             var dialog = new TaskDialog("RevitSuite")
@@ -491,6 +514,8 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.CheckBox useHorizontalThresholdCheckBox;
             private System.Windows.Forms.CheckBox useElevationThresholdCheckBox;
             private System.Windows.Forms.Label thresholdHelpLabel;
+            private System.Windows.Forms.ComboBox thresholdScopeComboBox;
+            private System.Windows.Forms.Label thresholdScopeLabel;
 
             public string SelectedCategory => categoryComboBox.SelectedItem?.ToString() ?? "Footings";
             public int SelectedPourNumber => (int)(pourNumericUpDown?.Value ?? 1);
@@ -498,6 +523,7 @@ namespace RevitSuite.Host.Commands
             public double SelectedElevationThreshold => (double)(elevationThresholdNumericUpDown?.Value ?? 0.05m);
             public bool SelectedUseHorizontalThreshold => useHorizontalThresholdCheckBox?.Checked ?? true;
             public bool SelectedUseElevationThreshold => useElevationThresholdCheckBox?.Checked ?? true;
+            public bool SelectedUseSelectedPointThresholds => thresholdScopeComboBox?.SelectedIndex == 1;
             public QaqcMode SelectedMode
             {
                 get
@@ -519,7 +545,7 @@ namespace RevitSuite.Host.Commands
             private void InitializeComponent()
             {
                 this.Text = "QAQC - Control Point Verification";
-                this.Size = new System.Drawing.Size(440, 430);
+                this.Size = new System.Drawing.Size(460, 470);
                 this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
                 this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
                 this.MaximizeBox = false;
@@ -599,10 +625,30 @@ namespace RevitSuite.Host.Commands
                 };
                 this.Controls.Add(importRadioButton);
 
+                thresholdScopeLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Threshold Scope:",
+                    Location = new System.Drawing.Point(20, 172),
+                    Size = new System.Drawing.Size(100, 20),
+                    Visible = false
+                };
+                this.Controls.Add(thresholdScopeLabel);
+
+                thresholdScopeComboBox = new System.Windows.Forms.ComboBox
+                {
+                    Location = new System.Drawing.Point(120, 170),
+                    Size = new System.Drawing.Size(180, 25),
+                    DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList,
+                    Visible = false
+                };
+                thresholdScopeComboBox.Items.AddRange(new object[] { "All points", "Selected points" });
+                thresholdScopeComboBox.SelectedIndex = 0;
+                this.Controls.Add(thresholdScopeComboBox);
+
                 horizontalThresholdLabel = new System.Windows.Forms.Label
                 {
                     Text = "N/E Threshold (ft):",
-                    Location = new System.Drawing.Point(20, 202),
+                    Location = new System.Drawing.Point(20, 232),
                     Size = new System.Drawing.Size(100, 20),
                     Visible = false
                 };
@@ -611,7 +657,7 @@ namespace RevitSuite.Host.Commands
                 useHorizontalThresholdCheckBox = new System.Windows.Forms.CheckBox
                 {
                     Text = "Check horizontal (N/E)",
-                    Location = new System.Drawing.Point(120, 174),
+                    Location = new System.Drawing.Point(120, 204),
                     Size = new System.Drawing.Size(170, 24),
                     Checked = true,
                     Visible = false
@@ -620,7 +666,7 @@ namespace RevitSuite.Host.Commands
 
                 horizontalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
                 {
-                    Location = new System.Drawing.Point(120, 200),
+                    Location = new System.Drawing.Point(120, 230),
                     Size = new System.Drawing.Size(100, 25),
                     DecimalPlaces = 3,
                     Increment = 0.005m,
@@ -634,7 +680,7 @@ namespace RevitSuite.Host.Commands
                 elevationThresholdLabel = new System.Windows.Forms.Label
                 {
                     Text = "Elev Threshold (ft):",
-                    Location = new System.Drawing.Point(20, 256),
+                    Location = new System.Drawing.Point(20, 286),
                     Size = new System.Drawing.Size(100, 20),
                     Visible = false
                 };
@@ -643,7 +689,7 @@ namespace RevitSuite.Host.Commands
                 useElevationThresholdCheckBox = new System.Windows.Forms.CheckBox
                 {
                     Text = "Check elevation",
-                    Location = new System.Drawing.Point(120, 228),
+                    Location = new System.Drawing.Point(120, 258),
                     Size = new System.Drawing.Size(170, 24),
                     Checked = true,
                     Visible = false
@@ -652,7 +698,7 @@ namespace RevitSuite.Host.Commands
 
                 elevationThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
                 {
-                    Location = new System.Drawing.Point(120, 254),
+                    Location = new System.Drawing.Point(120, 284),
                     Size = new System.Drawing.Size(100, 25),
                     DecimalPlaces = 3,
                     Increment = 0.005m,
@@ -665,9 +711,9 @@ namespace RevitSuite.Host.Commands
 
                 thresholdHelpLabel = new System.Windows.Forms.Label
                 {
-                    Text = "A point is Critical if any enabled check exceeds threshold.\nDisable one check to evaluate only the other.",
-                    Location = new System.Drawing.Point(20, 288),
-                    Size = new System.Drawing.Size(390, 40),
+                    Text = "A point is Critical if any enabled check exceeds threshold.\nScope = All points uses one threshold pair. Scope = Selected points lets you assign different threshold pairs per point before analyze.",
+                    Location = new System.Drawing.Point(20, 318),
+                    Size = new System.Drawing.Size(410, 50),
                     Visible = false
                 };
                 this.Controls.Add(thresholdHelpLabel);
@@ -675,7 +721,7 @@ namespace RevitSuite.Host.Commands
                 okButton = new System.Windows.Forms.Button
                 {
                     Text = "OK",
-                    Location = new System.Drawing.Point(210, 340),
+                    Location = new System.Drawing.Point(220, 380),
                     Size = new System.Drawing.Size(80, 30),
                     DialogResult = System.Windows.Forms.DialogResult.OK
                 };
@@ -684,7 +730,7 @@ namespace RevitSuite.Host.Commands
                 cancelButton = new System.Windows.Forms.Button
                 {
                     Text = "Cancel",
-                    Location = new System.Drawing.Point(300, 340),
+                    Location = new System.Drawing.Point(310, 380),
                     Size = new System.Drawing.Size(80, 30),
                     DialogResult = System.Windows.Forms.DialogResult.Cancel
                 };
@@ -723,6 +769,8 @@ namespace RevitSuite.Host.Commands
             private void UpdateThresholdVisibility()
             {
                 var showThresholds = importRadioButton != null && importRadioButton.Checked;
+                thresholdScopeLabel.Visible = showThresholds;
+                thresholdScopeComboBox.Visible = showThresholds;
                 useHorizontalThresholdCheckBox.Visible = showThresholds;
                 useElevationThresholdCheckBox.Visible = showThresholds;
                 horizontalThresholdLabel.Visible = showThresholds;
@@ -744,6 +792,258 @@ namespace RevitSuite.Host.Commands
                 {
                     elevationThresholdNumericUpDown.Enabled = useElevationThresholdCheckBox.Checked;
                 }
+            }
+        }
+
+        private class PointThresholdSettings
+        {
+            public PointThresholdSettings(double horizontalThreshold, double elevationThreshold)
+            {
+                HorizontalThreshold = horizontalThreshold;
+                ElevationThreshold = elevationThreshold;
+            }
+
+            public double HorizontalThreshold { get; }
+            public double ElevationThreshold { get; }
+        }
+
+        private class PointThresholdSelectionForm : System.Windows.Forms.Form
+        {
+            private readonly System.Windows.Forms.DataGridView _grid = new System.Windows.Forms.DataGridView();
+            private readonly System.Windows.Forms.Button _okButton = new System.Windows.Forms.Button();
+            private readonly System.Windows.Forms.Button _cancelButton = new System.Windows.Forms.Button();
+            private readonly double _defaultHorizontalThreshold;
+            private readonly double _defaultElevationThreshold;
+
+            public Dictionary<string, PointThresholdSettings> SelectedThresholds { get; } =
+                new Dictionary<string, PointThresholdSettings>(StringComparer.OrdinalIgnoreCase);
+
+            public PointThresholdSelectionForm(
+                IList<string> pointNumbers,
+                double defaultHorizontalThreshold,
+                double defaultElevationThreshold)
+            {
+                _defaultHorizontalThreshold = defaultHorizontalThreshold;
+                _defaultElevationThreshold = defaultElevationThreshold;
+
+                Text = "QAQC - Selected Point Thresholds";
+                Size = new System.Drawing.Size(620, 520);
+                StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
+                FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+
+                var descriptionLabel = new System.Windows.Forms.Label
+                {
+                    Text = "These selected model points match CSV Point Number values. Set thresholds per point.",
+                    Location = new System.Drawing.Point(12, 12),
+                    Size = new System.Drawing.Size(580, 20)
+                };
+                Controls.Add(descriptionLabel);
+
+                _grid.Location = new System.Drawing.Point(12, 40);
+                _grid.Size = new System.Drawing.Size(580, 380);
+                _grid.AllowUserToAddRows = false;
+                _grid.AllowUserToDeleteRows = false;
+                _grid.RowHeadersVisible = false;
+                _grid.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+                _grid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+
+                var pointColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Point Number",
+                    Name = "PointNumber",
+                    ReadOnly = true,
+                    FillWeight = 50
+                };
+                var horizontalColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "N/E Threshold (ft)",
+                    Name = "HorizontalThreshold",
+                    FillWeight = 25
+                };
+                var elevationColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Elev Threshold (ft)",
+                    Name = "ElevationThreshold",
+                    FillWeight = 25
+                };
+
+                _grid.Columns.AddRange(pointColumn, horizontalColumn, elevationColumn);
+
+                foreach (var pointNumber in pointNumbers)
+                {
+                    _grid.Rows.Add(pointNumber, defaultHorizontalThreshold.ToString("F3", CultureInfo.InvariantCulture), defaultElevationThreshold.ToString("F3", CultureInfo.InvariantCulture));
+                }
+
+                Controls.Add(_grid);
+
+                _okButton.Text = "OK";
+                _okButton.Location = new System.Drawing.Point(420, 435);
+                _okButton.Size = new System.Drawing.Size(80, 30);
+                _okButton.Click += OnOkClick;
+                Controls.Add(_okButton);
+
+                _cancelButton.Text = "Cancel";
+                _cancelButton.Location = new System.Drawing.Point(510, 435);
+                _cancelButton.Size = new System.Drawing.Size(80, 30);
+                _cancelButton.DialogResult = System.Windows.Forms.DialogResult.Cancel;
+                Controls.Add(_cancelButton);
+
+                AcceptButton = _okButton;
+                CancelButton = _cancelButton;
+            }
+
+            private void OnOkClick(object sender, EventArgs e)
+            {
+                SelectedThresholds.Clear();
+
+                foreach (System.Windows.Forms.DataGridViewRow row in _grid.Rows)
+                {
+                    var pointNumber = row.Cells["PointNumber"].Value?.ToString();
+                    if (string.IsNullOrWhiteSpace(pointNumber))
+                    {
+                        continue;
+                    }
+
+                    if (!TryParsePositiveThreshold(row.Cells["HorizontalThreshold"].Value, out var horizontalThreshold))
+                    {
+                        MessageBox.Show(this, $"Invalid N/E threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+
+                    if (!TryParsePositiveThreshold(row.Cells["ElevationThreshold"].Value, out var elevationThreshold))
+                    {
+                        MessageBox.Show(this, $"Invalid Elev threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+
+                    SelectedThresholds[pointNumber] = new PointThresholdSettings(horizontalThreshold, elevationThreshold);
+                }
+
+                DialogResult = System.Windows.Forms.DialogResult.OK;
+                Close();
+            }
+
+            private static bool TryParsePositiveThreshold(object value, out double threshold)
+            {
+                threshold = 0;
+                var text = value?.ToString();
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return false;
+                }
+
+                if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out threshold))
+                {
+                    return false;
+                }
+
+                return threshold > 0;
+            }
+        }
+
+        private class PointMatchPreviewForm : System.Windows.Forms.Form
+        {
+            public PointMatchPreviewForm(
+                IList<ControlPointRecord> importedRecords,
+                HashSet<string> selectedPointNumbers,
+                HashSet<string> matchedPointNumbers)
+            {
+                Text = "QAQC - CSV Match Preview";
+                Size = new System.Drawing.Size(760, 560);
+                StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
+                FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+
+                var summaryLabel = new System.Windows.Forms.Label
+                {
+                    Text = $"Imported CSV points: {importedRecords.Count} | Selected set: {selectedPointNumbers.Count} | Matched by Point Number: {matchedPointNumbers.Count}",
+                    Location = new System.Drawing.Point(12, 12),
+                    Size = new System.Drawing.Size(730, 20)
+                };
+                Controls.Add(summaryLabel);
+
+                var grid = new System.Windows.Forms.DataGridView
+                {
+                    Location = new System.Drawing.Point(12, 40),
+                    Size = new System.Drawing.Size(730, 440),
+                    AllowUserToAddRows = false,
+                    AllowUserToDeleteRows = false,
+                    ReadOnly = true,
+                    RowHeadersVisible = false,
+                    AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill
+                };
+
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Point Number",
+                    FillWeight = 30
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Field Northing",
+                    FillWeight = 20
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Field Easting",
+                    FillWeight = 20
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Field Elevation",
+                    FillWeight = 20
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Match Status",
+                    FillWeight = 20
+                });
+
+                foreach (var record in importedRecords.OrderBy(r => r.PointNumber, StringComparer.OrdinalIgnoreCase))
+                {
+                    var matched = matchedPointNumbers.Contains(record.PointNumber);
+                    var status = matched ? "Matched" : "CSV Only";
+
+                    var rowIndex = grid.Rows.Add(
+                        record.PointNumber,
+                        record.FieldNorthing?.ToString("F3", CultureInfo.InvariantCulture) ?? string.Empty,
+                        record.FieldEasting?.ToString("F3", CultureInfo.InvariantCulture) ?? string.Empty,
+                        record.FieldElevation?.ToString("F3", CultureInfo.InvariantCulture) ?? string.Empty,
+                        status);
+
+                    if (matched)
+                    {
+                        grid.Rows[rowIndex].DefaultCellStyle.BackColor = System.Drawing.Color.Honeydew;
+                    }
+                }
+
+                Controls.Add(grid);
+
+                var continueButton = new System.Windows.Forms.Button
+                {
+                    Text = "Continue",
+                    Location = new System.Drawing.Point(560, 495),
+                    Size = new System.Drawing.Size(80, 30),
+                    DialogResult = System.Windows.Forms.DialogResult.OK
+                };
+                Controls.Add(continueButton);
+
+                var cancelButton = new System.Windows.Forms.Button
+                {
+                    Text = "Cancel",
+                    Location = new System.Drawing.Point(650, 495),
+                    Size = new System.Drawing.Size(80, 30),
+                    DialogResult = System.Windows.Forms.DialogResult.Cancel
+                };
+                Controls.Add(cancelButton);
+
+                AcceptButton = continueButton;
+                CancelButton = cancelButton;
             }
         }
 
