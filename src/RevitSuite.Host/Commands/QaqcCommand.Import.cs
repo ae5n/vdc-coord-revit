@@ -44,8 +44,19 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
+                var mapping = PromptCsvColumnMapping(
+                    openDialog.FileName,
+                    "Map As-Built CSV Columns",
+                    useElevationThreshold,
+                    correlationId);
+                if (mapping == null)
+                {
+                    LogManager.Info(correlationId, "Import cancelled during CSV column mapping.");
+                    return Result.Cancelled;
+                }
+
                 // Parse CSV
-                var records = ParseCsvImport(openDialog.FileName, correlationId);
+                var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, useElevationThreshold);
                 if (records.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No valid data found in CSV file.");
@@ -69,18 +80,16 @@ namespace RevitSuite.Host.Commands
                     }
                 }
 
-                var pointThresholds = BuildPointThresholdMap(
+                var selectedPointNumbers = BuildSelectedPointFilter(
                     records,
                     uiDoc,
                     doc,
                     config,
-                    horizontalThreshold,
-                    elevationThreshold,
                     useSelectedPointThresholds,
                     correlationId);
-                if (pointThresholds == null)
+                if (useSelectedPointThresholds && selectedPointNumbers == null)
                 {
-                    LogManager.Info(correlationId, "Import cancelled while configuring selected point thresholds.");
+                    LogManager.Info(correlationId, "Import cancelled while selecting points.");
                     return Result.Cancelled;
                 }
 
@@ -95,7 +104,7 @@ namespace RevitSuite.Host.Commands
                     elevationThreshold,
                     useHorizontalThreshold,
                     useElevationThreshold,
-                    pointThresholds);
+                    selectedPointNumbers);
                 if (deviations.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No matching Control Points found in model.");
@@ -154,7 +163,11 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private List<ControlPointRecord> ParseCsvImport(string path, string correlationId)
+        private List<ControlPointRecord> ParseCsvImport(
+            string path,
+            string correlationId,
+            CsvColumnMapping mapping,
+            bool requireElevationValues)
         {
             var records = new List<ControlPointRecord>();
 
@@ -167,13 +180,6 @@ namespace RevitSuite.Host.Commands
                     throw new InvalidDataException("CSV file is empty.");
                 }
 
-                // Validate header (should have 8 columns with Footing ID)
-                var headers = headerLine.Split(',');
-                if (headers.Length < 8)
-                {
-                    throw new InvalidDataException($"Invalid CSV format. Expected 8 columns, found {headers.Length}.");
-                }
-
                 int lineNumber = 1;
                 while (!reader.EndOfStream)
                 {
@@ -183,27 +189,48 @@ namespace RevitSuite.Host.Commands
                         continue;
 
                     var values = line.Split(',');
-                    if (values.Length < 8)
-                    {
-                        LogManager.Warn(correlationId, $"CSV line {lineNumber} has insufficient columns - skipped.");
-                        continue;
-                    }
 
                     try
                     {
-                        var pointNumber = values[0].Trim();
+                        var maxRequiredIndex = Math.Max(
+                            Math.Max(mapping.PointNumberIndex, mapping.NorthingIndex),
+                            Math.Max(mapping.EastingIndex, mapping.ElevationIndex));
+                        if (values.Length <= maxRequiredIndex)
+                        {
+                            LogManager.Warn(correlationId, $"CSV line {lineNumber} has insufficient columns for mapped headers - skipped.");
+                            continue;
+                        }
+
+                        var pointNumber = values[mapping.PointNumberIndex].Trim();
                         if (string.IsNullOrWhiteSpace(pointNumber))
                         {
                             LogManager.Warn(correlationId, $"CSV line {lineNumber} has empty Point Number - skipped.");
                             continue;
                         }
 
-                        // Parse Field coordinates (columns 5, 6, 7 - after Footing ID)
-                        if (!double.TryParse(values[5], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldEasting) ||
-                            !double.TryParse(values[6], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldNorthing) ||
-                            !double.TryParse(values[7], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldElevation))
+                        if (!double.TryParse(values[mapping.EastingIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldEasting) ||
+                            !double.TryParse(values[mapping.NorthingIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldNorthing))
                         {
-                            LogManager.Warn(correlationId, $"CSV line {lineNumber} has invalid Field coordinates - skipped.");
+                            LogManager.Warn(correlationId, $"CSV line {lineNumber} has invalid Northing/Easting values - skipped.");
+                            continue;
+                        }
+
+                        double? fieldElevation = null;
+                        if (mapping.ElevationIndex >= 0)
+                        {
+                            if (double.TryParse(values[mapping.ElevationIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedElevation))
+                            {
+                                fieldElevation = parsedElevation;
+                            }
+                            else if (requireElevationValues)
+                            {
+                                LogManager.Warn(correlationId, $"CSV line {lineNumber} has invalid Elevation value - skipped.");
+                                continue;
+                            }
+                        }
+                        else if (requireElevationValues)
+                        {
+                            LogManager.Warn(correlationId, $"CSV line {lineNumber} missing Elevation column mapping - skipped.");
                             continue;
                         }
 
@@ -225,6 +252,118 @@ namespace RevitSuite.Host.Commands
             return records;
         }
 
+        private CsvColumnMapping PromptCsvColumnMapping(
+            string csvPath,
+            string dialogTitle,
+            bool requireElevation,
+            string correlationId)
+        {
+            var headers = ReadCsvHeaders(csvPath);
+            if (headers == null || headers.Length == 0)
+            {
+                throw new InvalidDataException("CSV file is missing a header row.");
+            }
+
+            var defaults = BuildDefaultCsvColumnMapping(headers, requireElevation);
+            using (var form = new CsvColumnMappingForm(headers, defaults, requireElevation, dialogTitle))
+            {
+                if (form.ShowDialog() != DialogResult.OK)
+                {
+                    return null;
+                }
+
+                var selected = form.SelectedMapping;
+                LogManager.Info(
+                    correlationId,
+                    $"CSV mapping selected. PointNumber={selected.PointNumberIndex}, Northing={selected.NorthingIndex}, Easting={selected.EastingIndex}, Elevation={selected.ElevationIndex}");
+                return selected;
+            }
+        }
+
+        private string[] ReadCsvHeaders(string path)
+        {
+            using (var reader = new StreamReader(path, Encoding.UTF8))
+            {
+                var headerLine = reader.ReadLine();
+                if (string.IsNullOrWhiteSpace(headerLine))
+                {
+                    return Array.Empty<string>();
+                }
+
+                return headerLine.Split(',');
+            }
+        }
+
+        private CsvColumnMapping BuildDefaultCsvColumnMapping(string[] headers, bool requireElevation)
+        {
+            var pointNumberIndex = FindHeaderIndex(headers, "pointnumber", "point number", "point_no", "point id", "point");
+            var northingIndex = FindHeaderIndex(headers, "northing", "north");
+            var eastingIndex = FindHeaderIndex(headers, "easting", "east");
+            var elevationIndex = FindHeaderIndex(headers, "elevation", "elev", "z");
+
+            // Backward-compatible defaults for legacy 8-column QAQC format.
+            if (pointNumberIndex < 0 && headers.Length >= 1)
+            {
+                pointNumberIndex = 0;
+            }
+
+            if (headers.Length >= 8)
+            {
+                if (eastingIndex < 0)
+                {
+                    eastingIndex = 5;
+                }
+
+                if (northingIndex < 0)
+                {
+                    northingIndex = 6;
+                }
+
+                if (elevationIndex < 0)
+                {
+                    elevationIndex = 7;
+                }
+            }
+
+            if (!requireElevation)
+            {
+                elevationIndex = elevationIndex >= 0 ? elevationIndex : -1;
+            }
+
+            return new CsvColumnMapping(pointNumberIndex, northingIndex, eastingIndex, elevationIndex);
+        }
+
+        private static int FindHeaderIndex(string[] headers, params string[] aliases)
+        {
+            if (headers == null || aliases == null || aliases.Length == 0)
+            {
+                return -1;
+            }
+
+            var normalizedAliases = new HashSet<string>(aliases.Select(NormalizeHeaderToken), StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < headers.Length; i++)
+            {
+                var normalizedHeader = NormalizeHeaderToken(headers[i]);
+                if (normalizedAliases.Contains(normalizedHeader))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static string NormalizeHeaderToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var chars = value.Where(char.IsLetterOrDigit).ToArray();
+            return new string(chars).ToLowerInvariant();
+        }
+
         private List<DeviationResult> CalculateDeviations(
             Document doc,
             List<ControlPointRecord> records,
@@ -235,7 +374,7 @@ namespace RevitSuite.Host.Commands
             double elevationThreshold,
             bool useHorizontalThreshold,
             bool useElevationThreshold,
-            Dictionary<string, PointThresholdSettings> pointThresholds)
+            HashSet<string> selectedPointNumbers)
         {
             var deviations = new List<DeviationResult>();
 
@@ -268,6 +407,11 @@ namespace RevitSuite.Host.Commands
 
             foreach (var record in records)
             {
+                if (selectedPointNumbers != null && !selectedPointNumbers.Contains(record.PointNumber))
+                {
+                    continue;
+                }
+
                 // Fast dictionary lookup instead of linear search
                 if (!controlPointsDict.TryGetValue(record.PointNumber, out var matchingElement))
                 {
@@ -287,24 +431,28 @@ namespace RevitSuite.Host.Commands
                 }
 
                 // Calculate deviations
+                if (!record.FieldEasting.HasValue || !record.FieldNorthing.HasValue)
+                {
+                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Northing/Easting in CSV - skipped.");
+                    continue;
+                }
+
+                if (useElevationThreshold && !record.FieldElevation.HasValue)
+                {
+                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Elevation in CSV while elevation check is enabled - skipped.");
+                    continue;
+                }
+
                 var devEasting = record.FieldEasting.Value - modelEasting.Value;
                 var devNorthing = record.FieldNorthing.Value - modelNorthing.Value;
-                var devElevation = record.FieldElevation.Value - modelElevation.Value;
+                var devElevation = record.FieldElevation.HasValue
+                    ? record.FieldElevation.Value - modelElevation.Value
+                    : 0.0;
                 var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
                 var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
 
-                var effectiveHorizontalThreshold = horizontalThreshold;
-                var effectiveElevationThreshold = elevationThreshold;
-                if (pointThresholds != null &&
-                    pointThresholds.TryGetValue(record.PointNumber, out var pointThreshold) &&
-                    pointThreshold != null)
-                {
-                    effectiveHorizontalThreshold = pointThreshold.HorizontalThreshold;
-                    effectiveElevationThreshold = pointThreshold.ElevationThreshold;
-                }
-
-                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > effectiveHorizontalThreshold;
-                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > effectiveElevationThreshold;
+                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalThreshold;
+                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationThreshold;
                 var isCritical = exceedsHorizontal || exceedsElevation;
                 var status = isCritical ? ToleranceStatus.Red : ToleranceStatus.Yellow;
 
@@ -333,19 +481,17 @@ namespace RevitSuite.Host.Commands
             return deviations;
         }
 
-        private Dictionary<string, PointThresholdSettings> BuildPointThresholdMap(
+        private HashSet<string> BuildSelectedPointFilter(
             List<ControlPointRecord> records,
             UIDocument uiDoc,
             Document doc,
             QaqcConfig config,
-            double defaultHorizontalThreshold,
-            double defaultElevationThreshold,
             bool useSelectedPointThresholds,
             string correlationId)
         {
             if (!useSelectedPointThresholds)
             {
-                return new Dictionary<string, PointThresholdSettings>(StringComparer.OrdinalIgnoreCase);
+                return null;
             }
 
             IList<Reference> pickedReferences;
@@ -353,11 +499,11 @@ namespace RevitSuite.Host.Commands
             {
                 TaskDialog.Show(
                     "RevitSuite",
-                    "Select model control points in the view to apply custom thresholds.\nPress Finish when done, or Esc to cancel.");
+                    "Select model control points in the view to analyze.\nPress Finish when done, or Esc to cancel.");
                 pickedReferences = uiDoc.Selection.PickObjects(
                     ObjectType.Element,
                     new ControlPointSelectionFilter(config.DefaultFamilyName),
-                    "Select model control points for custom thresholds.");
+                    "Select model control points to analyze.");
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
             {
@@ -420,17 +566,8 @@ namespace RevitSuite.Host.Commands
                 }
             }
 
-            using (var form = new PointThresholdSelectionForm(matchedPointNumbers, defaultHorizontalThreshold, defaultElevationThreshold))
-            {
-                if (form.ShowDialog() != DialogResult.OK)
-                {
-                    return null;
-                }
-
-                var selectedCount = form.SelectedThresholds.Count;
-                LogManager.Info(correlationId, $"Selected point threshold overrides configured: {selectedCount} point(s).");
-                return form.SelectedThresholds;
-            }
+            LogManager.Info(correlationId, $"Selected point filter configured: {matchedPointNumbers.Count} point(s).");
+            return new HashSet<string>(matchedPointNumbers, StringComparer.OrdinalIgnoreCase);
         }
 
         private HashSet<string> CollectModelPointNumbers(Document doc, QaqcConfig config)

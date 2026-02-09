@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows.Forms;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
@@ -19,6 +20,11 @@ namespace RevitSuite.Host.Commands
         {
             try
             {
+                if (string.Equals(category, ReadyPointsCategoryName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ExecutePlaceReadyPoints(correlationId, doc, config);
+                }
+
                 // Auto-detect all footings from host and linked models
                 var isSogCategory = string.Equals(category, SogCategoryName, StringComparison.OrdinalIgnoreCase);
                 XYZ sogStartPoint = null;
@@ -294,6 +300,141 @@ namespace RevitSuite.Host.Commands
             {
                 LogManager.Error(correlationId, "Placement failed.", ex);
                 throw;
+            }
+        }
+
+        private Result ExecutePlaceReadyPoints(string correlationId, Document doc, QaqcConfig config)
+        {
+            var openDialog = new OpenFileDialog
+            {
+                Title = "Import Ready Model Points CSV",
+                Filter = "CSV Files (*.csv)|*.csv",
+                CheckFileExists = true
+            };
+
+            if (openDialog.ShowDialog() != DialogResult.OK)
+            {
+                LogManager.Info(correlationId, "Ready points placement cancelled by user.");
+                return Result.Cancelled;
+            }
+
+            var mapping = PromptCsvColumnMapping(
+                openDialog.FileName,
+                "Map Ready Points CSV Columns",
+                requireElevation: true,
+                correlationId: correlationId);
+            if (mapping == null)
+            {
+                LogManager.Info(correlationId, "Ready points placement cancelled during CSV column mapping.");
+                return Result.Cancelled;
+            }
+
+            var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, requireElevationValues: true);
+            if (records.Count == 0)
+            {
+                TaskDialog.Show("RevitSuite", "No valid points found in CSV. Expected columns include Point Number, Northing, Easting, Elevation.");
+                LogManager.Warn(correlationId, "Ready points placement cancelled - no valid CSV rows.");
+                return Result.Cancelled;
+            }
+
+            var seedSymbol = FindControlPointSymbol(doc, config);
+            if (seedSymbol == null)
+            {
+                TaskDialog.Show("RevitSuite", $"Control Point family '{config.DefaultFamilyName}' not found in project.\nPlease load the family first.");
+                LogManager.Error(correlationId, "Control Point family not found.");
+                return Result.Failed;
+            }
+
+            var sharedToProject = doc.ActiveProjectLocation?.GetTransform() ?? Transform.Identity;
+
+            using (var tx = new Transaction(doc, "RevitSuite: Place Ready Points"))
+            {
+                tx.Start();
+
+                try
+                {
+                    if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _))
+                    {
+                        tx.RollBack();
+                        return Result.Failed;
+                    }
+
+                    var existingByPointNumber = new Dictionary<string, FamilyInstance>(StringComparer.OrdinalIgnoreCase);
+                    var existingControlPoints = new FilteredElementCollector(doc)
+                        .OfCategory(BuiltInCategory.OST_Site)
+                        .WhereElementIsNotElementType()
+                        .OfType<FamilyInstance>()
+                        .Where(fi => fi.Symbol?.Family?.Name == config.DefaultFamilyName)
+                        .ToList();
+
+                    foreach (var instance in existingControlPoints)
+                    {
+                        var pointNumber = GetParameterValueString(instance, PointNumberGuid);
+                        if (!string.IsNullOrWhiteSpace(pointNumber) && !existingByPointNumber.ContainsKey(pointNumber))
+                        {
+                            existingByPointNumber[pointNumber] = instance;
+                        }
+                    }
+
+                    var createdCount = 0;
+                    var updatedCount = 0;
+                    foreach (var record in records)
+                    {
+                        if (string.IsNullOrWhiteSpace(record.PointNumber) ||
+                            !record.FieldEasting.HasValue ||
+                            !record.FieldNorthing.HasValue ||
+                            !record.FieldElevation.HasValue)
+                        {
+                            continue;
+                        }
+
+                        var sharedPoint = new XYZ(record.FieldEasting.Value, record.FieldNorthing.Value, record.FieldElevation.Value);
+                        var internalPoint = sharedToProject.OfPoint(sharedPoint);
+
+                        if (existingByPointNumber.TryGetValue(record.PointNumber, out var existingInstance))
+                        {
+                            if (existingInstance.Location is LocationPoint existingLocation)
+                            {
+                                existingLocation.Point = internalPoint;
+                            }
+
+                            if (existingInstance.Symbol?.Id != modelSymbol.Id)
+                            {
+                                existingInstance.Symbol = modelSymbol;
+                            }
+
+                            SetParameterByGuid(existingInstance, CsEastingGuid, record.FieldEasting.Value);
+                            SetParameterByGuid(existingInstance, CsNorthingGuid, record.FieldNorthing.Value);
+                            SetParameterByGuid(existingInstance, CsElevationGuid, record.FieldElevation.Value);
+                            SetParameterByGuid(existingInstance, DeviationEastingGuid, 0.0);
+                            SetParameterByGuid(existingInstance, DeviationNorthingGuid, 0.0);
+                            SetDeviationElevationParameter(existingInstance, 0.0);
+                            updatedCount++;
+                            continue;
+                        }
+
+                        var newInstance = doc.Create.NewFamilyInstance(internalPoint, modelSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+                        SetParameterByGuid(newInstance, PointNumberGuid, record.PointNumber);
+                        SetParameterByGuid(newInstance, CsEastingGuid, record.FieldEasting.Value);
+                        SetParameterByGuid(newInstance, CsNorthingGuid, record.FieldNorthing.Value);
+                        SetParameterByGuid(newInstance, CsElevationGuid, record.FieldElevation.Value);
+                        SetParameterByGuid(newInstance, DeviationEastingGuid, 0.0);
+                        SetParameterByGuid(newInstance, DeviationNorthingGuid, 0.0);
+                        SetDeviationElevationParameter(newInstance, 0.0);
+                        createdCount++;
+                    }
+
+                    tx.Commit();
+                    LogManager.Info(correlationId, $"Ready points placement completed. Created: {createdCount}, Updated: {updatedCount}.");
+                    TaskDialog.Show("RevitSuite", $"Ready points placement completed.\n\nCreated: {createdCount}\nUpdated: {updatedCount}");
+                    return Result.Succeeded;
+                }
+                catch (Exception ex)
+                {
+                    tx.RollBack();
+                    LogManager.Error(correlationId, "Ready points placement failed.", ex);
+                    throw;
+                }
             }
         }
 

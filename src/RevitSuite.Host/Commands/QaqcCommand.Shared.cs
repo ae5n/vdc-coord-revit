@@ -565,7 +565,7 @@ namespace RevitSuite.Host.Commands
                     Size = new System.Drawing.Size(240, 25),
                     DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
                 };
-                categoryComboBox.Items.AddRange(new object[] { "Footings", "Columns", "Walls", SogCategoryName });
+                categoryComboBox.Items.AddRange(new object[] { "Footings", "Columns", "Walls", SogCategoryName, ReadyPointsCategoryName });
                 categoryComboBox.SelectedIndex = 0;
                 this.Controls.Add(categoryComboBox);
 
@@ -740,6 +740,7 @@ namespace RevitSuite.Host.Commands
                 this.CancelButton = cancelButton;
 
                 categoryComboBox.SelectedIndexChanged += (sender, args) => UpdatePourVisibility();
+                categoryComboBox.SelectedIndexChanged += (sender, args) => UpdateModeAvailability();
                 placeRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
                 exportRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
                 importRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
@@ -756,6 +757,7 @@ namespace RevitSuite.Host.Commands
                     }
                 };
                 UpdatePourVisibility();
+                UpdateModeAvailability();
                 UpdateThresholdVisibility();
             }
 
@@ -764,6 +766,16 @@ namespace RevitSuite.Host.Commands
                 var showPour = string.Equals(categoryComboBox.SelectedItem?.ToString(), SogCategoryName, StringComparison.OrdinalIgnoreCase);
                 pourLabel.Visible = showPour;
                 pourNumericUpDown.Visible = showPour;
+            }
+
+            private void UpdateModeAvailability()
+            {
+                var isReadyPoints = string.Equals(categoryComboBox.SelectedItem?.ToString(), ReadyPointsCategoryName, StringComparison.OrdinalIgnoreCase);
+                exportRadioButton.Enabled = !isReadyPoints;
+                if (isReadyPoints && exportRadioButton.Checked)
+                {
+                    placeRadioButton.Checked = true;
+                }
             }
 
             private void UpdateThresholdVisibility()
@@ -805,6 +817,197 @@ namespace RevitSuite.Host.Commands
 
             public double HorizontalThreshold { get; }
             public double ElevationThreshold { get; }
+        }
+
+        private class CsvColumnMapping
+        {
+            public CsvColumnMapping(int pointNumberIndex, int northingIndex, int eastingIndex, int elevationIndex)
+            {
+                PointNumberIndex = pointNumberIndex;
+                NorthingIndex = northingIndex;
+                EastingIndex = eastingIndex;
+                ElevationIndex = elevationIndex;
+            }
+
+            public int PointNumberIndex { get; }
+            public int NorthingIndex { get; }
+            public int EastingIndex { get; }
+            public int ElevationIndex { get; }
+        }
+
+        private class CsvColumnMappingForm : System.Windows.Forms.Form
+        {
+            private class ColumnOption
+            {
+                public ColumnOption(int index, string label)
+                {
+                    Index = index;
+                    Label = label;
+                }
+
+                public int Index { get; }
+                public string Label { get; }
+
+                public override string ToString() => Label;
+            }
+
+            private readonly System.Windows.Forms.ComboBox _pointNumberComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _northingComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _eastingComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _elevationComboBox = new System.Windows.Forms.ComboBox();
+            private readonly bool _requireElevation;
+
+            public CsvColumnMapping SelectedMapping { get; private set; }
+
+            public CsvColumnMappingForm(
+                string[] headers,
+                CsvColumnMapping defaults,
+                bool requireElevation,
+                string title)
+            {
+                _requireElevation = requireElevation;
+
+                Text = string.IsNullOrWhiteSpace(title) ? "Map CSV Columns" : title;
+                Size = new System.Drawing.Size(560, 310);
+                StartPosition = FormStartPosition.CenterParent;
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+
+                var helpLabel = new Label
+                {
+                    Text = requireElevation
+                        ? "Map required columns: Point Number, Northing, Easting, Elevation."
+                        : "Map required columns: Point Number, Northing, Easting. Elevation is optional.",
+                    Location = new System.Drawing.Point(16, 14),
+                    Size = new System.Drawing.Size(520, 20)
+                };
+                Controls.Add(helpLabel);
+
+                AddMappingRow("Point Number:", _pointNumberComboBox, 50);
+                AddMappingRow("Northing:", _northingComboBox, 90);
+                AddMappingRow("Easting:", _eastingComboBox, 130);
+                AddMappingRow("Elevation:", _elevationComboBox, 170);
+
+                PopulateHeaderOptions(_pointNumberComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_northingComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_eastingComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_elevationComboBox, headers, allowNone: !requireElevation);
+
+                SetSelectedIndex(_pointNumberComboBox, defaults?.PointNumberIndex ?? -1);
+                SetSelectedIndex(_northingComboBox, defaults?.NorthingIndex ?? -1);
+                SetSelectedIndex(_eastingComboBox, defaults?.EastingIndex ?? -1);
+                SetSelectedIndex(_elevationComboBox, defaults?.ElevationIndex ?? -1);
+
+                var okButton = new Button
+                {
+                    Text = "OK",
+                    Location = new System.Drawing.Point(370, 225),
+                    Size = new System.Drawing.Size(75, 28)
+                };
+                okButton.Click += OnOkClick;
+                Controls.Add(okButton);
+
+                var cancelButton = new Button
+                {
+                    Text = "Cancel",
+                    Location = new System.Drawing.Point(455, 225),
+                    Size = new System.Drawing.Size(75, 28),
+                    DialogResult = DialogResult.Cancel
+                };
+                Controls.Add(cancelButton);
+
+                AcceptButton = okButton;
+                CancelButton = cancelButton;
+            }
+
+            private void AddMappingRow(string label, System.Windows.Forms.ComboBox comboBox, int y)
+            {
+                var textLabel = new Label
+                {
+                    Text = label,
+                    Location = new System.Drawing.Point(16, y + 3),
+                    Size = new System.Drawing.Size(110, 22)
+                };
+                Controls.Add(textLabel);
+
+                comboBox.Location = new System.Drawing.Point(128, y);
+                comboBox.Size = new System.Drawing.Size(402, 24);
+                comboBox.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+                Controls.Add(comboBox);
+            }
+
+            private static void PopulateHeaderOptions(System.Windows.Forms.ComboBox comboBox, string[] headers, bool allowNone)
+            {
+                if (allowNone)
+                {
+                    comboBox.Items.Add(new ColumnOption(-1, "<Not Used>"));
+                }
+
+                for (var i = 0; i < headers.Length; i++)
+                {
+                    comboBox.Items.Add(new ColumnOption(i, $"{i + 1}: {headers[i]}"));
+                }
+
+                if (comboBox.Items.Count > 0)
+                {
+                    comboBox.SelectedIndex = 0;
+                }
+            }
+
+            private static void SetSelectedIndex(System.Windows.Forms.ComboBox comboBox, int columnIndex)
+            {
+                for (var i = 0; i < comboBox.Items.Count; i++)
+                {
+                    if (comboBox.Items[i] is ColumnOption option && option.Index == columnIndex)
+                    {
+                        comboBox.SelectedIndex = i;
+                        return;
+                    }
+                }
+            }
+
+            private void OnOkClick(object sender, EventArgs e)
+            {
+                var pointIndex = GetSelectedColumnIndex(_pointNumberComboBox);
+                var northingIndex = GetSelectedColumnIndex(_northingComboBox);
+                var eastingIndex = GetSelectedColumnIndex(_eastingComboBox);
+                var elevationIndex = GetSelectedColumnIndex(_elevationComboBox);
+
+                if (pointIndex < 0 || northingIndex < 0 || eastingIndex < 0)
+                {
+                    MessageBox.Show(this, "Point Number, Northing, and Easting are required.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (_requireElevation && elevationIndex < 0)
+                {
+                    MessageBox.Show(this, "Elevation is required for this mode.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                var usedIndices = new HashSet<int> { pointIndex, northingIndex, eastingIndex };
+                if (elevationIndex >= 0)
+                {
+                    usedIndices.Add(elevationIndex);
+                }
+
+                var expectedCount = elevationIndex >= 0 ? 4 : 3;
+                if (usedIndices.Count != expectedCount)
+                {
+                    MessageBox.Show(this, "Each mapped field must use a different CSV column.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                SelectedMapping = new CsvColumnMapping(pointIndex, northingIndex, eastingIndex, elevationIndex);
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+
+            private static int GetSelectedColumnIndex(System.Windows.Forms.ComboBox comboBox)
+            {
+                return comboBox.SelectedItem is ColumnOption option ? option.Index : -1;
+            }
         }
 
         private class PointThresholdSelectionForm : System.Windows.Forms.Form

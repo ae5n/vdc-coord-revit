@@ -12,6 +12,7 @@ namespace RevitSuite.Host.Commands
     public partial class QaqcCommand : IExternalCommand
     {
         private const string SogCategoryName = "Floor - Slab on Grade";
+        private const string ReadyPointsCategoryName = "Ready Points (CSV)";
 
         // Shared parameter GUIDs
         private static readonly Guid PointNumberGuid = Guid.Parse("7b436883-9c3e-4a23-b014-f3ed5c5cf91d");
@@ -74,6 +75,13 @@ namespace RevitSuite.Host.Commands
 
                 if (selectedMode == QaqcMode.Export)
                 {
+                    if (string.Equals(selectedCategory, ReadyPointsCategoryName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        TaskDialog.Show("RevitSuite", "Export is not used for Ready Points workflow.");
+                        LogManager.Info(correlationId, "Export skipped for Ready Points category.");
+                        return Result.Cancelled;
+                    }
+
                     return ExecuteExport(correlationId, uiDoc, doc, config, selectedCategory);
                 }
 
