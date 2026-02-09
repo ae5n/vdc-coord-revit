@@ -11,6 +11,10 @@ namespace RevitSuite.Host.Commands
 {
     public partial class QaqcCommand
     {
+        private static readonly Autodesk.Revit.DB.Color ModelPointColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+        private static readonly Autodesk.Revit.DB.Color DeviationPointColor = new Autodesk.Revit.DB.Color(249, 115, 22);
+        private static readonly Autodesk.Revit.DB.Color CriticalPointColor = new Autodesk.Revit.DB.Color(239, 68, 68);
+
         private Result ExecutePlace(string correlationId, UIDocument uiDoc, Document doc, QaqcConfig config, string category, int pourNumber)
         {
             try
@@ -112,9 +116,17 @@ namespace RevitSuite.Host.Commands
 
                     try
                     {
-                        if (!controlPointSymbol.IsActive)
+                        if (!TryEnsurePointTypeSymbols(
+                                doc,
+                                config,
+                                controlPointSymbol,
+                                correlationId,
+                                out var modelPointSymbol,
+                                out _,
+                                out _))
                         {
-                            controlPointSymbol.Activate();
+                            tx.RollBack();
+                            return Result.Failed;
                         }
 
                         foreach (var footingInfo in footings)
@@ -156,7 +168,7 @@ namespace RevitSuite.Host.Commands
                                     continue;
                                 }
 
-                                var instance = doc.Create.NewFamilyInstance(corner, controlPointSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+                                var instance = doc.Create.NewFamilyInstance(corner, modelPointSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
                                 placedLocations.Add(corner); // Track this location
 
                                 string pointNumber;
@@ -233,6 +245,11 @@ namespace RevitSuite.Host.Commands
                                 SetParameterByGuid(instance, CsEastingGuid, sharedCorner.X);
                                 SetParameterByGuid(instance, CsNorthingGuid, sharedCorner.Y);
                                 SetParameterByGuid(instance, CsElevationGuid, sharedCorner.Z);
+
+                                // Initialize deviation parameters on placement so they are present immediately.
+                                SetParameterByGuid(instance, DeviationEastingGuid, 0.0);
+                                SetParameterByGuid(instance, DeviationNorthingGuid, 0.0);
+                                SetDeviationElevationParameter(instance, 0.0);
 
                                 pointsPlaced++;
                                 cornerIndex++;
@@ -388,41 +405,85 @@ namespace RevitSuite.Host.Commands
             return namedSymbol ?? symbols.FirstOrDefault();
         }
 
-        private FamilySymbol GetOrCreateFieldPointSymbol(Document doc, QaqcConfig config, string modelTypeName, string fieldTypeName)
+        private bool TryEnsurePointTypeSymbols(
+            Document doc,
+            QaqcConfig config,
+            FamilySymbol seedSymbol,
+            string correlationId,
+            out FamilySymbol modelSymbol,
+            out FamilySymbol deviationSymbol,
+            out FamilySymbol criticalSymbol)
         {
-            // Find all symbols of the Control Point family
+            modelSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Model", "QAQC_Point_Model", ModelPointColor, correlationId);
+            deviationSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Deviation", "QAQC_Point_Deviation", DeviationPointColor, correlationId);
+            criticalSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Critical", "QAQC_Point_Critical", CriticalPointColor, correlationId);
+
+            return modelSymbol != null && deviationSymbol != null && criticalSymbol != null;
+        }
+
+        private FamilySymbol EnsureControlPointTypeSymbol(
+            Document doc,
+            QaqcConfig config,
+            FamilySymbol seedSymbol,
+            string targetTypeName,
+            string materialName,
+            Autodesk.Revit.DB.Color color,
+            string correlationId)
+        {
             var symbols = new FilteredElementCollector(doc)
                 .OfClass(typeof(FamilySymbol))
                 .Cast<FamilySymbol>()
                 .Where(s => s.FamilyName == config.DefaultFamilyName)
                 .ToList();
 
-            // Check if field type already exists
-            var fieldSymbol = symbols.FirstOrDefault(s => s.Name == fieldTypeName);
-            if (fieldSymbol != null)
+            var targetSymbol = symbols.FirstOrDefault(s => s.Name.Equals(targetTypeName, StringComparison.OrdinalIgnoreCase));
+            if (targetSymbol == null)
             {
-                if (!fieldSymbol.IsActive)
-                    fieldSymbol.Activate();
-                return fieldSymbol;
+                var source = symbols.FirstOrDefault(s => s.Id == seedSymbol.Id) ?? symbols.FirstOrDefault() ?? seedSymbol;
+                targetSymbol = source.Duplicate(targetTypeName) as FamilySymbol;
             }
 
-            // Get the model type to duplicate
-            var modelSymbol = symbols.FirstOrDefault(s => s.Name == modelTypeName);
-            if (modelSymbol == null)
+            if (targetSymbol == null)
             {
-                // If specific model type not found, use any symbol from the family
-                modelSymbol = symbols.FirstOrDefault();
-            }
-
-            if (modelSymbol == null)
+                LogManager.Error(correlationId, $"Failed to create/find control point type '{targetTypeName}'.");
                 return null;
+            }
 
-            // Duplicate and rename
-            var newSymbol = modelSymbol.Duplicate(fieldTypeName) as FamilySymbol;
-            if (newSymbol != null && !newSymbol.IsActive)
-                newSymbol.Activate();
+            if (!targetSymbol.IsActive)
+            {
+                targetSymbol.Activate();
+            }
 
-            return newSymbol;
+            var materialId = EnsureMaterial(doc, materialName, 0, color);
+            if (!TryAssignTypeMaterial(targetSymbol, materialId))
+            {
+                LogManager.Warn(correlationId, $"No writable type material parameter found for '{targetTypeName}'.");
+            }
+
+            return targetSymbol;
+        }
+
+        private bool TryAssignTypeMaterial(FamilySymbol symbol, ElementId materialId)
+        {
+            var typeMaterialNames = new[] { "Material", "Type Material", "Symbol Material", "Point Material" };
+            foreach (var paramName in typeMaterialNames)
+            {
+                var param = symbol.LookupParameter(paramName);
+                if (param != null && !param.IsReadOnly && param.StorageType == StorageType.ElementId)
+                {
+                    param.Set(materialId);
+                    return true;
+                }
+            }
+
+            var structuralMaterial = symbol.get_Parameter(BuiltInParameter.STRUCTURAL_MATERIAL_PARAM);
+            if (structuralMaterial != null && !structuralMaterial.IsReadOnly && structuralMaterial.StorageType == StorageType.ElementId)
+            {
+                structuralMaterial.Set(materialId);
+                return true;
+            }
+
+            return false;
         }
 
         private List<XYZ> GetFootingCorners(Element footing, Transform transform)

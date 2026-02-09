@@ -57,6 +57,23 @@ namespace RevitSuite.Host.Commands
             }
         }
 
+        private bool SetDoubleParameterByName(Element element, string parameterName, double value)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(parameterName))
+            {
+                return false;
+            }
+
+            var param = element.LookupParameter(parameterName);
+            if (param == null || param.IsReadOnly || param.StorageType != StorageType.Double)
+            {
+                return false;
+            }
+
+            param.Set(value);
+            return true;
+        }
+
         private string EscapeCsvValue(string value)
         {
             if (string.IsNullOrEmpty(value))

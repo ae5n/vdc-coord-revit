@@ -59,9 +59,9 @@ namespace RevitSuite.Host.Commands
                     try
                     {
                         UpdateSharedParameters(doc, deviations, correlationId);
+                        ApplyModelPointType(doc, deviations, config, correlationId);
                         PlaceFieldPoints(doc, deviations, config, correlationId);
                         // CreateDeviationLines(doc, deviations, correlationId); // Temporarily disabled for performance
-                        ApplyGraphicOverrides(doc, deviations, config, correlationId);
                         if (config.CreateDeviationArrows)
                         {
                             CreateDeviationIndicators(doc, deviations, config, correlationId);
@@ -286,6 +286,7 @@ namespace RevitSuite.Host.Commands
                 {
                     SetParameterByGuid(element, DeviationEastingGuid, deviation.DeviationEasting);
                     SetParameterByGuid(element, DeviationNorthingGuid, deviation.DeviationNorthing);
+                    SetDeviationElevationParameter(element, deviation.DeviationElevation);
                 }
                 catch (Exception ex)
                 {
@@ -294,13 +295,69 @@ namespace RevitSuite.Host.Commands
             }
         }
 
+        private void SetDeviationElevationParameter(Element element, double value)
+        {
+            // GUID for elevation deviation is not currently defined in codebase.
+            // Write by known shared-parameter names used in control point families.
+            if (SetDoubleParameterByName(element, "Deviation Elevation", value))
+            {
+                return;
+            }
+
+            if (SetDoubleParameterByName(element, "DeviationElevation", value))
+            {
+                return;
+            }
+
+            SetDoubleParameterByName(element, "Deviation_Elevation", value);
+        }
+
+        private void ApplyModelPointType(Document doc, List<DeviationResult> deviations, QaqcConfig config, string correlationId)
+        {
+            var seedSymbol = FindControlPointSymbol(doc, config);
+            if (seedSymbol == null)
+            {
+                LogManager.Warn(correlationId, "Control Point family not found; model type assignment skipped.");
+                return;
+            }
+
+            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _))
+            {
+                LogManager.Warn(correlationId, "Could not ensure Model/Deviation/Critical types; model type assignment skipped.");
+                return;
+            }
+
+            foreach (var deviation in deviations)
+            {
+                if (!(doc.GetElement(deviation.ElementId) is FamilyInstance modelPoint))
+                    continue;
+
+                try
+                {
+                    if (modelPoint.Symbol?.Id != modelSymbol.Id)
+                    {
+                        modelPoint.Symbol = modelSymbol;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warn(correlationId, $"Failed to set 'Model' type for point {deviation.PointNumber}: {ex.Message}");
+                }
+            }
+        }
+
         private void PlaceFieldPoints(Document doc, List<DeviationResult> deviations, QaqcConfig config, string correlationId)
         {
-            // Get or create the "Field" type
-            var fieldSymbol = GetOrCreateFieldPointSymbol(doc, config, "Coordination", "Field");
-            if (fieldSymbol == null)
+            var seedSymbol = FindControlPointSymbol(doc, config);
+            if (seedSymbol == null)
             {
-                LogManager.Error(correlationId, "Failed to create or find 'Field' type for Control Point family.");
+                LogManager.Error(correlationId, "Control Point family not found.");
+                return;
+            }
+
+            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out var deviationSymbol, out var criticalSymbol))
+            {
+                LogManager.Error(correlationId, "Failed to create/find Model/Deviation/Critical types for Control Point family.");
                 return;
             }
 
@@ -310,7 +367,10 @@ namespace RevitSuite.Host.Commands
                 .OfCategory(BuiltInCategory.OST_Site)
                 .WhereElementIsNotElementType()
                 .OfType<FamilyInstance>()
-                .Where(fi => fi.Symbol?.Name == "Field")
+                .Where(fi =>
+                    fi.Symbol?.Name == "Field" ||
+                    fi.Symbol?.Name == "Deviation" ||
+                    fi.Symbol?.Name == "Critical")
                 .ToList();
 
             foreach (var fp in existingFieldPointsList)
@@ -344,6 +404,13 @@ namespace RevitSuite.Host.Commands
                         deviation.ModelPoint.X + deviation.DeviationEasting,
                         deviation.ModelPoint.Y + deviation.DeviationNorthing,
                         deviation.ModelPoint.Z + deviation.DeviationElevation);
+                    var fieldSymbol = deviation.Status switch
+                    {
+                        ToleranceStatus.Green => modelSymbol,
+                        ToleranceStatus.Yellow => deviationSymbol,
+                        ToleranceStatus.Red => criticalSymbol,
+                        _ => modelSymbol
+                    };
 
                     FamilyInstance fieldInstance;
 
@@ -357,6 +424,11 @@ namespace RevitSuite.Host.Commands
                         if (fieldInstance.Location is LocationPoint locPoint)
                         {
                             locPoint.Point = fieldPoint;
+                        }
+
+                        if (fieldInstance.Symbol?.Id != fieldSymbol.Id)
+                        {
+                            fieldInstance.Symbol = fieldSymbol;
                         }
 
                         fieldPointsUpdated++;
@@ -383,6 +455,7 @@ namespace RevitSuite.Host.Commands
                     // Update deviation parameters (for both new and existing)
                     SetParameterByGuid(fieldInstance, DeviationEastingGuid, deviation.DeviationEasting);
                     SetParameterByGuid(fieldInstance, DeviationNorthingGuid, deviation.DeviationNorthing);
+                    SetDeviationElevationParameter(fieldInstance, deviation.DeviationElevation);
 
                     // Update comments (for both new and existing)
                     var commentsParam = fieldInstance.LookupParameter("Comments");
