@@ -127,7 +127,7 @@ namespace RevitSuite.Host.Commands
                         {
                             CreateDeviationIndicators(doc, deviations, config, correlationId);
                         }
-                        CreateDeviationAnnotations(doc, deviations, correlationId);
+                        CreateDeviationAnnotations(doc, deviations, useElevationThreshold, correlationId);
 
                         tx.Commit();
                     }

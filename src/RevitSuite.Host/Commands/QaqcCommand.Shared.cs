@@ -153,7 +153,7 @@ namespace RevitSuite.Host.Commands
             return geometryList;
         }
 
-        private void CreateDeviationAnnotations(Document doc, List<DeviationResult> deviations, string correlationId)
+        private void CreateDeviationAnnotations(Document doc, List<DeviationResult> deviations, bool includeElevationAnnotations, string correlationId)
         {
             var view = doc.ActiveView;
             if (view == null || view.ViewType == ViewType.Schedule || view.ViewType == ViewType.Legend || view.ViewType == ViewType.ThreeD)
@@ -230,28 +230,14 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            // Get crop region bounds for filtering
-            var cropBox = view.CropBox;
-            var hasCropRegion = cropBox != null;
-            var minCorner = hasCropRegion ? cropBox.Min : null;
-            var maxCorner = hasCropRegion ? cropBox.Max : null;
-
             LogManager.Info(correlationId, $"Using TextNoteType: {textNoteType.Name}");
 
             int annotationsCreated = 0;
-            int skippedOutsideCrop = 0;
 
             foreach (var deviation in deviations)
             {
                 if (deviation.ModelPoint == null)
                     continue;
-
-                // Skip points outside crop region
-                if (hasCropRegion && !IsPointInCropRegion(deviation.ModelPoint, minCorner, maxCorner))
-                {
-                    skippedOutsideCrop++;
-                    continue;
-                }
 
                 try
                 {
@@ -263,9 +249,14 @@ namespace RevitSuite.Host.Commands
                     var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
                     var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
 
-                    // Simple format: E and N deviations only (no point number)
                     var annotationText = $"E: {eastingSign}{eastingFtIn}\n" +
                         $"N: {northingSign}{northingFtIn}";
+                    if (includeElevationAnnotations)
+                    {
+                        var elevationFtIn = FormatFeetInches(Math.Abs(deviation.DeviationElevation));
+                        var elevationSign = deviation.DeviationElevation >= 0 ? "+" : "-";
+                        annotationText += $"\nZ: {elevationSign}{elevationFtIn}";
+                    }
 
                     // Offset annotation point slightly to the right and up from Control Point
                     var annotationPoint = new XYZ(
@@ -297,7 +288,7 @@ namespace RevitSuite.Host.Commands
                 }
             }
 
-            LogManager.Info(correlationId, $"Created {annotationsCreated} annotations. Skipped {skippedOutsideCrop} points outside crop region.");
+            LogManager.Info(correlationId, $"Created {annotationsCreated} deviation annotations.");
         }
 
         private string FormatFeetInches(double feet)
