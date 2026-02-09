@@ -321,7 +321,7 @@ namespace RevitSuite.Host.Commands
             var mapping = PromptCsvColumnMapping(
                 openDialog.FileName,
                 "Map Ready Points CSV Columns",
-                requireElevation: true,
+                requireElevation: false,
                 correlationId: correlationId);
             if (mapping == null)
             {
@@ -329,10 +329,10 @@ namespace RevitSuite.Host.Commands
                 return Result.Cancelled;
             }
 
-            var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, requireElevationValues: true);
+            var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, requireElevationValues: false);
             if (records.Count == 0)
             {
-                TaskDialog.Show("RevitSuite", "No valid points found in CSV. Expected columns include Point Number, Northing, Easting, Elevation.");
+                TaskDialog.Show("RevitSuite", "No valid points found in CSV. Expected columns include Point Number, Northing, Easting (Elevation optional).");
                 LogManager.Warn(correlationId, "Ready points placement cancelled - no valid CSV rows.");
                 return Result.Cancelled;
             }
@@ -382,17 +382,26 @@ namespace RevitSuite.Host.Commands
                     {
                         if (string.IsNullOrWhiteSpace(record.PointNumber) ||
                             !record.FieldEasting.HasValue ||
-                            !record.FieldNorthing.HasValue ||
-                            !record.FieldElevation.HasValue)
+                            !record.FieldNorthing.HasValue)
                         {
                             continue;
                         }
 
-                        var sharedPoint = new XYZ(record.FieldEasting.Value, record.FieldNorthing.Value, record.FieldElevation.Value);
-                        var internalPoint = sharedToProject.OfPoint(sharedPoint);
+                        var sharedElevation = record.FieldElevation ?? 0.0;
 
                         if (existingByPointNumber.TryGetValue(record.PointNumber, out var existingInstance))
                         {
+                            if (!record.FieldElevation.HasValue)
+                            {
+                                var existingSharedElevation = GetParameterValueDouble(existingInstance, CsElevationGuid);
+                                if (existingSharedElevation.HasValue)
+                                {
+                                    sharedElevation = existingSharedElevation.Value;
+                                }
+                            }
+
+                            var sharedPoint = new XYZ(record.FieldEasting.Value, record.FieldNorthing.Value, sharedElevation);
+                            var internalPoint = sharedToProject.OfPoint(sharedPoint);
                             if (existingInstance.Location is LocationPoint existingLocation)
                             {
                                 existingLocation.Point = internalPoint;
@@ -405,7 +414,7 @@ namespace RevitSuite.Host.Commands
 
                             SetParameterByGuid(existingInstance, CsEastingGuid, record.FieldEasting.Value);
                             SetParameterByGuid(existingInstance, CsNorthingGuid, record.FieldNorthing.Value);
-                            SetParameterByGuid(existingInstance, CsElevationGuid, record.FieldElevation.Value);
+                            SetParameterByGuid(existingInstance, CsElevationGuid, sharedElevation);
                             SetParameterByGuid(existingInstance, DeviationEastingGuid, 0.0);
                             SetParameterByGuid(existingInstance, DeviationNorthingGuid, 0.0);
                             SetDeviationElevationParameter(existingInstance, 0.0);
@@ -413,11 +422,14 @@ namespace RevitSuite.Host.Commands
                             continue;
                         }
 
-                        var newInstance = doc.Create.NewFamilyInstance(internalPoint, modelSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+                        var newSharedPoint = new XYZ(record.FieldEasting.Value, record.FieldNorthing.Value, sharedElevation);
+                        var newInternalPoint = sharedToProject.OfPoint(newSharedPoint);
+
+                        var newInstance = doc.Create.NewFamilyInstance(newInternalPoint, modelSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
                         SetParameterByGuid(newInstance, PointNumberGuid, record.PointNumber);
                         SetParameterByGuid(newInstance, CsEastingGuid, record.FieldEasting.Value);
                         SetParameterByGuid(newInstance, CsNorthingGuid, record.FieldNorthing.Value);
-                        SetParameterByGuid(newInstance, CsElevationGuid, record.FieldElevation.Value);
+                        SetParameterByGuid(newInstance, CsElevationGuid, sharedElevation);
                         SetParameterByGuid(newInstance, DeviationEastingGuid, 0.0);
                         SetParameterByGuid(newInstance, DeviationNorthingGuid, 0.0);
                         SetDeviationElevationParameter(newInstance, 0.0);

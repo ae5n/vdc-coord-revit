@@ -877,8 +877,8 @@ namespace RevitSuite.Host.Commands
                 var helpLabel = new Label
                 {
                     Text = requireElevation
-                        ? "Map required columns: Point Number, Northing, Easting, Elevation."
-                        : "Map required columns: Point Number, Northing, Easting. Elevation is optional.",
+                        ? "Required: Point Number, Northing, Easting, Elevation."
+                        : "Required: Point Number, Northing, Easting. For N/E-only checks, set Elevation to <Not Used>.",
                     Location = new System.Drawing.Point(16, 14),
                     Size = new System.Drawing.Size(520, 20)
                 };
@@ -897,7 +897,7 @@ namespace RevitSuite.Host.Commands
                 SetSelectedIndex(_pointNumberComboBox, defaults?.PointNumberIndex ?? -1);
                 SetSelectedIndex(_northingComboBox, defaults?.NorthingIndex ?? -1);
                 SetSelectedIndex(_eastingComboBox, defaults?.EastingIndex ?? -1);
-                SetSelectedIndex(_elevationComboBox, defaults?.ElevationIndex ?? -1);
+                SetSelectedIndex(_elevationComboBox, requireElevation ? (defaults?.ElevationIndex ?? -1) : -1);
 
                 var okButton = new Button
                 {
@@ -987,12 +987,12 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var usedIndices = new HashSet<int> { pointIndex, northingIndex, eastingIndex };
-                if (elevationIndex >= 0)
+                if (_requireElevation && elevationIndex >= 0)
                 {
                     usedIndices.Add(elevationIndex);
                 }
 
-                var expectedCount = elevationIndex >= 0 ? 4 : 3;
+                var expectedCount = _requireElevation ? 4 : 3;
                 if (usedIndices.Count != expectedCount)
                 {
                     MessageBox.Show(this, "Each mapped field must use a different CSV column.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
