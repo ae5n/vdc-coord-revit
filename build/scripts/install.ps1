@@ -26,7 +26,16 @@ New-Item -ItemType Directory -Force -Path $payloadDir | Out-Null
 
 $destinationDll = Join-Path $payloadDir "RevitSuite.Host.dll"
 Copy-Item -Force $buildOutput $destinationDll
-Copy-Item -Recurse -Force (Join-Path $repoRoot "schemas") (Join-Path $payloadDir "schemas")
+
+$schemaSourceDir = Join-Path $repoRoot "schemas"
+$schemaTargetDir = Join-Path $payloadDir "schemas"
+
+if (Test-Path $schemaTargetDir) {
+    Remove-Item -Recurse -Force $schemaTargetDir
+}
+
+New-Item -ItemType Directory -Force -Path $schemaTargetDir | Out-Null
+Copy-Item -Force (Join-Path $schemaSourceDir "*.json") $schemaTargetDir
 
 $templatePath = Join-Path $repoRoot "src/RevitSuite.Host/AddinManifest/RevitSuite.addin.tpl"
 $addinTemplate = Get-Content $templatePath -Raw

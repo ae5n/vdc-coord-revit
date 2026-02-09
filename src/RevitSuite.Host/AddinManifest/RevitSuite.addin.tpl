@@ -8,36 +8,4 @@
     <VendorId>RSUT</VendorId>
     <VendorDescription>Revit Suite</VendorDescription>
   </AddIn>
-  <AddIn Type="Command">
-    <Name>RevitSuite.LevelReport</Name>
-    <Assembly>$ADDIN_DLL$</Assembly>
-    <AddInId>00000000-0000-0000-0000-000000000102</AddInId>
-    <FullClassName>RevitSuite.Host.Commands.LevelReportCommand</FullClassName>
-    <VendorId>RSUT</VendorId>
-    <VendorDescription>Revit Suite</VendorDescription>
-  </AddIn>
-  <AddIn Type="Command">
-    <Name>RevitSuite.GridReport</Name>
-    <Assembly>$ADDIN_DLL$</Assembly>
-    <AddInId>00000000-0000-0000-0000-000000000103</AddInId>
-    <FullClassName>RevitSuite.Host.Commands.GridReportCommand</FullClassName>
-    <VendorId>RSUT</VendorId>
-    <VendorDescription>Revit Suite</VendorDescription>
-  </AddIn>
-  <AddIn Type="Command">
-    <Name>RevitSuite.FootingZones</Name>
-    <Assembly>$ADDIN_DLL$</Assembly>
-    <AddInId>00000000-0000-0000-0000-000000000104</AddInId>
-    <FullClassName>RevitSuite.Host.Commands.FootingZoneCommand</FullClassName>
-    <VendorId>RSUT</VendorId>
-    <VendorDescription>Revit Suite</VendorDescription>
-  </AddIn>
-  <AddIn Type="Command">
-    <Name>RevitSuite.CopyLinkedViews</Name>
-    <Assembly>$ADDIN_DLL$</Assembly>
-    <AddInId>00000000-0000-0000-0000-000000000105</AddInId>
-    <FullClassName>RevitSuite.Host.Commands.CopyLinkedViewsCommand</FullClassName>
-    <VendorId>RSUT</VendorId>
-    <VendorDescription>Revit Suite</VendorDescription>
-  </AddIn>
 </RevitAddIns>
