@@ -15,7 +15,16 @@ namespace RevitSuite.Host.Commands
     public partial class QaqcCommand
     {
 
-        private Result ExecuteImport(string correlationId, UIDocument uiDoc, Document doc, QaqcConfig config, string category)
+        private Result ExecuteImport(
+            string correlationId,
+            UIDocument uiDoc,
+            Document doc,
+            QaqcConfig config,
+            string category,
+            double horizontalThreshold,
+            double elevationThreshold,
+            bool useHorizontalThreshold,
+            bool useElevationThreshold)
         {
             try
             {
@@ -43,7 +52,16 @@ namespace RevitSuite.Host.Commands
                 }
 
                 // Match to elements and calculate deviations
-                var deviations = CalculateDeviations(doc, records, config, category, correlationId);
+                var deviations = CalculateDeviations(
+                    doc,
+                    records,
+                    config,
+                    category,
+                    correlationId,
+                    horizontalThreshold,
+                    elevationThreshold,
+                    useHorizontalThreshold,
+                    useElevationThreshold);
                 if (deviations.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No matching Control Points found in model.");
@@ -78,17 +96,20 @@ namespace RevitSuite.Host.Commands
                     }
                 }
 
-                var greenCount = deviations.Count(d => d.Status == ToleranceStatus.Green);
-                var yellowCount = deviations.Count(d => d.Status == ToleranceStatus.Yellow);
+                var deviationCount = deviations.Count(d => d.Status == ToleranceStatus.Yellow || d.Status == ToleranceStatus.Green);
                 var redCount = deviations.Count(d => d.Status == ToleranceStatus.Red);
 
-                LogManager.Info(correlationId, $"Import completed: {deviations.Count} points analyzed. Green: {greenCount}, Yellow: {yellowCount}, Red: {redCount}");
+                LogManager.Info(
+                    correlationId,
+                    $"Import completed: {deviations.Count} points analyzed. Deviation: {deviationCount}, Critical: {redCount}. Thresholds => Horizontal({useHorizontalThreshold}): {horizontalThreshold}, Elevation({useElevationThreshold}): {elevationThreshold}");
                 TaskDialog.Show("RevitSuite",
                     $"Import successful!\n\n" +
                     $"{deviations.Count} Control Points analyzed:\n" +
-                    $"  Green (within tolerance): {greenCount}\n" +
-                    $"  Yellow (warning): {yellowCount}\n" +
-                    $"  Red (exceeds tolerance): {redCount}");
+                    $"  Deviation (below threshold): {deviationCount}\n" +
+                    $"  Critical (above threshold): {redCount}\n\n" +
+                    $"Thresholds used:\n" +
+                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"{horizontalThreshold:F3} ft" : "Disabled")}\n" +
+                    $"  Elevation: {(useElevationThreshold ? $"{elevationThreshold:F3} ft" : "Disabled")}");
 
                 return Result.Succeeded;
             }
@@ -170,13 +191,24 @@ namespace RevitSuite.Host.Commands
             return records;
         }
 
-        private List<DeviationResult> CalculateDeviations(Document doc, List<ControlPointRecord> records, QaqcConfig config, string category, string correlationId)
+        private List<DeviationResult> CalculateDeviations(
+            Document doc,
+            List<ControlPointRecord> records,
+            QaqcConfig config,
+            string category,
+            string correlationId,
+            double horizontalThreshold,
+            double elevationThreshold,
+            bool useHorizontalThreshold,
+            bool useElevationThreshold)
         {
             var deviations = new List<DeviationResult>();
 
             // Get category-specific settings
             var categorySettings = config.GetCategorySettings(category);
-            LogManager.Info(correlationId, $"Using {category} settings: ToleranceGreen={categorySettings.ToleranceGreen}, ToleranceYellow={categorySettings.ToleranceYellow}, ComparisonMethod={categorySettings.ComparisonMethod}");
+            LogManager.Info(
+                correlationId,
+                $"Using {category} settings with UI thresholds: Horizontal({useHorizontalThreshold})={horizontalThreshold}, Elevation({useElevationThreshold})={elevationThreshold}. Schema reference: ToleranceGreen={categorySettings.ToleranceGreen}, ToleranceYellow={categorySettings.ToleranceYellow}, ComparisonMethod={categorySettings.ComparisonMethod}");
 
             // Collect all Control Points from document
             var allControlPoints = new FilteredElementCollector(doc)
@@ -226,28 +258,10 @@ namespace RevitSuite.Host.Commands
                 var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
                 var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
 
-                // Determine which deviation value to use based on comparison method
-                double comparisonValue;
-                switch (categorySettings.ComparisonMethod.ToLower())
-                {
-                    case "vertical":
-                        comparisonValue = Math.Abs(devElevation);
-                        break;
-                    case "total":
-                        comparisonValue = totalDev;
-                        break;
-                    case "horizontal":
-                    default:
-                        comparisonValue = horizontalDev;
-                        break;
-                }
-
-                // Determine tolerance status using category-specific tolerances
-                var status = ToleranceStatus.Green;
-                if (comparisonValue > categorySettings.ToleranceYellow)
-                    status = ToleranceStatus.Red;
-                else if (comparisonValue > categorySettings.ToleranceGreen)
-                    status = ToleranceStatus.Yellow;
+                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalThreshold;
+                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationThreshold;
+                var isCritical = exceedsHorizontal || exceedsElevation;
+                var status = isCritical ? ToleranceStatus.Red : ToleranceStatus.Yellow;
 
                 // Get model point location
                 XYZ modelPoint = null;

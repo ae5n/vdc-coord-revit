@@ -42,6 +42,10 @@ namespace RevitSuite.Host.Commands
                 string selectedCategory;
                 QaqcMode selectedMode;
                 int selectedPourNumber;
+                double selectedHorizontalThreshold;
+                double selectedElevationThreshold;
+                bool selectedUseHorizontalThreshold;
+                bool selectedUseElevationThreshold;
                 using (var form = new QaqcDialog())
                 {
                     if (form.ShowDialog() != DialogResult.OK)
@@ -53,6 +57,10 @@ namespace RevitSuite.Host.Commands
                     selectedCategory = form.SelectedCategory;
                     selectedMode = form.SelectedMode;
                     selectedPourNumber = form.SelectedPourNumber;
+                    selectedHorizontalThreshold = form.SelectedHorizontalThreshold;
+                    selectedElevationThreshold = form.SelectedElevationThreshold;
+                    selectedUseHorizontalThreshold = form.SelectedUseHorizontalThreshold;
+                    selectedUseElevationThreshold = form.SelectedUseElevationThreshold;
                 }
 
                 LogManager.Info(correlationId, $"QAQC mode: {selectedMode}, Category: {selectedCategory}");
@@ -67,7 +75,16 @@ namespace RevitSuite.Host.Commands
                     return ExecuteExport(correlationId, uiDoc, doc, config, selectedCategory);
                 }
 
-                return ExecuteImport(correlationId, uiDoc, doc, config, selectedCategory);
+                return ExecuteImport(
+                    correlationId,
+                    uiDoc,
+                    doc,
+                    config,
+                    selectedCategory,
+                    selectedHorizontalThreshold,
+                    selectedElevationThreshold,
+                    selectedUseHorizontalThreshold,
+                    selectedUseElevationThreshold);
             }
             catch (Exception ex)
             {

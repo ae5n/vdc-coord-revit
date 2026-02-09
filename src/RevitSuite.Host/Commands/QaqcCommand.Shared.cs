@@ -484,9 +484,20 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.RadioButton placeRadioButton;
             private System.Windows.Forms.NumericUpDown pourNumericUpDown;
             private System.Windows.Forms.Label pourLabel;
+            private System.Windows.Forms.NumericUpDown horizontalThresholdNumericUpDown;
+            private System.Windows.Forms.NumericUpDown elevationThresholdNumericUpDown;
+            private System.Windows.Forms.Label horizontalThresholdLabel;
+            private System.Windows.Forms.Label elevationThresholdLabel;
+            private System.Windows.Forms.CheckBox useHorizontalThresholdCheckBox;
+            private System.Windows.Forms.CheckBox useElevationThresholdCheckBox;
+            private System.Windows.Forms.Label thresholdHelpLabel;
 
             public string SelectedCategory => categoryComboBox.SelectedItem?.ToString() ?? "Footings";
             public int SelectedPourNumber => (int)(pourNumericUpDown?.Value ?? 1);
+            public double SelectedHorizontalThreshold => (double)(horizontalThresholdNumericUpDown?.Value ?? 0.05m);
+            public double SelectedElevationThreshold => (double)(elevationThresholdNumericUpDown?.Value ?? 0.05m);
+            public bool SelectedUseHorizontalThreshold => useHorizontalThresholdCheckBox?.Checked ?? true;
+            public bool SelectedUseElevationThreshold => useElevationThresholdCheckBox?.Checked ?? true;
             public QaqcMode SelectedMode
             {
                 get
@@ -508,7 +519,7 @@ namespace RevitSuite.Host.Commands
             private void InitializeComponent()
             {
                 this.Text = "QAQC - Control Point Verification";
-                this.Size = new System.Drawing.Size(400, 300);
+                this.Size = new System.Drawing.Size(440, 430);
                 this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
                 this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
                 this.MaximizeBox = false;
@@ -560,7 +571,7 @@ namespace RevitSuite.Host.Commands
                 };
                 this.Controls.Add(modeLabel);
 
-                var placeRadioButton = new System.Windows.Forms.RadioButton
+                placeRadioButton = new System.Windows.Forms.RadioButton
                 {
                     Text = "Place Control Points",
                     Location = new System.Drawing.Point(120, 85),
@@ -588,10 +599,83 @@ namespace RevitSuite.Host.Commands
                 };
                 this.Controls.Add(importRadioButton);
 
+                horizontalThresholdLabel = new System.Windows.Forms.Label
+                {
+                    Text = "N/E Threshold (ft):",
+                    Location = new System.Drawing.Point(20, 202),
+                    Size = new System.Drawing.Size(100, 20),
+                    Visible = false
+                };
+                this.Controls.Add(horizontalThresholdLabel);
+
+                useHorizontalThresholdCheckBox = new System.Windows.Forms.CheckBox
+                {
+                    Text = "Check horizontal (N/E)",
+                    Location = new System.Drawing.Point(120, 174),
+                    Size = new System.Drawing.Size(170, 24),
+                    Checked = true,
+                    Visible = false
+                };
+                this.Controls.Add(useHorizontalThresholdCheckBox);
+
+                horizontalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(120, 200),
+                    Size = new System.Drawing.Size(100, 25),
+                    DecimalPlaces = 3,
+                    Increment = 0.005m,
+                    Minimum = 0.001m,
+                    Maximum = 10m,
+                    Value = 0.050m,
+                    Visible = false
+                };
+                this.Controls.Add(horizontalThresholdNumericUpDown);
+
+                elevationThresholdLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Elev Threshold (ft):",
+                    Location = new System.Drawing.Point(20, 256),
+                    Size = new System.Drawing.Size(100, 20),
+                    Visible = false
+                };
+                this.Controls.Add(elevationThresholdLabel);
+
+                useElevationThresholdCheckBox = new System.Windows.Forms.CheckBox
+                {
+                    Text = "Check elevation",
+                    Location = new System.Drawing.Point(120, 228),
+                    Size = new System.Drawing.Size(170, 24),
+                    Checked = true,
+                    Visible = false
+                };
+                this.Controls.Add(useElevationThresholdCheckBox);
+
+                elevationThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(120, 254),
+                    Size = new System.Drawing.Size(100, 25),
+                    DecimalPlaces = 3,
+                    Increment = 0.005m,
+                    Minimum = 0.001m,
+                    Maximum = 10m,
+                    Value = 0.050m,
+                    Visible = false
+                };
+                this.Controls.Add(elevationThresholdNumericUpDown);
+
+                thresholdHelpLabel = new System.Windows.Forms.Label
+                {
+                    Text = "A point is Critical if any enabled check exceeds threshold.\nDisable one check to evaluate only the other.",
+                    Location = new System.Drawing.Point(20, 288),
+                    Size = new System.Drawing.Size(390, 40),
+                    Visible = false
+                };
+                this.Controls.Add(thresholdHelpLabel);
+
                 okButton = new System.Windows.Forms.Button
                 {
                     Text = "OK",
-                    Location = new System.Drawing.Point(190, 210),
+                    Location = new System.Drawing.Point(210, 340),
                     Size = new System.Drawing.Size(80, 30),
                     DialogResult = System.Windows.Forms.DialogResult.OK
                 };
@@ -600,7 +684,7 @@ namespace RevitSuite.Host.Commands
                 cancelButton = new System.Windows.Forms.Button
                 {
                     Text = "Cancel",
-                    Location = new System.Drawing.Point(280, 210),
+                    Location = new System.Drawing.Point(300, 340),
                     Size = new System.Drawing.Size(80, 30),
                     DialogResult = System.Windows.Forms.DialogResult.Cancel
                 };
@@ -610,7 +694,23 @@ namespace RevitSuite.Host.Commands
                 this.CancelButton = cancelButton;
 
                 categoryComboBox.SelectedIndexChanged += (sender, args) => UpdatePourVisibility();
+                placeRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
+                exportRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
+                importRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
+                useHorizontalThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
+                useElevationThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
+                okButton.Click += (sender, args) =>
+                {
+                    if (importRadioButton.Checked &&
+                        !useHorizontalThresholdCheckBox.Checked &&
+                        !useElevationThresholdCheckBox.Checked)
+                    {
+                        TaskDialog.Show("RevitSuite", "Enable at least one threshold check (N/E or Elevation).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                    }
+                };
                 UpdatePourVisibility();
+                UpdateThresholdVisibility();
             }
 
             private void UpdatePourVisibility()
@@ -618,6 +718,32 @@ namespace RevitSuite.Host.Commands
                 var showPour = string.Equals(categoryComboBox.SelectedItem?.ToString(), SogCategoryName, StringComparison.OrdinalIgnoreCase);
                 pourLabel.Visible = showPour;
                 pourNumericUpDown.Visible = showPour;
+            }
+
+            private void UpdateThresholdVisibility()
+            {
+                var showThresholds = importRadioButton != null && importRadioButton.Checked;
+                useHorizontalThresholdCheckBox.Visible = showThresholds;
+                useElevationThresholdCheckBox.Visible = showThresholds;
+                horizontalThresholdLabel.Visible = showThresholds;
+                horizontalThresholdNumericUpDown.Visible = showThresholds;
+                elevationThresholdLabel.Visible = showThresholds;
+                elevationThresholdNumericUpDown.Visible = showThresholds;
+                thresholdHelpLabel.Visible = showThresholds;
+                UpdateThresholdEnableState();
+            }
+
+            private void UpdateThresholdEnableState()
+            {
+                if (horizontalThresholdNumericUpDown != null && useHorizontalThresholdCheckBox != null)
+                {
+                    horizontalThresholdNumericUpDown.Enabled = useHorizontalThresholdCheckBox.Checked;
+                }
+
+                if (elevationThresholdNumericUpDown != null && useElevationThresholdCheckBox != null)
+                {
+                    elevationThresholdNumericUpDown.Enabled = useElevationThresholdCheckBox.Checked;
+                }
             }
         }
 
