@@ -544,11 +544,16 @@ namespace RevitSuite.Host.Commands
             {
                 get
                 {
-                    foreach (System.Windows.Forms.Control control in this.Controls)
+                    if (importRadioButton != null && importRadioButton.Checked)
                     {
-                        if (control is System.Windows.Forms.RadioButton rb && rb.Checked && rb.Tag is QaqcMode mode)
-                            return mode;
+                        return QaqcMode.ImportAndAnalyze;
                     }
+
+                    if (exportRadioButton != null && exportRadioButton.Checked)
+                    {
+                        return QaqcMode.Export;
+                    }
+
                     return QaqcMode.Place;
                 }
             }
