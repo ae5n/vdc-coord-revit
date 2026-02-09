@@ -1,6 +1,8 @@
 param(
-    [string]$RevitYear,
-    [string]$ApiDir
+    [string]$RevitYear = "2025",
+    [string]$ApiDir,
+    [ValidateSet("Debug", "Release")]
+    [string]$Configuration = "Release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +34,32 @@ function Resolve-RevitApiDir {
     return $null
 }
 
+function Sync-SchemasToBuildOutput {
+    param(
+        [string]$RepoRoot,
+        [string]$BuildConfiguration
+    )
+
+    $schemaSourceDir = Join-Path $RepoRoot "schemas"
+    if (-not (Test-Path $schemaSourceDir)) {
+        throw "Schema source directory not found: $schemaSourceDir"
+    }
+
+    $outputDir = Join-Path $RepoRoot ("src/RevitSuite.Host/bin/{0}/net48" -f $BuildConfiguration)
+    if (-not (Test-Path $outputDir)) {
+        throw "Build output directory not found: $outputDir"
+    }
+
+    $schemaTargetDir = Join-Path $outputDir "schemas"
+    if (Test-Path $schemaTargetDir) {
+        Remove-Item -Recurse -Force $schemaTargetDir
+    }
+
+    New-Item -ItemType Directory -Force -Path $schemaTargetDir | Out-Null
+    Copy-Item -Force (Join-Path $schemaSourceDir "*.json") $schemaTargetDir
+    Write-Host "Synced schema files to $schemaTargetDir" -ForegroundColor DarkCyan
+}
+
 $resolvedApiDir = Resolve-RevitApiDir -Year $RevitYear -ExplicitPath $ApiDir
 $previousApiDir = $env:REVIT_API_DIR
 $apiDirMessage = $null
@@ -60,8 +88,9 @@ try {
     $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
     $projectPath = Join-Path $repoRoot "src/RevitSuite.Host/RevitSuite.Host.csproj"
 
-    Write-Host "Building RevitSuite.Host..." -ForegroundColor Cyan
-    dotnet build $projectPath -c Release
+    Write-Host "Building RevitSuite.Host ($Configuration)..." -ForegroundColor Cyan
+    dotnet build $projectPath -c $Configuration
+    Sync-SchemasToBuildOutput -RepoRoot $repoRoot -BuildConfiguration $Configuration
 }
 finally {
     if ($resolvedApiDir) {
