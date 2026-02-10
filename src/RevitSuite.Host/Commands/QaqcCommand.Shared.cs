@@ -12,6 +12,9 @@ namespace RevitSuite.Host.Commands
 {
     public partial class QaqcCommand
     {
+        private const int HorizontalAnnotationFractionDenominator = 8; // ΔE, ΔN
+        private const int ElevationAnnotationFractionDenominator = 8;  // ΔZ, Z
+
 
         private bool IsPointInCropRegion(XYZ point, XYZ min, XYZ max)
         {
@@ -284,8 +287,8 @@ namespace RevitSuite.Host.Commands
                     if (includeHorizontalAnnotations)
                     {
                         // Convert deviations to feet-inches format (Revit standard)
-                        var eastingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationEasting));
-                        var northingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationNorthing));
+                        var eastingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationEasting));
+                        var northingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationNorthing));
 
                         // Add +/- signs
                         var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
@@ -296,13 +299,13 @@ namespace RevitSuite.Host.Commands
 
                     if (includeElevationAnnotations)
                     {
-                        var elevationFtIn = FormatFeetInches(Math.Abs(deviation.DeviationElevation));
+                        var elevationFtIn = FormatElevationFeetInches(Math.Abs(deviation.DeviationElevation));
                         var elevationSign = deviation.DeviationElevation >= 0 ? "+" : "-";
                         annotationLines.Add($"ΔZ: {elevationSign}{elevationFtIn}");
 
                         if (TryGetPointElevationForAnnotation(doc, deviation, out var elevationValue))
                         {
-                            annotationLines.Add($"Z: {FormatFeetInches(elevationValue)}");
+                            annotationLines.Add($"Z: {FormatElevationFeetInches(elevationValue)}");
                         }
                     }
 
@@ -639,19 +642,31 @@ namespace RevitSuite.Host.Commands
             return face.Evaluate(new UV(midU, midV));
         }
 
-        private string FormatFeetInches(double feet)
+        private string FormatHorizontalFeetInches(double feet)
+        {
+            return FormatFeetInches(feet, HorizontalAnnotationFractionDenominator);
+        }
+
+        private string FormatElevationFeetInches(double feet)
+        {
+            return FormatFeetInches(feet, ElevationAnnotationFractionDenominator);
+        }
+
+        private string FormatFeetInches(double feet, int fractionDenominator)
         {
             // Convert feet to feet and inches
             int wholeFeet = (int)Math.Floor(feet);
             double remainingInches = (feet - wholeFeet) * 12.0;
 
-            // Round to nearest 1/8 inch
-            double eighths = Math.Round(remainingInches * 8.0);
-            int wholeInches = (int)(eighths / 8.0);
-            int fractionalEighths = (int)(eighths % 8);
+            var denominator = fractionDenominator > 0 ? fractionDenominator : 8;
+
+            // Round to nearest configured fraction of an inch.
+            double fractionUnits = Math.Round(remainingInches * denominator);
+            int wholeInches = (int)(fractionUnits / denominator);
+            int fractionalUnits = (int)(fractionUnits % denominator);
 
             // Build string
-            if (wholeFeet == 0 && wholeInches == 0 && fractionalEighths == 0)
+            if (wholeFeet == 0 && wholeInches == 0 && fractionalUnits == 0)
                 return "0\"";
 
             var result = "";
@@ -662,10 +677,10 @@ namespace RevitSuite.Host.Commands
                 result += $"{wholeInches}";
 
             // Add fraction if needed
-            if (fractionalEighths > 0)
+            if (fractionalUnits > 0)
             {
                 // Simplify fraction
-                var (num, den) = SimplifyFraction(fractionalEighths, 8);
+                var (num, den) = SimplifyFraction(fractionalUnits, denominator);
                 result += $" {num}/{den}";
             }
 
