@@ -12,8 +12,8 @@ namespace RevitSuite.Host.Commands
 {
     public partial class QaqcCommand
     {
-        private static readonly Autodesk.Revit.DB.Color ModelPointColor = new Autodesk.Revit.DB.Color(34, 197, 94);
-        private static readonly Autodesk.Revit.DB.Color VerifiedPointColor = new Autodesk.Revit.DB.Color(59, 130, 246);
+        private static readonly Autodesk.Revit.DB.Color ModelPointColor = new Autodesk.Revit.DB.Color(59, 130, 246);
+        private static readonly Autodesk.Revit.DB.Color VerifiedPointColor = new Autodesk.Revit.DB.Color(34, 197, 94);
         private static readonly Autodesk.Revit.DB.Color DeviationPointColor = new Autodesk.Revit.DB.Color(249, 115, 22);
         private static readonly Autodesk.Revit.DB.Color CriticalPointColor = new Autodesk.Revit.DB.Color(239, 68, 68);
 
@@ -266,7 +266,7 @@ namespace RevitSuite.Host.Commands
                             }
                         }
 
-                        ApplyModelPointOverrides(doc, placedPointIds, correlationId);
+                        // Keep point coloring type/material-driven. Annotation overrides are applied separately.
                         tx.Commit();
                     }
                     catch (Exception ex)
@@ -444,7 +444,7 @@ namespace RevitSuite.Host.Commands
                         createdCount++;
                     }
 
-                    ApplyModelPointOverrides(doc, touchedPointIds, correlationId);
+                    // Keep point coloring type/material-driven. Annotation overrides are applied separately.
                     tx.Commit();
                     LogManager.Info(correlationId, $"Ready points placement completed. Created: {createdCount}, Updated: {updatedCount}.");
                     TaskDialog.Show("RevitSuite", $"Ready points placement completed.\n\nCreated: {createdCount}\nUpdated: {updatedCount}");

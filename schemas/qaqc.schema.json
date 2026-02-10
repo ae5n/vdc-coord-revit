@@ -157,12 +157,12 @@
     },
     "defaultFamilyName": {
       "type": "string",
-      "default": "Control Point",
+      "default": "Master Control Point",
       "description": "Default family name for control point selection filter."
     },
     "defaultTypeName": {
       "type": "string",
-      "default": "Coordination Point",
+      "default": "Model",
       "description": "Default family type name for control point selection filter."
     }
   },

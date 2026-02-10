@@ -126,7 +126,7 @@ namespace RevitSuite.Host.Commands
                         UpdateSharedParameters(doc, deviations, correlationId);
                         ApplyModelPointType(doc, deviations, config, correlationId);
                         PlaceFieldPoints(doc, deviations, config, correlationId);
-                        ApplyGraphicOverrides(doc, deviations, config, correlationId);
+                        // Keep point coloring type/material-driven. Annotation overrides are applied separately.
                         // CreateDeviationLines(doc, deviations, correlationId); // Temporarily disabled for performance
                         if (config.CreateDeviationArrows)
                         {
@@ -867,8 +867,8 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            var modelColor = new Autodesk.Revit.DB.Color(34, 197, 94);
-            var verifiedColor = new Autodesk.Revit.DB.Color(59, 130, 246);
+            var modelColor = new Autodesk.Revit.DB.Color(59, 130, 246);
+            var verifiedColor = new Autodesk.Revit.DB.Color(34, 197, 94);
             var deviationColor = new Autodesk.Revit.DB.Color(249, 115, 22);
             var criticalColor = new Autodesk.Revit.DB.Color(239, 68, 68);
 
@@ -957,11 +957,11 @@ namespace RevitSuite.Host.Commands
                 {
                     var materialId = deviation.Status switch
                     {
-                        ToleranceStatus.Green => greenMaterialId,
-                        ToleranceStatus.Blue => blueMaterialId,
+                        ToleranceStatus.Green => blueMaterialId,
+                        ToleranceStatus.Blue => greenMaterialId,
                         ToleranceStatus.Yellow => yellowMaterialId,
                         ToleranceStatus.Red => redMaterialId,
-                        _ => greenMaterialId
+                        _ => blueMaterialId
                     };
 
                     var fieldPoint = new XYZ(

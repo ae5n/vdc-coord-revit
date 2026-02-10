@@ -319,10 +319,10 @@ namespace RevitSuite.Host.Commands
 
                     var annotationColor = deviation.Status switch
                     {
-                        ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(59, 130, 246),   // Verified
+                        ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(34, 197, 94),   // Verified
                         ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
                         ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
-                        _ => new Autodesk.Revit.DB.Color(34, 197, 94)                         // Model/default
+                        _ => new Autodesk.Revit.DB.Color(59, 130, 246)                        // Model/default
                     };
 
                     var textNote = TextNote.Create(doc, view.Id, annotationPoint, annotationText, textNoteType.Id);
@@ -1163,7 +1163,7 @@ namespace RevitSuite.Host.Commands
 
                 thresholdHelpLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Per enabled check: <= Verified => Verified (Blue), > Critical => Critical (Red), otherwise Deviation (Orange).",
+                    Text = "Per enabled check: <= Verified => Verified (Green), > Critical => Critical (Red), otherwise Deviation (Orange).",
                     Location = new System.Drawing.Point(14, 194),
                     Size = new System.Drawing.Size(510, 36),
                     ForeColor = System.Drawing.Color.DimGray,

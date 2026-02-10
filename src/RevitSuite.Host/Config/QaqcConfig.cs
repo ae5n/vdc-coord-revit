@@ -55,8 +55,8 @@ namespace RevitSuite.Host.Config
                 ?? throw new InvalidDataException("QAQC schema is missing top-level 'properties'.");
 
             // Load global settings
-            var defaultFamilyName = SchemaDefaults.GetString(properties, "defaultFamilyName", "Control Point");
-            var defaultTypeName = SchemaDefaults.GetString(properties, "defaultTypeName", "Coordination Point");
+            var defaultFamilyName = SchemaDefaults.GetString(properties, "defaultFamilyName", "Master Control Point");
+            var defaultTypeName = SchemaDefaults.GetString(properties, "defaultTypeName", "Model");
 
             // Load defaults from properties.defaults.properties
             var defaults = GetSectionProperties(properties, "defaults", required: true);
