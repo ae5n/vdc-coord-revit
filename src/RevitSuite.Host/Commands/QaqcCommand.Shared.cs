@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 using Autodesk.Revit.DB;
@@ -11,6 +12,9 @@ namespace RevitSuite.Host.Commands
 {
     public partial class QaqcCommand
     {
+        private const int HorizontalAnnotationFractionDenominator = 8; // ΔE, ΔN
+        private const int ElevationAnnotationFractionDenominator = 8;  // ΔZ, Z
+
 
         private bool IsPointInCropRegion(XYZ point, XYZ min, XYZ max)
         {
@@ -55,6 +59,23 @@ namespace RevitSuite.Host.Commands
             {
                 param.Set(value);
             }
+        }
+
+        private bool SetDoubleParameterByName(Element element, string parameterName, double value)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(parameterName))
+            {
+                return false;
+            }
+
+            var param = element.LookupParameter(parameterName);
+            if (param == null || param.IsReadOnly || param.StorageType != StorageType.Double)
+            {
+                return false;
+            }
+
+            param.Set(value);
+            return true;
         }
 
         private string EscapeCsvValue(string value)
@@ -135,12 +156,23 @@ namespace RevitSuite.Host.Commands
             return geometryList;
         }
 
-        private void CreateDeviationAnnotations(Document doc, List<DeviationResult> deviations, string correlationId)
+        private void CreateDeviationAnnotations(
+            Document doc,
+            List<DeviationResult> deviations,
+            bool includeHorizontalAnnotations,
+            bool includeElevationAnnotations,
+            string correlationId)
         {
             var view = doc.ActiveView;
             if (view == null || view.ViewType == ViewType.Schedule || view.ViewType == ViewType.Legend || view.ViewType == ViewType.ThreeD)
             {
                 LogManager.Warn(correlationId, "Active view not suitable for text notes - skipping annotations. Use a plan, section, or elevation view.");
+                return;
+            }
+
+            if (!includeHorizontalAnnotations && !includeElevationAnnotations)
+            {
+                LogManager.Info(correlationId, "No annotation components selected (N/E and Elevation both disabled).");
                 return;
             }
 
@@ -201,6 +233,34 @@ namespace RevitSuite.Host.Commands
                 LogManager.Warn(correlationId, $"Failed to delete old detail lines: {ex.Message}");
             }
 
+            // Delete existing spot elevations in this view to prevent duplicate elevation tags.
+            try
+            {
+                var existingSpotElevations = new FilteredElementCollector(doc, view.Id)
+                    .OfClass(typeof(SpotDimension))
+                    .ToList();
+
+                var deletedSpots = 0;
+                foreach (var spot in existingSpotElevations)
+                {
+                    try
+                    {
+                        doc.Delete(spot.Id);
+                        deletedSpots++;
+                    }
+                    catch
+                    {
+                        // Skip locked/system-owned elements.
+                    }
+                }
+
+                LogManager.Info(correlationId, $"Deleted {deletedSpots} existing spot elevations in current view.");
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Failed to delete old spot elevations: {ex.Message}");
+            }
+
             // Get a valid TextNoteType from the document
             var textNoteType = new FilteredElementCollector(doc)
                 .OfClass(typeof(TextNoteType))
@@ -212,42 +272,44 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            // Get crop region bounds for filtering
-            var cropBox = view.CropBox;
-            var hasCropRegion = cropBox != null;
-            var minCorner = hasCropRegion ? cropBox.Min : null;
-            var maxCorner = hasCropRegion ? cropBox.Max : null;
-
             LogManager.Info(correlationId, $"Using TextNoteType: {textNoteType.Name}");
 
             int annotationsCreated = 0;
-            int skippedOutsideCrop = 0;
 
             foreach (var deviation in deviations)
             {
                 if (deviation.ModelPoint == null)
                     continue;
 
-                // Skip points outside crop region
-                if (hasCropRegion && !IsPointInCropRegion(deviation.ModelPoint, minCorner, maxCorner))
-                {
-                    skippedOutsideCrop++;
-                    continue;
-                }
-
                 try
                 {
-                    // Convert deviations to feet-inches format (Revit standard)
-                    var eastingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationEasting));
-                    var northingFtIn = FormatFeetInches(Math.Abs(deviation.DeviationNorthing));
+                    var annotationLines = new List<string>();
+                    if (includeHorizontalAnnotations)
+                    {
+                        // Convert deviations to feet-inches format (Revit standard)
+                        var eastingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationEasting));
+                        var northingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationNorthing));
 
-                    // Add +/- signs
-                    var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
-                    var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
+                        // Add +/- signs
+                        var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
+                        var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
+                        annotationLines.Add($"ΔE: {eastingSign}{eastingFtIn}");
+                        annotationLines.Add($"ΔN: {northingSign}{northingFtIn}");
+                    }
 
-                    // Simple format: E and N deviations only (no point number)
-                    var annotationText = $"E: {eastingSign}{eastingFtIn}\n" +
-                        $"N: {northingSign}{northingFtIn}";
+                    if (includeElevationAnnotations)
+                    {
+                        var elevationFtIn = FormatElevationFeetInches(Math.Abs(deviation.DeviationElevation));
+                        var elevationSign = deviation.DeviationElevation >= 0 ? "+" : "-";
+                        annotationLines.Add($"ΔZ: {elevationSign}{elevationFtIn}");
+
+                        if (TryGetPointElevationForAnnotation(doc, deviation, out var elevationValue))
+                        {
+                            annotationLines.Add($"Z: {FormatElevationFeetInches(elevationValue)}");
+                        }
+                    }
+
+                    var annotationText = string.Join("\n", annotationLines);
 
                     // Offset annotation point slightly to the right and up from Control Point
                     var annotationPoint = new XYZ(
@@ -255,15 +317,44 @@ namespace RevitSuite.Host.Commands
                         deviation.ModelPoint.Y + 1.0,  // 1 foot up
                         deviation.ModelPoint.Z);
 
+                    var annotationColor = deviation.Status switch
+                    {
+                        ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(59, 130, 246),   // Verified
+                        ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
+                        ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
+                        _ => new Autodesk.Revit.DB.Color(34, 197, 94)                         // Model/default
+                    };
+
                     var textNote = TextNote.Create(doc, view.Id, annotationPoint, annotationText, textNoteType.Id);
+
+                    if (includeElevationAnnotations)
+                    {
+                        TryCreateSpotElevationAnnotation(doc, view, deviation, annotationColor, correlationId);
+                    }
 
                     if (textNote != null)
                     {
+                        var annotationOverrides = new OverrideGraphicSettings();
+                        annotationOverrides.SetProjectionLineColor(annotationColor);
+                        annotationOverrides.SetProjectionLineWeight(3);
+                        try
+                        {
+                            view.SetElementOverrides(textNote.Id, annotationOverrides);
+                        }
+                        catch
+                        {
+                            // If text-note override fails in this view type, keep annotation creation.
+                        }
+
                         // Create a detail line from annotation to model point as a leader
                         try
                         {
                             var leaderLine = Line.CreateBound(annotationPoint, deviation.ModelPoint);
-                            doc.Create.NewDetailCurve(view, leaderLine);
+                            var leaderCurve = doc.Create.NewDetailCurve(view, leaderLine);
+                            if (leaderCurve != null)
+                            {
+                                view.SetElementOverrides(leaderCurve.Id, annotationOverrides);
+                            }
                         }
                         catch
                         {
@@ -279,22 +370,303 @@ namespace RevitSuite.Host.Commands
                 }
             }
 
-            LogManager.Info(correlationId, $"Created {annotationsCreated} annotations. Skipped {skippedOutsideCrop} points outside crop region.");
+            LogManager.Info(correlationId, $"Created {annotationsCreated} deviation annotations.");
         }
 
-        private string FormatFeetInches(double feet)
+        private void TryCreateSpotElevationAnnotation(
+            Document doc,
+            Autodesk.Revit.DB.View view,
+            DeviationResult deviation,
+            Autodesk.Revit.DB.Color annotationColor,
+            string correlationId)
+        {
+            Element sourceElement = null;
+            XYZ fallbackPoint = deviation.ModelPoint;
+
+            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            {
+                sourceElement = doc.GetElement(deviation.FieldElementId);
+                if (sourceElement?.Location is LocationPoint fieldLoc)
+                {
+                    fallbackPoint = fieldLoc.Point;
+                }
+            }
+
+            if (sourceElement == null)
+            {
+                sourceElement = doc.GetElement(deviation.ElementId);
+            }
+
+            if (sourceElement == null || fallbackPoint == null)
+            {
+                return;
+            }
+
+            var target = GetSpotElevationTarget(sourceElement, fallbackPoint);
+            if (target == null || target.Reference == null || target.Point == null)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation skipped for Point {deviation.PointNumber}: no valid face/reference found.");
+                return;
+            }
+
+            try
+            {
+                var origin = target.Point;
+                var bend = new XYZ(origin.X + 1.5, origin.Y + 1.0, origin.Z);
+                var end = new XYZ(origin.X + 3.0, origin.Y + 1.0, origin.Z);
+                var refPoint = origin;
+
+                var spot = doc.Create.NewSpotElevation(view, target.Reference, origin, bend, end, refPoint, true);
+                if (spot != null)
+                {
+                    var overrides = new OverrideGraphicSettings();
+                    overrides.SetProjectionLineColor(annotationColor);
+                    overrides.SetProjectionLineWeight(3);
+                    view.SetElementOverrides(spot.Id, overrides);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation annotation failed for Point {deviation.PointNumber}: {ex.Message}");
+            }
+        }
+
+        private class SpotElevationTarget
+        {
+            public Reference Reference { get; set; }
+            public XYZ Point { get; set; }
+        }
+
+        private bool TryGetPointElevationForAnnotation(Document doc, DeviationResult deviation, out double elevation)
+        {
+            elevation = 0.0;
+
+            Element pointElement = null;
+            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            {
+                pointElement = doc.GetElement(deviation.FieldElementId);
+            }
+
+            if (pointElement == null)
+            {
+                pointElement = doc.GetElement(deviation.ElementId);
+            }
+
+            if (pointElement == null)
+            {
+                return false;
+            }
+
+            var value = GetParameterValueDouble(pointElement, CsElevationGuid);
+            if (value.HasValue)
+            {
+                elevation = value.Value;
+                return true;
+            }
+
+            return false;
+        }
+
+        private SpotElevationTarget GetSpotElevationTarget(Element element, XYZ fallbackPoint)
+        {
+            try
+            {
+                var directReference = new Reference(element);
+                if (directReference != null)
+                {
+                    return new SpotElevationTarget
+                    {
+                        Reference = directReference,
+                        Point = fallbackPoint
+                    };
+                }
+            }
+            catch
+            {
+                // Fall back to geometry-based references.
+            }
+
+            try
+            {
+                var options = new Options
+                {
+                    ComputeReferences = true,
+                    IncludeNonVisibleObjects = true,
+                    DetailLevel = ViewDetailLevel.Fine
+                };
+
+                var geometry = element.get_Geometry(options);
+                if (geometry == null)
+                {
+                    return null;
+                }
+
+                var topFaceTarget = FindBestHorizontalFaceTarget(geometry);
+                if (topFaceTarget != null)
+                {
+                    return topFaceTarget;
+                }
+
+                var genericFaceTarget = FindFirstGeometryFaceTarget(geometry);
+                if (genericFaceTarget != null)
+                {
+                    return genericFaceTarget;
+                }
+            }
+            catch
+            {
+                // Fall through.
+            }
+
+            return null;
+        }
+
+        private SpotElevationTarget FindBestHorizontalFaceTarget(GeometryElement geometry)
+        {
+            foreach (var obj in geometry)
+            {
+                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
+                {
+                    PlanarFace bestFace = null;
+                    XYZ bestPoint = null;
+
+                    foreach (Face face in solid.Faces)
+                    {
+                        if (face is PlanarFace planarFace &&
+                            planarFace.Reference != null &&
+                            Math.Abs(planarFace.FaceNormal.Z) > 0.9)
+                        {
+                            var point = EvaluateFaceMidpoint(planarFace);
+                            if (point == null)
+                            {
+                                continue;
+                            }
+
+                            if (bestFace == null || point.Z > bestPoint.Z)
+                            {
+                                bestFace = planarFace;
+                                bestPoint = point;
+                            }
+                        }
+                    }
+
+                    if (bestFace != null && bestPoint != null)
+                    {
+                        return new SpotElevationTarget
+                        {
+                            Reference = bestFace.Reference,
+                            Point = bestPoint
+                        };
+                    }
+                }
+
+                if (obj is GeometryInstance instance)
+                {
+                    var nested = instance.GetInstanceGeometry();
+                    var nestedTarget = FindBestHorizontalFaceTarget(nested);
+                    if (nestedTarget != null)
+                    {
+                        return nestedTarget;
+                    }
+
+                    var symbolGeometry = instance.GetSymbolGeometry();
+                    var symbolTarget = FindBestHorizontalFaceTarget(symbolGeometry);
+                    if (symbolTarget != null)
+                    {
+                        return symbolTarget;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private SpotElevationTarget FindFirstGeometryFaceTarget(GeometryElement geometry)
+        {
+            foreach (var obj in geometry)
+            {
+                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
+                {
+                    foreach (Face face in solid.Faces)
+                    {
+                        if (face?.Reference == null)
+                        {
+                            continue;
+                        }
+
+                        var point = EvaluateFaceMidpoint(face);
+                        if (point == null)
+                        {
+                            continue;
+                        }
+
+                        return new SpotElevationTarget
+                        {
+                            Reference = face.Reference,
+                            Point = point
+                        };
+                    }
+                }
+
+                if (obj is GeometryInstance instance)
+                {
+                    var nested = instance.GetInstanceGeometry();
+                    var nestedTarget = FindFirstGeometryFaceTarget(nested);
+                    if (nestedTarget != null)
+                    {
+                        return nestedTarget;
+                    }
+
+                    var symbolGeometry = instance.GetSymbolGeometry();
+                    var symbolTarget = FindFirstGeometryFaceTarget(symbolGeometry);
+                    if (symbolTarget != null)
+                    {
+                        return symbolTarget;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private XYZ EvaluateFaceMidpoint(Face face)
+        {
+            var bounds = face.GetBoundingBox();
+            if (bounds == null)
+            {
+                return null;
+            }
+
+            var midU = (bounds.Min.U + bounds.Max.U) * 0.5;
+            var midV = (bounds.Min.V + bounds.Max.V) * 0.5;
+            return face.Evaluate(new UV(midU, midV));
+        }
+
+        private string FormatHorizontalFeetInches(double feet)
+        {
+            return FormatFeetInches(feet, HorizontalAnnotationFractionDenominator);
+        }
+
+        private string FormatElevationFeetInches(double feet)
+        {
+            return FormatFeetInches(feet, ElevationAnnotationFractionDenominator);
+        }
+
+        private string FormatFeetInches(double feet, int fractionDenominator)
         {
             // Convert feet to feet and inches
             int wholeFeet = (int)Math.Floor(feet);
             double remainingInches = (feet - wholeFeet) * 12.0;
 
-            // Round to nearest 1/8 inch
-            double eighths = Math.Round(remainingInches * 8.0);
-            int wholeInches = (int)(eighths / 8.0);
-            int fractionalEighths = (int)(eighths % 8);
+            var denominator = fractionDenominator > 0 ? fractionDenominator : 8;
+
+            // Round to nearest configured fraction of an inch.
+            double fractionUnits = Math.Round(remainingInches * denominator);
+            int wholeInches = (int)(fractionUnits / denominator);
+            int fractionalUnits = (int)(fractionUnits % denominator);
 
             // Build string
-            if (wholeFeet == 0 && wholeInches == 0 && fractionalEighths == 0)
+            if (wholeFeet == 0 && wholeInches == 0 && fractionalUnits == 0)
                 return "0\"";
 
             var result = "";
@@ -305,10 +677,10 @@ namespace RevitSuite.Host.Commands
                 result += $"{wholeInches}";
 
             // Add fraction if needed
-            if (fractionalEighths > 0)
+            if (fractionalUnits > 0)
             {
                 // Simplify fraction
-                var (num, den) = SimplifyFraction(fractionalEighths, 8);
+                var (num, den) = SimplifyFraction(fractionalUnits, denominator);
                 result += $" {num}/{den}";
             }
 
@@ -347,6 +719,7 @@ namespace RevitSuite.Host.Commands
         private enum ToleranceStatus
         {
             Green,
+            Blue,
             Yellow,
             Red
         }
@@ -377,6 +750,7 @@ namespace RevitSuite.Host.Commands
         {
             public string PointNumber { get; set; }
             public ElementId ElementId { get; set; }
+            public ElementId FieldElementId { get; set; }
             public string UniqueId { get; set; }
             public double DeviationEasting { get; set; }
             public double DeviationNorthing { get; set; }
@@ -435,6 +809,28 @@ namespace RevitSuite.Host.Commands
             }
         }
 
+        private class ControlPointSelectionFilter : ISelectionFilter
+        {
+            private readonly string _familyName;
+
+            public ControlPointSelectionFilter(string familyName)
+            {
+                _familyName = familyName ?? string.Empty;
+            }
+
+            public bool AllowElement(Element elem)
+            {
+                if (!(elem is FamilyInstance instance))
+                {
+                    return false;
+                }
+
+                return string.Equals(instance.Symbol?.Family?.Name, _familyName, StringComparison.OrdinalIgnoreCase);
+            }
+
+            public bool AllowReference(Reference reference, XYZ position) => false;
+        }
+
         private SogSelectionMode? PromptSogSelectionMode()
         {
             var dialog = new TaskDialog("RevitSuite")
@@ -467,18 +863,44 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.RadioButton placeRadioButton;
             private System.Windows.Forms.NumericUpDown pourNumericUpDown;
             private System.Windows.Forms.Label pourLabel;
+            private System.Windows.Forms.NumericUpDown horizontalVerifiedThresholdNumericUpDown;
+            private System.Windows.Forms.NumericUpDown horizontalCriticalThresholdNumericUpDown;
+            private System.Windows.Forms.NumericUpDown elevationVerifiedThresholdNumericUpDown;
+            private System.Windows.Forms.NumericUpDown elevationCriticalThresholdNumericUpDown;
+            private System.Windows.Forms.Label horizontalVerifiedThresholdLabel;
+            private System.Windows.Forms.Label horizontalCriticalThresholdLabel;
+            private System.Windows.Forms.Label elevationVerifiedThresholdLabel;
+            private System.Windows.Forms.Label elevationCriticalThresholdLabel;
+            private System.Windows.Forms.CheckBox useHorizontalThresholdCheckBox;
+            private System.Windows.Forms.CheckBox useElevationThresholdCheckBox;
+            private System.Windows.Forms.Label thresholdHelpLabel;
+            private System.Windows.Forms.ComboBox thresholdScopeComboBox;
+            private System.Windows.Forms.Label thresholdScopeLabel;
+            private System.Windows.Forms.GroupBox thresholdGroupBox;
 
             public string SelectedCategory => categoryComboBox.SelectedItem?.ToString() ?? "Footings";
             public int SelectedPourNumber => (int)(pourNumericUpDown?.Value ?? 1);
+            public double SelectedHorizontalVerifiedThreshold => (double)(horizontalVerifiedThresholdNumericUpDown?.Value ?? 0.01m);
+            public double SelectedHorizontalCriticalThreshold => (double)(horizontalCriticalThresholdNumericUpDown?.Value ?? 0.05m);
+            public double SelectedElevationVerifiedThreshold => (double)(elevationVerifiedThresholdNumericUpDown?.Value ?? 0.01m);
+            public double SelectedElevationCriticalThreshold => (double)(elevationCriticalThresholdNumericUpDown?.Value ?? 0.05m);
+            public bool SelectedUseHorizontalThreshold => useHorizontalThresholdCheckBox?.Checked ?? true;
+            public bool SelectedUseElevationThreshold => useElevationThresholdCheckBox?.Checked ?? true;
+            public bool SelectedUseSelectedPointThresholds => thresholdScopeComboBox?.SelectedIndex == 1;
             public QaqcMode SelectedMode
             {
                 get
                 {
-                    foreach (System.Windows.Forms.Control control in this.Controls)
+                    if (importRadioButton != null && importRadioButton.Checked)
                     {
-                        if (control is System.Windows.Forms.RadioButton rb && rb.Checked && rb.Tag is QaqcMode mode)
-                            return mode;
+                        return QaqcMode.ImportAndAnalyze;
                     }
+
+                    if (exportRadioButton != null && exportRadioButton.Checked)
+                    {
+                        return QaqcMode.Export;
+                    }
+
                     return QaqcMode.Place;
                 }
             }
@@ -490,110 +912,324 @@ namespace RevitSuite.Host.Commands
 
             private void InitializeComponent()
             {
-                this.Text = "QAQC - Control Point Verification";
-                this.Size = new System.Drawing.Size(400, 300);
-                this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-                this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
-                this.MaximizeBox = false;
-                this.MinimizeBox = false;
+                Text = "QAQC - Control Point Verification";
+                Size = new System.Drawing.Size(600, 660);
+                StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
+                FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+
+                var titleLabel = new System.Windows.Forms.Label
+                {
+                    Text = "QAQC Configuration",
+                    Location = new System.Drawing.Point(16, 12),
+                    Size = new System.Drawing.Size(260, 24),
+                    Font = new System.Drawing.Font("Segoe UI Semibold", 11F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point)
+                };
+                Controls.Add(titleLabel);
+
+                var subtitleLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Choose workflow, scope, and thresholds for control-point verification.",
+                    Location = new System.Drawing.Point(16, 36),
+                    Size = new System.Drawing.Size(550, 20),
+                    ForeColor = System.Drawing.Color.DimGray
+                };
+                Controls.Add(subtitleLabel);
+
+                var generalGroupBox = new System.Windows.Forms.GroupBox
+                {
+                    Text = "General",
+                    Location = new System.Drawing.Point(16, 64),
+                    Size = new System.Drawing.Size(550, 92)
+                };
+                Controls.Add(generalGroupBox);
 
                 var categoryLabel = new System.Windows.Forms.Label
                 {
                     Text = "Category:",
-                    Location = new System.Drawing.Point(20, 20),
-                    Size = new System.Drawing.Size(100, 20)
+                    Location = new System.Drawing.Point(14, 30),
+                    Size = new System.Drawing.Size(90, 20)
                 };
-                this.Controls.Add(categoryLabel);
+                generalGroupBox.Controls.Add(categoryLabel);
 
                 categoryComboBox = new System.Windows.Forms.ComboBox
                 {
-                    Location = new System.Drawing.Point(120, 18),
-                    Size = new System.Drawing.Size(240, 25),
+                    Location = new System.Drawing.Point(110, 28),
+                    Size = new System.Drawing.Size(290, 25),
                     DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
                 };
-                categoryComboBox.Items.AddRange(new object[] { "Footings", "Columns", "Walls", SogCategoryName });
-                categoryComboBox.SelectedIndex = 0;
-                this.Controls.Add(categoryComboBox);
+                categoryComboBox.Items.AddRange(new object[] { "Footings", "Columns", "Walls", SogCategoryName, ReadyPointsCategoryName });
+                categoryComboBox.SelectedItem = ReadyPointsCategoryName;
+                if (categoryComboBox.SelectedIndex < 0)
+                {
+                    categoryComboBox.SelectedIndex = 0;
+                }
+                generalGroupBox.Controls.Add(categoryComboBox);
 
                 pourLabel = new System.Windows.Forms.Label
                 {
                     Text = "Pour #:",
-                    Location = new System.Drawing.Point(20, 50),
-                    Size = new System.Drawing.Size(100, 20),
+                    Location = new System.Drawing.Point(14, 60),
+                    Size = new System.Drawing.Size(90, 20),
                     Visible = false
                 };
-                this.Controls.Add(pourLabel);
+                generalGroupBox.Controls.Add(pourLabel);
 
                 pourNumericUpDown = new System.Windows.Forms.NumericUpDown
                 {
-                    Location = new System.Drawing.Point(120, 48),
+                    Location = new System.Drawing.Point(110, 58),
                     Size = new System.Drawing.Size(80, 25),
                     Minimum = 1,
                     Maximum = 99,
                     Value = 1,
                     Visible = false
                 };
-                this.Controls.Add(pourNumericUpDown);
+                generalGroupBox.Controls.Add(pourNumericUpDown);
 
-                var modeLabel = new System.Windows.Forms.Label
+                var modeGroupBox = new System.Windows.Forms.GroupBox
                 {
-                    Text = "Mode:",
-                    Location = new System.Drawing.Point(20, 85),
-                    Size = new System.Drawing.Size(100, 20)
+                    Text = "Mode",
+                    Location = new System.Drawing.Point(16, 164),
+                    Size = new System.Drawing.Size(550, 118)
                 };
-                this.Controls.Add(modeLabel);
+                Controls.Add(modeGroupBox);
 
-                var placeRadioButton = new System.Windows.Forms.RadioButton
+                placeRadioButton = new System.Windows.Forms.RadioButton
                 {
                     Text = "Place Control Points",
-                    Location = new System.Drawing.Point(120, 85),
-                    Size = new System.Drawing.Size(240, 25),
+                    Location = new System.Drawing.Point(18, 28),
+                    Size = new System.Drawing.Size(220, 25),
                     Checked = true,
                     Tag = QaqcMode.Place
                 };
-                this.Controls.Add(placeRadioButton);
+                modeGroupBox.Controls.Add(placeRadioButton);
 
                 exportRadioButton = new System.Windows.Forms.RadioButton
                 {
                     Text = "Export Model Points",
-                    Location = new System.Drawing.Point(120, 110),
-                    Size = new System.Drawing.Size(240, 25),
+                    Location = new System.Drawing.Point(18, 55),
+                    Size = new System.Drawing.Size(220, 25),
                     Tag = QaqcMode.Export
                 };
-                this.Controls.Add(exportRadioButton);
+                modeGroupBox.Controls.Add(exportRadioButton);
 
                 importRadioButton = new System.Windows.Forms.RadioButton
                 {
                     Text = "Import && Analyze Field Data",
-                    Location = new System.Drawing.Point(120, 135),
+                    Location = new System.Drawing.Point(18, 82),
                     Size = new System.Drawing.Size(240, 25),
                     Tag = QaqcMode.ImportAndAnalyze
                 };
-                this.Controls.Add(importRadioButton);
+                modeGroupBox.Controls.Add(importRadioButton);
+
+                thresholdGroupBox = new System.Windows.Forms.GroupBox
+                {
+                    Text = "Thresholds (Import Mode)",
+                    Location = new System.Drawing.Point(16, 290),
+                    Size = new System.Drawing.Size(550, 270),
+                    Visible = false
+                };
+                Controls.Add(thresholdGroupBox);
+
+                thresholdScopeLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Scope:",
+                    Location = new System.Drawing.Point(14, 30),
+                    Size = new System.Drawing.Size(90, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(thresholdScopeLabel);
+
+                thresholdScopeComboBox = new System.Windows.Forms.ComboBox
+                {
+                    Location = new System.Drawing.Point(110, 28),
+                    Size = new System.Drawing.Size(200, 25),
+                    DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList,
+                    Visible = false
+                };
+                thresholdScopeComboBox.Items.AddRange(new object[] { "All points", "Selected points" });
+                thresholdScopeComboBox.SelectedIndex = 0;
+                thresholdGroupBox.Controls.Add(thresholdScopeComboBox);
+
+                useHorizontalThresholdCheckBox = new System.Windows.Forms.CheckBox
+                {
+                    Text = "Check horizontal (N/E)",
+                    Location = new System.Drawing.Point(14, 60),
+                    Size = new System.Drawing.Size(220, 24),
+                    Checked = true,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(useHorizontalThresholdCheckBox);
+
+                horizontalVerifiedThresholdLabel = new System.Windows.Forms.Label
+                {
+                    Text = "N/E Verified <= (ft):",
+                    Location = new System.Drawing.Point(32, 88),
+                    Size = new System.Drawing.Size(130, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdLabel);
+
+                horizontalVerifiedThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(170, 86),
+                    Size = new System.Drawing.Size(100, 25),
+                    DecimalPlaces = 3,
+                    Increment = 0.005m,
+                    Minimum = 0.001m,
+                    Maximum = 10m,
+                    Value = 0.010m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdNumericUpDown);
+
+                horizontalCriticalThresholdLabel = new System.Windows.Forms.Label
+                {
+                    Text = "N/E Critical > (ft):",
+                    Location = new System.Drawing.Point(292, 88),
+                    Size = new System.Drawing.Size(120, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(horizontalCriticalThresholdLabel);
+
+                horizontalCriticalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(418, 86),
+                    Size = new System.Drawing.Size(100, 25),
+                    DecimalPlaces = 3,
+                    Increment = 0.005m,
+                    Minimum = 0.001m,
+                    Maximum = 10m,
+                    Value = 0.050m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(horizontalCriticalThresholdNumericUpDown);
+
+                useElevationThresholdCheckBox = new System.Windows.Forms.CheckBox
+                {
+                    Text = "Check elevation",
+                    Location = new System.Drawing.Point(14, 124),
+                    Size = new System.Drawing.Size(180, 24),
+                    Checked = true,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(useElevationThresholdCheckBox);
+
+                elevationVerifiedThresholdLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Elev Verified <= (ft):",
+                    Location = new System.Drawing.Point(32, 152),
+                    Size = new System.Drawing.Size(130, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(elevationVerifiedThresholdLabel);
+
+                elevationVerifiedThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(170, 150),
+                    Size = new System.Drawing.Size(100, 25),
+                    DecimalPlaces = 3,
+                    Increment = 0.005m,
+                    Minimum = 0.001m,
+                    Maximum = 10m,
+                    Value = 0.010m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(elevationVerifiedThresholdNumericUpDown);
+
+                elevationCriticalThresholdLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Elev Critical > (ft):",
+                    Location = new System.Drawing.Point(292, 152),
+                    Size = new System.Drawing.Size(120, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(elevationCriticalThresholdLabel);
+
+                elevationCriticalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(418, 150),
+                    Size = new System.Drawing.Size(100, 25),
+                    DecimalPlaces = 3,
+                    Increment = 0.005m,
+                    Minimum = 0.001m,
+                    Maximum = 10m,
+                    Value = 0.050m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(elevationCriticalThresholdNumericUpDown);
+
+                thresholdHelpLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Per enabled check: <= Verified => Verified (Blue), > Critical => Critical (Red), otherwise Deviation (Orange).",
+                    Location = new System.Drawing.Point(14, 194),
+                    Size = new System.Drawing.Size(510, 36),
+                    ForeColor = System.Drawing.Color.DimGray,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(thresholdHelpLabel);
 
                 okButton = new System.Windows.Forms.Button
                 {
                     Text = "OK",
-                    Location = new System.Drawing.Point(190, 210),
-                    Size = new System.Drawing.Size(80, 30),
+                    Location = new System.Drawing.Point(396, 578),
+                    Size = new System.Drawing.Size(80, 32),
                     DialogResult = System.Windows.Forms.DialogResult.OK
                 };
-                this.Controls.Add(okButton);
+                Controls.Add(okButton);
 
                 cancelButton = new System.Windows.Forms.Button
                 {
                     Text = "Cancel",
-                    Location = new System.Drawing.Point(280, 210),
-                    Size = new System.Drawing.Size(80, 30),
+                    Location = new System.Drawing.Point(486, 578),
+                    Size = new System.Drawing.Size(80, 32),
                     DialogResult = System.Windows.Forms.DialogResult.Cancel
                 };
-                this.Controls.Add(cancelButton);
+                Controls.Add(cancelButton);
 
-                this.AcceptButton = okButton;
-                this.CancelButton = cancelButton;
+                AcceptButton = okButton;
+                CancelButton = cancelButton;
 
                 categoryComboBox.SelectedIndexChanged += (sender, args) => UpdatePourVisibility();
+                categoryComboBox.SelectedIndexChanged += (sender, args) => UpdateModeAvailability();
+                placeRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
+                exportRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
+                importRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
+                useHorizontalThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
+                useElevationThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
+                okButton.Click += (sender, args) =>
+                {
+                    if (importRadioButton.Checked &&
+                        !useHorizontalThresholdCheckBox.Checked &&
+                        !useElevationThresholdCheckBox.Checked)
+                    {
+                        TaskDialog.Show("RevitSuite", "Enable at least one threshold check (N/E or Elevation).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+
+                    if (importRadioButton.Checked &&
+                        useHorizontalThresholdCheckBox.Checked &&
+                        SelectedHorizontalVerifiedThreshold > SelectedHorizontalCriticalThreshold)
+                    {
+                        TaskDialog.Show("RevitSuite", "For N/E, Verified threshold must be less than or equal to Critical threshold.");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+
+                    if (importRadioButton.Checked &&
+                        useElevationThresholdCheckBox.Checked &&
+                        SelectedElevationVerifiedThreshold > SelectedElevationCriticalThreshold)
+                    {
+                        TaskDialog.Show("RevitSuite", "For Elevation, Verified threshold must be less than or equal to Critical threshold.");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                    }
+                };
                 UpdatePourVisibility();
+                UpdateModeAvailability();
+                UpdateThresholdVisibility();
             }
 
             private void UpdatePourVisibility()
@@ -601,6 +1237,499 @@ namespace RevitSuite.Host.Commands
                 var showPour = string.Equals(categoryComboBox.SelectedItem?.ToString(), SogCategoryName, StringComparison.OrdinalIgnoreCase);
                 pourLabel.Visible = showPour;
                 pourNumericUpDown.Visible = showPour;
+            }
+
+            private void UpdateModeAvailability()
+            {
+                var isReadyPoints = string.Equals(categoryComboBox.SelectedItem?.ToString(), ReadyPointsCategoryName, StringComparison.OrdinalIgnoreCase);
+                exportRadioButton.Enabled = !isReadyPoints;
+                if (isReadyPoints && exportRadioButton.Checked)
+                {
+                    placeRadioButton.Checked = true;
+                }
+            }
+
+            private void UpdateThresholdVisibility()
+            {
+                var showThresholds = importRadioButton != null && importRadioButton.Checked;
+                if (thresholdGroupBox != null)
+                {
+                    thresholdGroupBox.Visible = showThresholds;
+                }
+                thresholdScopeLabel.Visible = showThresholds;
+                thresholdScopeComboBox.Visible = showThresholds;
+                useHorizontalThresholdCheckBox.Visible = showThresholds;
+                useElevationThresholdCheckBox.Visible = showThresholds;
+                horizontalVerifiedThresholdLabel.Visible = showThresholds;
+                horizontalVerifiedThresholdNumericUpDown.Visible = showThresholds;
+                horizontalCriticalThresholdLabel.Visible = showThresholds;
+                horizontalCriticalThresholdNumericUpDown.Visible = showThresholds;
+                elevationVerifiedThresholdLabel.Visible = showThresholds;
+                elevationVerifiedThresholdNumericUpDown.Visible = showThresholds;
+                elevationCriticalThresholdLabel.Visible = showThresholds;
+                elevationCriticalThresholdNumericUpDown.Visible = showThresholds;
+                thresholdHelpLabel.Visible = showThresholds;
+                UpdateThresholdEnableState();
+            }
+
+            private void UpdateThresholdEnableState()
+            {
+                if (useHorizontalThresholdCheckBox != null)
+                {
+                    var enabled = useHorizontalThresholdCheckBox.Checked;
+                    if (horizontalVerifiedThresholdNumericUpDown != null) horizontalVerifiedThresholdNumericUpDown.Enabled = enabled;
+                    if (horizontalCriticalThresholdNumericUpDown != null) horizontalCriticalThresholdNumericUpDown.Enabled = enabled;
+                }
+
+                if (useElevationThresholdCheckBox != null)
+                {
+                    var enabled = useElevationThresholdCheckBox.Checked;
+                    if (elevationVerifiedThresholdNumericUpDown != null) elevationVerifiedThresholdNumericUpDown.Enabled = enabled;
+                    if (elevationCriticalThresholdNumericUpDown != null) elevationCriticalThresholdNumericUpDown.Enabled = enabled;
+                }
+            }
+        }
+
+        private class PointThresholdSettings
+        {
+            public PointThresholdSettings(double horizontalThreshold, double elevationThreshold)
+            {
+                HorizontalThreshold = horizontalThreshold;
+                ElevationThreshold = elevationThreshold;
+            }
+
+            public double HorizontalThreshold { get; }
+            public double ElevationThreshold { get; }
+        }
+
+        private class CsvColumnMapping
+        {
+            public CsvColumnMapping(int pointNumberIndex, int northingIndex, int eastingIndex, int elevationIndex)
+            {
+                PointNumberIndex = pointNumberIndex;
+                NorthingIndex = northingIndex;
+                EastingIndex = eastingIndex;
+                ElevationIndex = elevationIndex;
+            }
+
+            public int PointNumberIndex { get; }
+            public int NorthingIndex { get; }
+            public int EastingIndex { get; }
+            public int ElevationIndex { get; }
+        }
+
+        private class CsvColumnMappingForm : System.Windows.Forms.Form
+        {
+            private class ColumnOption
+            {
+                public ColumnOption(int index, string label)
+                {
+                    Index = index;
+                    Label = label;
+                }
+
+                public int Index { get; }
+                public string Label { get; }
+
+                public override string ToString() => Label;
+            }
+
+            private readonly System.Windows.Forms.ComboBox _pointNumberComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _northingComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _eastingComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _elevationComboBox = new System.Windows.Forms.ComboBox();
+            private readonly bool _requireElevation;
+
+            public CsvColumnMapping SelectedMapping { get; private set; }
+
+            public CsvColumnMappingForm(
+                string[] headers,
+                CsvColumnMapping defaults,
+                bool requireElevation,
+                string title)
+            {
+                _requireElevation = requireElevation;
+
+                Text = string.IsNullOrWhiteSpace(title) ? "Map CSV Columns" : title;
+                Size = new System.Drawing.Size(560, 310);
+                StartPosition = FormStartPosition.CenterParent;
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+
+                var helpLabel = new Label
+                {
+                    Text = requireElevation
+                        ? "Required: Point Number, Northing, Easting, Elevation."
+                        : "Required: Point Number, Northing, Easting. For N/E-only checks, set Elevation to <Not Used>.",
+                    Location = new System.Drawing.Point(16, 14),
+                    Size = new System.Drawing.Size(520, 20)
+                };
+                Controls.Add(helpLabel);
+
+                AddMappingRow("Point Number:", _pointNumberComboBox, 50);
+                AddMappingRow("Northing:", _northingComboBox, 90);
+                AddMappingRow("Easting:", _eastingComboBox, 130);
+                AddMappingRow("Elevation:", _elevationComboBox, 170);
+
+                PopulateHeaderOptions(_pointNumberComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_northingComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_eastingComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_elevationComboBox, headers, allowNone: !requireElevation);
+
+                SetSelectedIndex(_pointNumberComboBox, defaults?.PointNumberIndex ?? -1);
+                SetSelectedIndex(_northingComboBox, defaults?.NorthingIndex ?? -1);
+                SetSelectedIndex(_eastingComboBox, defaults?.EastingIndex ?? -1);
+                SetSelectedIndex(_elevationComboBox, requireElevation ? (defaults?.ElevationIndex ?? -1) : -1);
+
+                var okButton = new Button
+                {
+                    Text = "OK",
+                    Location = new System.Drawing.Point(370, 225),
+                    Size = new System.Drawing.Size(75, 28)
+                };
+                okButton.Click += OnOkClick;
+                Controls.Add(okButton);
+
+                var cancelButton = new Button
+                {
+                    Text = "Cancel",
+                    Location = new System.Drawing.Point(455, 225),
+                    Size = new System.Drawing.Size(75, 28),
+                    DialogResult = DialogResult.Cancel
+                };
+                Controls.Add(cancelButton);
+
+                AcceptButton = okButton;
+                CancelButton = cancelButton;
+            }
+
+            private void AddMappingRow(string label, System.Windows.Forms.ComboBox comboBox, int y)
+            {
+                var textLabel = new Label
+                {
+                    Text = label,
+                    Location = new System.Drawing.Point(16, y + 3),
+                    Size = new System.Drawing.Size(110, 22)
+                };
+                Controls.Add(textLabel);
+
+                comboBox.Location = new System.Drawing.Point(128, y);
+                comboBox.Size = new System.Drawing.Size(402, 24);
+                comboBox.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+                Controls.Add(comboBox);
+            }
+
+            private static void PopulateHeaderOptions(System.Windows.Forms.ComboBox comboBox, string[] headers, bool allowNone)
+            {
+                if (allowNone)
+                {
+                    comboBox.Items.Add(new ColumnOption(-1, "<Not Used>"));
+                }
+
+                for (var i = 0; i < headers.Length; i++)
+                {
+                    comboBox.Items.Add(new ColumnOption(i, $"{i + 1}: {headers[i]}"));
+                }
+
+                if (comboBox.Items.Count > 0)
+                {
+                    comboBox.SelectedIndex = 0;
+                }
+            }
+
+            private static void SetSelectedIndex(System.Windows.Forms.ComboBox comboBox, int columnIndex)
+            {
+                for (var i = 0; i < comboBox.Items.Count; i++)
+                {
+                    if (comboBox.Items[i] is ColumnOption option && option.Index == columnIndex)
+                    {
+                        comboBox.SelectedIndex = i;
+                        return;
+                    }
+                }
+            }
+
+            private void OnOkClick(object sender, EventArgs e)
+            {
+                var pointIndex = GetSelectedColumnIndex(_pointNumberComboBox);
+                var northingIndex = GetSelectedColumnIndex(_northingComboBox);
+                var eastingIndex = GetSelectedColumnIndex(_eastingComboBox);
+                var elevationIndex = GetSelectedColumnIndex(_elevationComboBox);
+
+                if (pointIndex < 0 || northingIndex < 0 || eastingIndex < 0)
+                {
+                    MessageBox.Show(this, "Point Number, Northing, and Easting are required.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (_requireElevation && elevationIndex < 0)
+                {
+                    MessageBox.Show(this, "Elevation is required for this mode.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                var usedIndices = new HashSet<int> { pointIndex, northingIndex, eastingIndex };
+                if (_requireElevation && elevationIndex >= 0)
+                {
+                    usedIndices.Add(elevationIndex);
+                }
+
+                var expectedCount = _requireElevation ? 4 : 3;
+                if (usedIndices.Count != expectedCount)
+                {
+                    MessageBox.Show(this, "Each mapped field must use a different CSV column.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                SelectedMapping = new CsvColumnMapping(pointIndex, northingIndex, eastingIndex, elevationIndex);
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+
+            private static int GetSelectedColumnIndex(System.Windows.Forms.ComboBox comboBox)
+            {
+                return comboBox.SelectedItem is ColumnOption option ? option.Index : -1;
+            }
+        }
+
+        private class PointThresholdSelectionForm : System.Windows.Forms.Form
+        {
+            private readonly System.Windows.Forms.DataGridView _grid = new System.Windows.Forms.DataGridView();
+            private readonly System.Windows.Forms.Button _okButton = new System.Windows.Forms.Button();
+            private readonly System.Windows.Forms.Button _cancelButton = new System.Windows.Forms.Button();
+            private readonly double _defaultHorizontalThreshold;
+            private readonly double _defaultElevationThreshold;
+
+            public Dictionary<string, PointThresholdSettings> SelectedThresholds { get; } =
+                new Dictionary<string, PointThresholdSettings>(StringComparer.OrdinalIgnoreCase);
+
+            public PointThresholdSelectionForm(
+                IList<string> pointNumbers,
+                double defaultHorizontalThreshold,
+                double defaultElevationThreshold)
+            {
+                _defaultHorizontalThreshold = defaultHorizontalThreshold;
+                _defaultElevationThreshold = defaultElevationThreshold;
+
+                Text = "QAQC - Selected Point Thresholds";
+                Size = new System.Drawing.Size(620, 520);
+                StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
+                FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+
+                var descriptionLabel = new System.Windows.Forms.Label
+                {
+                    Text = "These selected model points match CSV Point Number values. Set thresholds per point.",
+                    Location = new System.Drawing.Point(12, 12),
+                    Size = new System.Drawing.Size(580, 20)
+                };
+                Controls.Add(descriptionLabel);
+
+                _grid.Location = new System.Drawing.Point(12, 40);
+                _grid.Size = new System.Drawing.Size(580, 380);
+                _grid.AllowUserToAddRows = false;
+                _grid.AllowUserToDeleteRows = false;
+                _grid.RowHeadersVisible = false;
+                _grid.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
+                _grid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+
+                var pointColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Point Number",
+                    Name = "PointNumber",
+                    ReadOnly = true,
+                    FillWeight = 50
+                };
+                var horizontalColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "N/E Threshold (ft)",
+                    Name = "HorizontalThreshold",
+                    FillWeight = 25
+                };
+                var elevationColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Elev Threshold (ft)",
+                    Name = "ElevationThreshold",
+                    FillWeight = 25
+                };
+
+                _grid.Columns.AddRange(pointColumn, horizontalColumn, elevationColumn);
+
+                foreach (var pointNumber in pointNumbers)
+                {
+                    _grid.Rows.Add(pointNumber, defaultHorizontalThreshold.ToString("F3", CultureInfo.InvariantCulture), defaultElevationThreshold.ToString("F3", CultureInfo.InvariantCulture));
+                }
+
+                Controls.Add(_grid);
+
+                _okButton.Text = "OK";
+                _okButton.Location = new System.Drawing.Point(420, 435);
+                _okButton.Size = new System.Drawing.Size(80, 30);
+                _okButton.Click += OnOkClick;
+                Controls.Add(_okButton);
+
+                _cancelButton.Text = "Cancel";
+                _cancelButton.Location = new System.Drawing.Point(510, 435);
+                _cancelButton.Size = new System.Drawing.Size(80, 30);
+                _cancelButton.DialogResult = System.Windows.Forms.DialogResult.Cancel;
+                Controls.Add(_cancelButton);
+
+                AcceptButton = _okButton;
+                CancelButton = _cancelButton;
+            }
+
+            private void OnOkClick(object sender, EventArgs e)
+            {
+                SelectedThresholds.Clear();
+
+                foreach (System.Windows.Forms.DataGridViewRow row in _grid.Rows)
+                {
+                    var pointNumber = row.Cells["PointNumber"].Value?.ToString();
+                    if (string.IsNullOrWhiteSpace(pointNumber))
+                    {
+                        continue;
+                    }
+
+                    if (!TryParsePositiveThreshold(row.Cells["HorizontalThreshold"].Value, out var horizontalThreshold))
+                    {
+                        MessageBox.Show(this, $"Invalid N/E threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+
+                    if (!TryParsePositiveThreshold(row.Cells["ElevationThreshold"].Value, out var elevationThreshold))
+                    {
+                        MessageBox.Show(this, $"Invalid Elev threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+
+                    SelectedThresholds[pointNumber] = new PointThresholdSettings(horizontalThreshold, elevationThreshold);
+                }
+
+                DialogResult = System.Windows.Forms.DialogResult.OK;
+                Close();
+            }
+
+            private static bool TryParsePositiveThreshold(object value, out double threshold)
+            {
+                threshold = 0;
+                var text = value?.ToString();
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return false;
+                }
+
+                if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out threshold))
+                {
+                    return false;
+                }
+
+                return threshold > 0;
+            }
+        }
+
+        private class PointMatchPreviewForm : System.Windows.Forms.Form
+        {
+            public PointMatchPreviewForm(
+                IList<ControlPointRecord> importedRecords,
+                HashSet<string> selectedPointNumbers,
+                HashSet<string> matchedPointNumbers)
+            {
+                Text = "QAQC - CSV Match Preview";
+                Size = new System.Drawing.Size(760, 560);
+                StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
+                FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+
+                var summaryLabel = new System.Windows.Forms.Label
+                {
+                    Text = $"Imported CSV points: {importedRecords.Count} | Selected set: {selectedPointNumbers.Count} | Matched by Point Number: {matchedPointNumbers.Count}",
+                    Location = new System.Drawing.Point(12, 12),
+                    Size = new System.Drawing.Size(730, 20)
+                };
+                Controls.Add(summaryLabel);
+
+                var grid = new System.Windows.Forms.DataGridView
+                {
+                    Location = new System.Drawing.Point(12, 40),
+                    Size = new System.Drawing.Size(730, 440),
+                    AllowUserToAddRows = false,
+                    AllowUserToDeleteRows = false,
+                    ReadOnly = true,
+                    RowHeadersVisible = false,
+                    AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill
+                };
+
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Point Number",
+                    FillWeight = 30
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Field Northing",
+                    FillWeight = 20
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Field Easting",
+                    FillWeight = 20
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Field Elevation",
+                    FillWeight = 20
+                });
+                grid.Columns.Add(new System.Windows.Forms.DataGridViewTextBoxColumn
+                {
+                    HeaderText = "Match Status",
+                    FillWeight = 20
+                });
+
+                foreach (var record in importedRecords.OrderBy(r => r.PointNumber, StringComparer.OrdinalIgnoreCase))
+                {
+                    var matched = matchedPointNumbers.Contains(record.PointNumber);
+                    var status = matched ? "Matched" : "CSV Only";
+
+                    var rowIndex = grid.Rows.Add(
+                        record.PointNumber,
+                        record.FieldNorthing?.ToString("F3", CultureInfo.InvariantCulture) ?? string.Empty,
+                        record.FieldEasting?.ToString("F3", CultureInfo.InvariantCulture) ?? string.Empty,
+                        record.FieldElevation?.ToString("F3", CultureInfo.InvariantCulture) ?? string.Empty,
+                        status);
+
+                    if (matched)
+                    {
+                        grid.Rows[rowIndex].DefaultCellStyle.BackColor = System.Drawing.Color.Honeydew;
+                    }
+                }
+
+                Controls.Add(grid);
+
+                var continueButton = new System.Windows.Forms.Button
+                {
+                    Text = "Continue",
+                    Location = new System.Drawing.Point(560, 495),
+                    Size = new System.Drawing.Size(80, 30),
+                    DialogResult = System.Windows.Forms.DialogResult.OK
+                };
+                Controls.Add(continueButton);
+
+                var cancelButton = new System.Windows.Forms.Button
+                {
+                    Text = "Cancel",
+                    Location = new System.Drawing.Point(650, 495),
+                    Size = new System.Drawing.Size(80, 30),
+                    DialogResult = System.Windows.Forms.DialogResult.Cancel
+                };
+                Controls.Add(cancelButton);
+
+                AcceptButton = continueButton;
+                CancelButton = cancelButton;
             }
         }
 

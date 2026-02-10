@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows.Forms;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
@@ -11,10 +12,20 @@ namespace RevitSuite.Host.Commands
 {
     public partial class QaqcCommand
     {
+        private static readonly Autodesk.Revit.DB.Color ModelPointColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+        private static readonly Autodesk.Revit.DB.Color VerifiedPointColor = new Autodesk.Revit.DB.Color(59, 130, 246);
+        private static readonly Autodesk.Revit.DB.Color DeviationPointColor = new Autodesk.Revit.DB.Color(249, 115, 22);
+        private static readonly Autodesk.Revit.DB.Color CriticalPointColor = new Autodesk.Revit.DB.Color(239, 68, 68);
+
         private Result ExecutePlace(string correlationId, UIDocument uiDoc, Document doc, QaqcConfig config, string category, int pourNumber)
         {
             try
             {
+                if (string.Equals(category, ReadyPointsCategoryName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ExecutePlaceReadyPoints(correlationId, doc, config);
+                }
+
                 // Auto-detect all footings from host and linked models
                 var isSogCategory = string.Equals(category, SogCategoryName, StringComparison.OrdinalIgnoreCase);
                 XYZ sogStartPoint = null;
@@ -104,6 +115,7 @@ namespace RevitSuite.Host.Commands
                 int duplicatesSkipped = 0;
                 int sogPointIndex = 1;
                 var placedLocations = new List<XYZ>(); // Track all placed point locations
+                var placedPointIds = new List<ElementId>();
                 const double minDistance = 0.01; // Minimum distance between points (0.01 ft = ~1/8 inch)
 
                 using (var tx = new Transaction(doc, "RevitSuite: Place Control Points"))
@@ -112,9 +124,18 @@ namespace RevitSuite.Host.Commands
 
                     try
                     {
-                        if (!controlPointSymbol.IsActive)
+                        if (!TryEnsurePointTypeSymbols(
+                                doc,
+                                config,
+                                controlPointSymbol,
+                                correlationId,
+                                out var modelPointSymbol,
+                                out _,
+                                out _,
+                                out _))
                         {
-                            controlPointSymbol.Activate();
+                            tx.RollBack();
+                            return Result.Failed;
                         }
 
                         foreach (var footingInfo in footings)
@@ -156,8 +177,9 @@ namespace RevitSuite.Host.Commands
                                     continue;
                                 }
 
-                                var instance = doc.Create.NewFamilyInstance(corner, controlPointSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+                                var instance = doc.Create.NewFamilyInstance(corner, modelPointSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
                                 placedLocations.Add(corner); // Track this location
+                                placedPointIds.Add(instance.Id);
 
                                 string pointNumber;
                                 string typeName = null;
@@ -234,11 +256,17 @@ namespace RevitSuite.Host.Commands
                                 SetParameterByGuid(instance, CsNorthingGuid, sharedCorner.Y);
                                 SetParameterByGuid(instance, CsElevationGuid, sharedCorner.Z);
 
+                                // Initialize deviation parameters on placement so they are present immediately.
+                                SetParameterByGuid(instance, DeviationEastingGuid, 0.0);
+                                SetParameterByGuid(instance, DeviationNorthingGuid, 0.0);
+                                SetDeviationElevationParameter(instance, 0.0);
+
                                 pointsPlaced++;
                                 cornerIndex++;
                             }
                         }
 
+                        ApplyModelPointOverrides(doc, placedPointIds, correlationId);
                         tx.Commit();
                     }
                     catch (Exception ex)
@@ -277,6 +305,188 @@ namespace RevitSuite.Host.Commands
             {
                 LogManager.Error(correlationId, "Placement failed.", ex);
                 throw;
+            }
+        }
+
+        private Result ExecutePlaceReadyPoints(string correlationId, Document doc, QaqcConfig config)
+        {
+            var openDialog = new OpenFileDialog
+            {
+                Title = "Import Ready Model Points CSV",
+                Filter = "CSV Files (*.csv)|*.csv",
+                CheckFileExists = true
+            };
+
+            if (openDialog.ShowDialog() != DialogResult.OK)
+            {
+                LogManager.Info(correlationId, "Ready points placement cancelled by user.");
+                return Result.Cancelled;
+            }
+
+            var mapping = PromptCsvColumnMapping(
+                openDialog.FileName,
+                "Map Ready Points CSV Columns",
+                requireElevation: false,
+                correlationId: correlationId);
+            if (mapping == null)
+            {
+                LogManager.Info(correlationId, "Ready points placement cancelled during CSV column mapping.");
+                return Result.Cancelled;
+            }
+
+            var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, requireElevationValues: false);
+            if (records.Count == 0)
+            {
+                TaskDialog.Show("RevitSuite", "No valid points found in CSV. Expected columns include Point Number, Northing, Easting (Elevation optional).");
+                LogManager.Warn(correlationId, "Ready points placement cancelled - no valid CSV rows.");
+                return Result.Cancelled;
+            }
+
+            var seedSymbol = FindControlPointSymbol(doc, config);
+            if (seedSymbol == null)
+            {
+                TaskDialog.Show("RevitSuite", $"Control Point family '{config.DefaultFamilyName}' not found in project.\nPlease load the family first.");
+                LogManager.Error(correlationId, "Control Point family not found.");
+                return Result.Failed;
+            }
+
+            var sharedToProject = doc.ActiveProjectLocation?.GetTransform() ?? Transform.Identity;
+
+            using (var tx = new Transaction(doc, "RevitSuite: Place Ready Points"))
+            {
+                tx.Start();
+
+                try
+                {
+                    if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _, out _))
+                    {
+                        tx.RollBack();
+                        return Result.Failed;
+                    }
+
+                    var existingByPointNumber = new Dictionary<string, FamilyInstance>(StringComparer.OrdinalIgnoreCase);
+                    var existingControlPoints = new FilteredElementCollector(doc)
+                        .OfCategory(BuiltInCategory.OST_Site)
+                        .WhereElementIsNotElementType()
+                        .OfType<FamilyInstance>()
+                        .Where(fi => fi.Symbol?.Family?.Name == config.DefaultFamilyName)
+                        .ToList();
+
+                    foreach (var instance in existingControlPoints)
+                    {
+                        var pointNumber = GetParameterValueString(instance, PointNumberGuid);
+                        if (!string.IsNullOrWhiteSpace(pointNumber) && !existingByPointNumber.ContainsKey(pointNumber))
+                        {
+                            existingByPointNumber[pointNumber] = instance;
+                        }
+                    }
+
+                    var createdCount = 0;
+                    var updatedCount = 0;
+                    var touchedPointIds = new List<ElementId>();
+                    foreach (var record in records)
+                    {
+                        if (string.IsNullOrWhiteSpace(record.PointNumber) ||
+                            !record.FieldEasting.HasValue ||
+                            !record.FieldNorthing.HasValue)
+                        {
+                            continue;
+                        }
+
+                        var sharedElevation = record.FieldElevation ?? 0.0;
+
+                        if (existingByPointNumber.TryGetValue(record.PointNumber, out var existingInstance))
+                        {
+                            if (!record.FieldElevation.HasValue)
+                            {
+                                var existingSharedElevation = GetParameterValueDouble(existingInstance, CsElevationGuid);
+                                if (existingSharedElevation.HasValue)
+                                {
+                                    sharedElevation = existingSharedElevation.Value;
+                                }
+                            }
+
+                            var sharedPoint = new XYZ(record.FieldEasting.Value, record.FieldNorthing.Value, sharedElevation);
+                            var internalPoint = sharedToProject.OfPoint(sharedPoint);
+                            if (existingInstance.Location is LocationPoint existingLocation)
+                            {
+                                existingLocation.Point = internalPoint;
+                            }
+
+                            if (existingInstance.Symbol?.Id != modelSymbol.Id)
+                            {
+                                existingInstance.Symbol = modelSymbol;
+                            }
+
+                            SetParameterByGuid(existingInstance, CsEastingGuid, record.FieldEasting.Value);
+                            SetParameterByGuid(existingInstance, CsNorthingGuid, record.FieldNorthing.Value);
+                            SetParameterByGuid(existingInstance, CsElevationGuid, sharedElevation);
+                            SetParameterByGuid(existingInstance, DeviationEastingGuid, 0.0);
+                            SetParameterByGuid(existingInstance, DeviationNorthingGuid, 0.0);
+                            SetDeviationElevationParameter(existingInstance, 0.0);
+                            touchedPointIds.Add(existingInstance.Id);
+                            updatedCount++;
+                            continue;
+                        }
+
+                        var newSharedPoint = new XYZ(record.FieldEasting.Value, record.FieldNorthing.Value, sharedElevation);
+                        var newInternalPoint = sharedToProject.OfPoint(newSharedPoint);
+
+                        var newInstance = doc.Create.NewFamilyInstance(newInternalPoint, modelSymbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+                        SetParameterByGuid(newInstance, PointNumberGuid, record.PointNumber);
+                        SetParameterByGuid(newInstance, CsEastingGuid, record.FieldEasting.Value);
+                        SetParameterByGuid(newInstance, CsNorthingGuid, record.FieldNorthing.Value);
+                        SetParameterByGuid(newInstance, CsElevationGuid, sharedElevation);
+                        SetParameterByGuid(newInstance, DeviationEastingGuid, 0.0);
+                        SetParameterByGuid(newInstance, DeviationNorthingGuid, 0.0);
+                        SetDeviationElevationParameter(newInstance, 0.0);
+                        touchedPointIds.Add(newInstance.Id);
+                        createdCount++;
+                    }
+
+                    ApplyModelPointOverrides(doc, touchedPointIds, correlationId);
+                    tx.Commit();
+                    LogManager.Info(correlationId, $"Ready points placement completed. Created: {createdCount}, Updated: {updatedCount}.");
+                    TaskDialog.Show("RevitSuite", $"Ready points placement completed.\n\nCreated: {createdCount}\nUpdated: {updatedCount}");
+                    return Result.Succeeded;
+                }
+                catch (Exception ex)
+                {
+                    tx.RollBack();
+                    LogManager.Error(correlationId, "Ready points placement failed.", ex);
+                    throw;
+                }
+            }
+        }
+
+        private void ApplyModelPointOverrides(Document doc, IEnumerable<ElementId> pointIds, string correlationId)
+        {
+            var view = doc.ActiveView;
+            if (view == null || view.ViewType == ViewType.Schedule)
+            {
+                return;
+            }
+
+            var modelColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+            var overrides = new OverrideGraphicSettings();
+            overrides.SetProjectionLineColor(modelColor);
+            overrides.SetProjectionLineWeight(5);
+
+            foreach (var pointId in pointIds.Distinct())
+            {
+                if (pointId == null || pointId == ElementId.InvalidElementId)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    view.SetElementOverrides(pointId, overrides);
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warn(correlationId, $"Failed to apply model-point override for {pointId.IntegerValue}: {ex.Message}");
+                }
             }
         }
 
@@ -388,41 +598,87 @@ namespace RevitSuite.Host.Commands
             return namedSymbol ?? symbols.FirstOrDefault();
         }
 
-        private FamilySymbol GetOrCreateFieldPointSymbol(Document doc, QaqcConfig config, string modelTypeName, string fieldTypeName)
+        private bool TryEnsurePointTypeSymbols(
+            Document doc,
+            QaqcConfig config,
+            FamilySymbol seedSymbol,
+            string correlationId,
+            out FamilySymbol modelSymbol,
+            out FamilySymbol verifiedSymbol,
+            out FamilySymbol deviationSymbol,
+            out FamilySymbol criticalSymbol)
         {
-            // Find all symbols of the Control Point family
+            modelSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Model", "QAQC_Point_Model", ModelPointColor, correlationId);
+            verifiedSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Verified", "QAQC_Point_Verified", VerifiedPointColor, correlationId);
+            deviationSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Deviation", "QAQC_Point_Deviation", DeviationPointColor, correlationId);
+            criticalSymbol = EnsureControlPointTypeSymbol(doc, config, seedSymbol, "Critical", "QAQC_Point_Critical", CriticalPointColor, correlationId);
+
+            return modelSymbol != null && verifiedSymbol != null && deviationSymbol != null && criticalSymbol != null;
+        }
+
+        private FamilySymbol EnsureControlPointTypeSymbol(
+            Document doc,
+            QaqcConfig config,
+            FamilySymbol seedSymbol,
+            string targetTypeName,
+            string materialName,
+            Autodesk.Revit.DB.Color color,
+            string correlationId)
+        {
             var symbols = new FilteredElementCollector(doc)
                 .OfClass(typeof(FamilySymbol))
                 .Cast<FamilySymbol>()
                 .Where(s => s.FamilyName == config.DefaultFamilyName)
                 .ToList();
 
-            // Check if field type already exists
-            var fieldSymbol = symbols.FirstOrDefault(s => s.Name == fieldTypeName);
-            if (fieldSymbol != null)
+            var targetSymbol = symbols.FirstOrDefault(s => s.Name.Equals(targetTypeName, StringComparison.OrdinalIgnoreCase));
+            if (targetSymbol == null)
             {
-                if (!fieldSymbol.IsActive)
-                    fieldSymbol.Activate();
-                return fieldSymbol;
+                var source = symbols.FirstOrDefault(s => s.Id == seedSymbol.Id) ?? symbols.FirstOrDefault() ?? seedSymbol;
+                targetSymbol = source.Duplicate(targetTypeName) as FamilySymbol;
             }
 
-            // Get the model type to duplicate
-            var modelSymbol = symbols.FirstOrDefault(s => s.Name == modelTypeName);
-            if (modelSymbol == null)
+            if (targetSymbol == null)
             {
-                // If specific model type not found, use any symbol from the family
-                modelSymbol = symbols.FirstOrDefault();
-            }
-
-            if (modelSymbol == null)
+                LogManager.Error(correlationId, $"Failed to create/find control point type '{targetTypeName}'.");
                 return null;
+            }
 
-            // Duplicate and rename
-            var newSymbol = modelSymbol.Duplicate(fieldTypeName) as FamilySymbol;
-            if (newSymbol != null && !newSymbol.IsActive)
-                newSymbol.Activate();
+            if (!targetSymbol.IsActive)
+            {
+                targetSymbol.Activate();
+            }
 
-            return newSymbol;
+            var materialId = EnsureMaterial(doc, materialName, 0, color);
+            if (!TryAssignTypeMaterial(targetSymbol, materialId))
+            {
+                LogManager.Warn(correlationId, $"No writable type material parameter found for '{targetTypeName}'.");
+            }
+
+            return targetSymbol;
+        }
+
+        private bool TryAssignTypeMaterial(FamilySymbol symbol, ElementId materialId)
+        {
+            var typeMaterialNames = new[] { "Material", "Type Material", "Symbol Material", "Point Material" };
+            foreach (var paramName in typeMaterialNames)
+            {
+                var param = symbol.LookupParameter(paramName);
+                if (param != null && !param.IsReadOnly && param.StorageType == StorageType.ElementId)
+                {
+                    param.Set(materialId);
+                    return true;
+                }
+            }
+
+            var structuralMaterial = symbol.get_Parameter(BuiltInParameter.STRUCTURAL_MATERIAL_PARAM);
+            if (structuralMaterial != null && !structuralMaterial.IsReadOnly && structuralMaterial.StorageType == StorageType.ElementId)
+            {
+                structuralMaterial.Set(materialId);
+                return true;
+            }
+
+            return false;
         }
 
         private List<XYZ> GetFootingCorners(Element footing, Transform transform)

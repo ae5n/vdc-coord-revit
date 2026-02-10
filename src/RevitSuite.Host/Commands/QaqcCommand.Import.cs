@@ -7,6 +7,7 @@ using System.Text;
 using System.Windows.Forms;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
 using RevitSuite.Host.Config;
 using RevitSuite.Host.Logging;
 
@@ -15,7 +16,19 @@ namespace RevitSuite.Host.Commands
     public partial class QaqcCommand
     {
 
-        private Result ExecuteImport(string correlationId, UIDocument uiDoc, Document doc, QaqcConfig config, string category)
+        private Result ExecuteImport(
+            string correlationId,
+            UIDocument uiDoc,
+            Document doc,
+            QaqcConfig config,
+            string category,
+            double horizontalVerifiedThreshold,
+            double horizontalCriticalThreshold,
+            double elevationVerifiedThreshold,
+            double elevationCriticalThreshold,
+            bool useHorizontalThreshold,
+            bool useElevationThreshold,
+            bool useSelectedPointThresholds)
         {
             try
             {
@@ -33,8 +46,19 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
+                var mapping = PromptCsvColumnMapping(
+                    openDialog.FileName,
+                    "Map As-Built CSV Columns",
+                    useElevationThreshold,
+                    correlationId);
+                if (mapping == null)
+                {
+                    LogManager.Info(correlationId, "Import cancelled during CSV column mapping.");
+                    return Result.Cancelled;
+                }
+
                 // Parse CSV
-                var records = ParseCsvImport(openDialog.FileName, correlationId);
+                var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, useElevationThreshold);
                 if (records.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No valid data found in CSV file.");
@@ -42,8 +66,49 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
+                if (!useSelectedPointThresholds)
+                {
+                    var modelPointNumbers = CollectModelPointNumbers(doc, config);
+                    var matchedPointNumbers = new HashSet<string>(
+                        records
+                            .Select(r => r.PointNumber)
+                            .Where(p => !string.IsNullOrWhiteSpace(p) && modelPointNumbers.Contains(p)),
+                        StringComparer.OrdinalIgnoreCase);
+
+                    if (!ShowPointMatchPreview(records, modelPointNumbers, matchedPointNumbers))
+                    {
+                        LogManager.Info(correlationId, "Import cancelled from CSV match preview dialog.");
+                        return Result.Cancelled;
+                    }
+                }
+
+                var selectedPointNumbers = BuildSelectedPointFilter(
+                    records,
+                    uiDoc,
+                    doc,
+                    config,
+                    useSelectedPointThresholds,
+                    correlationId);
+                if (useSelectedPointThresholds && selectedPointNumbers == null)
+                {
+                    LogManager.Info(correlationId, "Import cancelled while selecting points.");
+                    return Result.Cancelled;
+                }
+
                 // Match to elements and calculate deviations
-                var deviations = CalculateDeviations(doc, records, config, category, correlationId);
+                var deviations = CalculateDeviations(
+                    doc,
+                    records,
+                    config,
+                    category,
+                    correlationId,
+                    horizontalVerifiedThreshold,
+                    horizontalCriticalThreshold,
+                    elevationVerifiedThreshold,
+                    elevationCriticalThreshold,
+                    useHorizontalThreshold,
+                    useElevationThreshold,
+                    selectedPointNumbers);
                 if (deviations.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No matching Control Points found in model.");
@@ -59,14 +124,15 @@ namespace RevitSuite.Host.Commands
                     try
                     {
                         UpdateSharedParameters(doc, deviations, correlationId);
+                        ApplyModelPointType(doc, deviations, config, correlationId);
                         PlaceFieldPoints(doc, deviations, config, correlationId);
-                        // CreateDeviationLines(doc, deviations, correlationId); // Temporarily disabled for performance
                         ApplyGraphicOverrides(doc, deviations, config, correlationId);
+                        // CreateDeviationLines(doc, deviations, correlationId); // Temporarily disabled for performance
                         if (config.CreateDeviationArrows)
                         {
                             CreateDeviationIndicators(doc, deviations, config, correlationId);
                         }
-                        CreateDeviationAnnotations(doc, deviations, correlationId);
+                        CreateDeviationAnnotations(doc, deviations, useHorizontalThreshold, useElevationThreshold, correlationId);
 
                         tx.Commit();
                     }
@@ -78,17 +144,22 @@ namespace RevitSuite.Host.Commands
                     }
                 }
 
-                var greenCount = deviations.Count(d => d.Status == ToleranceStatus.Green);
-                var yellowCount = deviations.Count(d => d.Status == ToleranceStatus.Yellow);
+                var verifiedCount = deviations.Count(d => d.Status == ToleranceStatus.Blue);
+                var deviationCount = deviations.Count(d => d.Status == ToleranceStatus.Yellow);
                 var redCount = deviations.Count(d => d.Status == ToleranceStatus.Red);
 
-                LogManager.Info(correlationId, $"Import completed: {deviations.Count} points analyzed. Green: {greenCount}, Yellow: {yellowCount}, Red: {redCount}");
+                LogManager.Info(
+                    correlationId,
+                    $"Import completed: {deviations.Count} points analyzed. Verified: {verifiedCount}, Deviation: {deviationCount}, Critical: {redCount}.");
                 TaskDialog.Show("RevitSuite",
                     $"Import successful!\n\n" +
                     $"{deviations.Count} Control Points analyzed:\n" +
-                    $"  Green (within tolerance): {greenCount}\n" +
-                    $"  Yellow (warning): {yellowCount}\n" +
-                    $"  Red (exceeds tolerance): {redCount}");
+                    $"  Verified (<= verified threshold): {verifiedCount}\n" +
+                    $"  Deviation (below threshold): {deviationCount}\n" +
+                    $"  Critical (above threshold): {redCount}\n\n" +
+                    $"Thresholds used:\n" +
+                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"Verified <= {horizontalVerifiedThreshold:F3} ft, Critical > {horizontalCriticalThreshold:F3} ft" : "Disabled")}\n" +
+                    $"  Elevation: {(useElevationThreshold ? $"Verified <= {elevationVerifiedThreshold:F3} ft, Critical > {elevationCriticalThreshold:F3} ft" : "Disabled")}");
 
                 return Result.Succeeded;
             }
@@ -99,7 +170,11 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private List<ControlPointRecord> ParseCsvImport(string path, string correlationId)
+        private List<ControlPointRecord> ParseCsvImport(
+            string path,
+            string correlationId,
+            CsvColumnMapping mapping,
+            bool requireElevationValues)
         {
             var records = new List<ControlPointRecord>();
 
@@ -112,13 +187,6 @@ namespace RevitSuite.Host.Commands
                     throw new InvalidDataException("CSV file is empty.");
                 }
 
-                // Validate header (should have 8 columns with Footing ID)
-                var headers = headerLine.Split(',');
-                if (headers.Length < 8)
-                {
-                    throw new InvalidDataException($"Invalid CSV format. Expected 8 columns, found {headers.Length}.");
-                }
-
                 int lineNumber = 1;
                 while (!reader.EndOfStream)
                 {
@@ -128,27 +196,48 @@ namespace RevitSuite.Host.Commands
                         continue;
 
                     var values = line.Split(',');
-                    if (values.Length < 8)
-                    {
-                        LogManager.Warn(correlationId, $"CSV line {lineNumber} has insufficient columns - skipped.");
-                        continue;
-                    }
 
                     try
                     {
-                        var pointNumber = values[0].Trim();
+                        var maxRequiredIndex = Math.Max(
+                            Math.Max(mapping.PointNumberIndex, mapping.NorthingIndex),
+                            Math.Max(mapping.EastingIndex, mapping.ElevationIndex));
+                        if (values.Length <= maxRequiredIndex)
+                        {
+                            LogManager.Warn(correlationId, $"CSV line {lineNumber} has insufficient columns for mapped headers - skipped.");
+                            continue;
+                        }
+
+                        var pointNumber = values[mapping.PointNumberIndex].Trim();
                         if (string.IsNullOrWhiteSpace(pointNumber))
                         {
                             LogManager.Warn(correlationId, $"CSV line {lineNumber} has empty Point Number - skipped.");
                             continue;
                         }
 
-                        // Parse Field coordinates (columns 5, 6, 7 - after Footing ID)
-                        if (!double.TryParse(values[5], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldEasting) ||
-                            !double.TryParse(values[6], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldNorthing) ||
-                            !double.TryParse(values[7], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldElevation))
+                        if (!double.TryParse(values[mapping.EastingIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldEasting) ||
+                            !double.TryParse(values[mapping.NorthingIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldNorthing))
                         {
-                            LogManager.Warn(correlationId, $"CSV line {lineNumber} has invalid Field coordinates - skipped.");
+                            LogManager.Warn(correlationId, $"CSV line {lineNumber} has invalid Northing/Easting values - skipped.");
+                            continue;
+                        }
+
+                        double? fieldElevation = null;
+                        if (mapping.ElevationIndex >= 0)
+                        {
+                            if (double.TryParse(values[mapping.ElevationIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedElevation))
+                            {
+                                fieldElevation = parsedElevation;
+                            }
+                            else if (requireElevationValues)
+                            {
+                                LogManager.Warn(correlationId, $"CSV line {lineNumber} has invalid Elevation value - skipped.");
+                                continue;
+                            }
+                        }
+                        else if (requireElevationValues)
+                        {
+                            LogManager.Warn(correlationId, $"CSV line {lineNumber} missing Elevation column mapping - skipped.");
                             continue;
                         }
 
@@ -170,13 +259,139 @@ namespace RevitSuite.Host.Commands
             return records;
         }
 
-        private List<DeviationResult> CalculateDeviations(Document doc, List<ControlPointRecord> records, QaqcConfig config, string category, string correlationId)
+        private CsvColumnMapping PromptCsvColumnMapping(
+            string csvPath,
+            string dialogTitle,
+            bool requireElevation,
+            string correlationId)
+        {
+            var headers = ReadCsvHeaders(csvPath);
+            if (headers == null || headers.Length == 0)
+            {
+                throw new InvalidDataException("CSV file is missing a header row.");
+            }
+
+            var defaults = BuildDefaultCsvColumnMapping(headers, requireElevation);
+            using (var form = new CsvColumnMappingForm(headers, defaults, requireElevation, dialogTitle))
+            {
+                if (form.ShowDialog() != DialogResult.OK)
+                {
+                    return null;
+                }
+
+                var selected = form.SelectedMapping;
+                LogManager.Info(
+                    correlationId,
+                    $"CSV mapping selected. PointNumber={selected.PointNumberIndex}, Northing={selected.NorthingIndex}, Easting={selected.EastingIndex}, Elevation={selected.ElevationIndex}");
+                return selected;
+            }
+        }
+
+        private string[] ReadCsvHeaders(string path)
+        {
+            using (var reader = new StreamReader(path, Encoding.UTF8))
+            {
+                var headerLine = reader.ReadLine();
+                if (string.IsNullOrWhiteSpace(headerLine))
+                {
+                    return Array.Empty<string>();
+                }
+
+                return headerLine.Split(',');
+            }
+        }
+
+        private CsvColumnMapping BuildDefaultCsvColumnMapping(string[] headers, bool requireElevation)
+        {
+            var pointNumberIndex = FindHeaderIndex(headers, "pointnumber", "point number", "point_no", "point id", "point");
+            var northingIndex = FindHeaderIndex(headers, "northing", "north");
+            var eastingIndex = FindHeaderIndex(headers, "easting", "east");
+            var elevationIndex = FindHeaderIndex(headers, "elevation", "elev", "z");
+
+            // Backward-compatible defaults for legacy 8-column QAQC format.
+            if (pointNumberIndex < 0 && headers.Length >= 1)
+            {
+                pointNumberIndex = 0;
+            }
+
+            if (headers.Length >= 8)
+            {
+                if (eastingIndex < 0)
+                {
+                    eastingIndex = 5;
+                }
+
+                if (northingIndex < 0)
+                {
+                    northingIndex = 6;
+                }
+
+                if (elevationIndex < 0)
+                {
+                    elevationIndex = 7;
+                }
+            }
+
+            if (!requireElevation)
+            {
+                elevationIndex = elevationIndex >= 0 ? elevationIndex : -1;
+            }
+
+            return new CsvColumnMapping(pointNumberIndex, northingIndex, eastingIndex, elevationIndex);
+        }
+
+        private static int FindHeaderIndex(string[] headers, params string[] aliases)
+        {
+            if (headers == null || aliases == null || aliases.Length == 0)
+            {
+                return -1;
+            }
+
+            var normalizedAliases = new HashSet<string>(aliases.Select(NormalizeHeaderToken), StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < headers.Length; i++)
+            {
+                var normalizedHeader = NormalizeHeaderToken(headers[i]);
+                if (normalizedAliases.Contains(normalizedHeader))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static string NormalizeHeaderToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var chars = value.Where(char.IsLetterOrDigit).ToArray();
+            return new string(chars).ToLowerInvariant();
+        }
+
+        private List<DeviationResult> CalculateDeviations(
+            Document doc,
+            List<ControlPointRecord> records,
+            QaqcConfig config,
+            string category,
+            string correlationId,
+            double horizontalVerifiedThreshold,
+            double horizontalCriticalThreshold,
+            double elevationVerifiedThreshold,
+            double elevationCriticalThreshold,
+            bool useHorizontalThreshold,
+            bool useElevationThreshold,
+            HashSet<string> selectedPointNumbers)
         {
             var deviations = new List<DeviationResult>();
 
             // Get category-specific settings
             var categorySettings = config.GetCategorySettings(category);
-            LogManager.Info(correlationId, $"Using {category} settings: ToleranceGreen={categorySettings.ToleranceGreen}, ToleranceYellow={categorySettings.ToleranceYellow}, ComparisonMethod={categorySettings.ComparisonMethod}");
+            LogManager.Info(
+                correlationId,
+                $"Using {category} settings with UI thresholds: Horizontal({useHorizontalThreshold}) Verified<={horizontalVerifiedThreshold}, Critical>{horizontalCriticalThreshold}; Elevation({useElevationThreshold}) Verified<={elevationVerifiedThreshold}, Critical>{elevationCriticalThreshold}. Schema reference: ToleranceGreen={categorySettings.ToleranceGreen}, ToleranceYellow={categorySettings.ToleranceYellow}, ComparisonMethod={categorySettings.ComparisonMethod}");
 
             // Collect all Control Points from document
             var allControlPoints = new FilteredElementCollector(doc)
@@ -201,6 +416,11 @@ namespace RevitSuite.Host.Commands
 
             foreach (var record in records)
             {
+                if (selectedPointNumbers != null && !selectedPointNumbers.Contains(record.PointNumber))
+                {
+                    continue;
+                }
+
                 // Fast dictionary lookup instead of linear search
                 if (!controlPointsDict.TryGetValue(record.PointNumber, out var matchingElement))
                 {
@@ -220,34 +440,37 @@ namespace RevitSuite.Host.Commands
                 }
 
                 // Calculate deviations
+                if (!record.FieldEasting.HasValue || !record.FieldNorthing.HasValue)
+                {
+                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Northing/Easting in CSV - skipped.");
+                    continue;
+                }
+
+                if (useElevationThreshold && !record.FieldElevation.HasValue)
+                {
+                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Elevation in CSV while elevation check is enabled - skipped.");
+                    continue;
+                }
+
                 var devEasting = record.FieldEasting.Value - modelEasting.Value;
                 var devNorthing = record.FieldNorthing.Value - modelNorthing.Value;
-                var devElevation = record.FieldElevation.Value - modelElevation.Value;
+                var devElevation = record.FieldElevation.HasValue
+                    ? record.FieldElevation.Value - modelElevation.Value
+                    : 0.0;
                 var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
                 var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
 
-                // Determine which deviation value to use based on comparison method
-                double comparisonValue;
-                switch (categorySettings.ComparisonMethod.ToLower())
-                {
-                    case "vertical":
-                        comparisonValue = Math.Abs(devElevation);
-                        break;
-                    case "total":
-                        comparisonValue = totalDev;
-                        break;
-                    case "horizontal":
-                    default:
-                        comparisonValue = horizontalDev;
-                        break;
-                }
+                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalCriticalThreshold;
+                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationCriticalThreshold;
+                var isCritical = exceedsHorizontal || exceedsElevation;
 
-                // Determine tolerance status using category-specific tolerances
-                var status = ToleranceStatus.Green;
-                if (comparisonValue > categorySettings.ToleranceYellow)
-                    status = ToleranceStatus.Red;
-                else if (comparisonValue > categorySettings.ToleranceGreen)
-                    status = ToleranceStatus.Yellow;
+                var withinHorizontalVerified = !useHorizontalThreshold || horizontalDev <= horizontalVerifiedThreshold;
+                var withinElevationVerified = !useElevationThreshold || Math.Abs(devElevation) <= elevationVerifiedThreshold;
+                var isVerified = (useHorizontalThreshold || useElevationThreshold) && withinHorizontalVerified && withinElevationVerified;
+
+                var status = isCritical
+                    ? ToleranceStatus.Red
+                    : (isVerified ? ToleranceStatus.Blue : ToleranceStatus.Yellow);
 
                 // Get model point location
                 XYZ modelPoint = null;
@@ -274,6 +497,119 @@ namespace RevitSuite.Host.Commands
             return deviations;
         }
 
+        private HashSet<string> BuildSelectedPointFilter(
+            List<ControlPointRecord> records,
+            UIDocument uiDoc,
+            Document doc,
+            QaqcConfig config,
+            bool useSelectedPointThresholds,
+            string correlationId)
+        {
+            if (!useSelectedPointThresholds)
+            {
+                return null;
+            }
+
+            IList<Reference> pickedReferences;
+            try
+            {
+                TaskDialog.Show(
+                    "RevitSuite",
+                    "Select model control points in the view to analyze.\nPress Finish when done, or Esc to cancel.");
+                pickedReferences = uiDoc.Selection.PickObjects(
+                    ObjectType.Element,
+                    new ControlPointSelectionFilter(config.DefaultFamilyName),
+                    "Select model control points to analyze.");
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+            {
+                return null;
+            }
+
+            var pointNumbers = new List<string>();
+            foreach (var reference in pickedReferences)
+            {
+                var element = doc.GetElement(reference);
+                var pointNumber = GetParameterValueString(element, PointNumberGuid);
+                if (!string.IsNullOrWhiteSpace(pointNumber))
+                {
+                    pointNumbers.Add(pointNumber);
+                }
+            }
+
+            pointNumbers = pointNumbers
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (pointNumbers.Count == 0)
+            {
+                TaskDialog.Show("RevitSuite", "No valid model control points were selected.");
+                return null;
+            }
+
+            var csvPointNumbers = new HashSet<string>(
+                records
+                    .Select(r => r.PointNumber)
+                    .Where(p => !string.IsNullOrWhiteSpace(p)),
+                StringComparer.OrdinalIgnoreCase);
+
+            var matchedPointNumbers = pointNumbers
+                .Where(csvPointNumbers.Contains)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var skippedCount = pointNumbers.Count - matchedPointNumbers.Count;
+            if (skippedCount > 0)
+            {
+                LogManager.Warn(correlationId, $"{skippedCount} selected model points were not found in CSV by Point Number and will be ignored.");
+            }
+
+            if (matchedPointNumbers.Count == 0)
+            {
+                TaskDialog.Show("RevitSuite", "None of the selected model points match CSV Point Number values.");
+                return null;
+            }
+
+            using (var previewForm = new PointMatchPreviewForm(
+                records,
+                new HashSet<string>(pointNumbers, StringComparer.OrdinalIgnoreCase),
+                new HashSet<string>(matchedPointNumbers, StringComparer.OrdinalIgnoreCase)))
+            {
+                if (previewForm.ShowDialog() != DialogResult.OK)
+                {
+                    return null;
+                }
+            }
+
+            LogManager.Info(correlationId, $"Selected point filter configured: {matchedPointNumbers.Count} point(s).");
+            return new HashSet<string>(matchedPointNumbers, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private HashSet<string> CollectModelPointNumbers(Document doc, QaqcConfig config)
+        {
+            return new HashSet<string>(
+                new FilteredElementCollector(doc)
+                    .OfCategory(BuiltInCategory.OST_Site)
+                    .WhereElementIsNotElementType()
+                    .OfType<FamilyInstance>()
+                    .Where(fi => fi.Symbol?.Family?.Name == config.DefaultFamilyName)
+                    .Select(fi => GetParameterValueString(fi, PointNumberGuid))
+                    .Where(p => !string.IsNullOrWhiteSpace(p)),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        private bool ShowPointMatchPreview(
+            IList<ControlPointRecord> records,
+            HashSet<string> selectedPointNumbers,
+            HashSet<string> matchedPointNumbers)
+        {
+            using (var previewForm = new PointMatchPreviewForm(records, selectedPointNumbers, matchedPointNumbers))
+            {
+                return previewForm.ShowDialog() == DialogResult.OK;
+            }
+        }
+
         private void UpdateSharedParameters(Document doc, List<DeviationResult> deviations, string correlationId)
         {
             foreach (var deviation in deviations)
@@ -286,6 +622,7 @@ namespace RevitSuite.Host.Commands
                 {
                     SetParameterByGuid(element, DeviationEastingGuid, deviation.DeviationEasting);
                     SetParameterByGuid(element, DeviationNorthingGuid, deviation.DeviationNorthing);
+                    SetDeviationElevationParameter(element, deviation.DeviationElevation);
                 }
                 catch (Exception ex)
                 {
@@ -294,13 +631,69 @@ namespace RevitSuite.Host.Commands
             }
         }
 
+        private void SetDeviationElevationParameter(Element element, double value)
+        {
+            // GUID for elevation deviation is not currently defined in codebase.
+            // Write by known shared-parameter names used in control point families.
+            if (SetDoubleParameterByName(element, "Deviation Elevation", value))
+            {
+                return;
+            }
+
+            if (SetDoubleParameterByName(element, "DeviationElevation", value))
+            {
+                return;
+            }
+
+            SetDoubleParameterByName(element, "Deviation_Elevation", value);
+        }
+
+        private void ApplyModelPointType(Document doc, List<DeviationResult> deviations, QaqcConfig config, string correlationId)
+        {
+            var seedSymbol = FindControlPointSymbol(doc, config);
+            if (seedSymbol == null)
+            {
+                LogManager.Warn(correlationId, "Control Point family not found; model type assignment skipped.");
+                return;
+            }
+
+            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out _, out _, out _))
+            {
+                LogManager.Warn(correlationId, "Could not ensure Model/Verified/Deviation/Critical types; model type assignment skipped.");
+                return;
+            }
+
+            foreach (var deviation in deviations)
+            {
+                if (!(doc.GetElement(deviation.ElementId) is FamilyInstance modelPoint))
+                    continue;
+
+                try
+                {
+                    if (modelPoint.Symbol?.Id != modelSymbol.Id)
+                    {
+                        modelPoint.Symbol = modelSymbol;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Warn(correlationId, $"Failed to set 'Model' type for point {deviation.PointNumber}: {ex.Message}");
+                }
+            }
+        }
+
         private void PlaceFieldPoints(Document doc, List<DeviationResult> deviations, QaqcConfig config, string correlationId)
         {
-            // Get or create the "Field" type
-            var fieldSymbol = GetOrCreateFieldPointSymbol(doc, config, "Coordination", "Field");
-            if (fieldSymbol == null)
+            var seedSymbol = FindControlPointSymbol(doc, config);
+            if (seedSymbol == null)
             {
-                LogManager.Error(correlationId, "Failed to create or find 'Field' type for Control Point family.");
+                LogManager.Error(correlationId, "Control Point family not found.");
+                return;
+            }
+
+            if (!TryEnsurePointTypeSymbols(doc, config, seedSymbol, correlationId, out var modelSymbol, out var verifiedSymbol, out var deviationSymbol, out var criticalSymbol))
+            {
+                LogManager.Error(correlationId, "Failed to create/find Model/Verified/Deviation/Critical types for Control Point family.");
                 return;
             }
 
@@ -310,7 +703,11 @@ namespace RevitSuite.Host.Commands
                 .OfCategory(BuiltInCategory.OST_Site)
                 .WhereElementIsNotElementType()
                 .OfType<FamilyInstance>()
-                .Where(fi => fi.Symbol?.Name == "Field")
+                .Where(fi =>
+                    fi.Symbol?.Name == "Field" ||
+                    fi.Symbol?.Name == "Verified" ||
+                    fi.Symbol?.Name == "Deviation" ||
+                    fi.Symbol?.Name == "Critical")
                 .ToList();
 
             foreach (var fp in existingFieldPointsList)
@@ -344,6 +741,14 @@ namespace RevitSuite.Host.Commands
                         deviation.ModelPoint.X + deviation.DeviationEasting,
                         deviation.ModelPoint.Y + deviation.DeviationNorthing,
                         deviation.ModelPoint.Z + deviation.DeviationElevation);
+                    var fieldSymbol = deviation.Status switch
+                    {
+                        ToleranceStatus.Green => modelSymbol,
+                        ToleranceStatus.Blue => verifiedSymbol,
+                        ToleranceStatus.Yellow => deviationSymbol,
+                        ToleranceStatus.Red => criticalSymbol,
+                        _ => modelSymbol
+                    };
 
                     FamilyInstance fieldInstance;
 
@@ -357,6 +762,11 @@ namespace RevitSuite.Host.Commands
                         if (fieldInstance.Location is LocationPoint locPoint)
                         {
                             locPoint.Point = fieldPoint;
+                        }
+
+                        if (fieldInstance.Symbol?.Id != fieldSymbol.Id)
+                        {
+                            fieldInstance.Symbol = fieldSymbol;
                         }
 
                         fieldPointsUpdated++;
@@ -383,6 +793,7 @@ namespace RevitSuite.Host.Commands
                     // Update deviation parameters (for both new and existing)
                     SetParameterByGuid(fieldInstance, DeviationEastingGuid, deviation.DeviationEasting);
                     SetParameterByGuid(fieldInstance, DeviationNorthingGuid, deviation.DeviationNorthing);
+                    SetDeviationElevationParameter(fieldInstance, deviation.DeviationElevation);
 
                     // Update comments (for both new and existing)
                     var commentsParam = fieldInstance.LookupParameter("Comments");
@@ -390,6 +801,9 @@ namespace RevitSuite.Host.Commands
                     {
                         commentsParam.Set($"Field measurement for {deviation.PointNumber}");
                     }
+
+                    // Keep reference to the as-built point instance for downstream annotations (e.g., spot elevation).
+                    deviation.FieldElementId = fieldInstance.Id;
                 }
                 catch (Exception ex)
                 {
@@ -453,9 +867,10 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            var greenColor = new Autodesk.Revit.DB.Color(34, 197, 94);
-            var yellowColor = new Autodesk.Revit.DB.Color(234, 179, 8);
-            var redColor = new Autodesk.Revit.DB.Color(239, 68, 68);
+            var modelColor = new Autodesk.Revit.DB.Color(34, 197, 94);
+            var verifiedColor = new Autodesk.Revit.DB.Color(59, 130, 246);
+            var deviationColor = new Autodesk.Revit.DB.Color(249, 115, 22);
+            var criticalColor = new Autodesk.Revit.DB.Color(239, 68, 68);
 
             // Build dictionary of field points by Point Number for fast lookup
             var fieldPointsDict = new Dictionary<string, ElementId>(StringComparer.OrdinalIgnoreCase);
@@ -463,7 +878,9 @@ namespace RevitSuite.Host.Commands
                 .OfCategory(BuiltInCategory.OST_Site)
                 .WhereElementIsNotElementType()
                 .OfType<FamilyInstance>()
-                .Where(fi => fi.Symbol?.Name == "Field")
+                .Where(fi =>
+                    fi.Symbol?.Family?.Name == config.DefaultFamilyName &&
+                    (fi.Symbol?.Name == "Verified" || fi.Symbol?.Name == "Deviation" || fi.Symbol?.Name == "Critical" || fi.Symbol?.Name == "Field"))
                 .ToList();
 
             foreach (var fp in fieldPoints)
@@ -479,17 +896,17 @@ namespace RevitSuite.Host.Commands
 
             foreach (var deviation in deviations)
             {
-                var color = deviation.Status switch
+                var asBuiltColor = deviation.Status switch
                 {
-                    ToleranceStatus.Green => greenColor,
-                    ToleranceStatus.Yellow => yellowColor,
-                    ToleranceStatus.Red => redColor,
-                    _ => greenColor
+                    ToleranceStatus.Blue => verifiedColor,
+                    ToleranceStatus.Yellow => deviationColor,
+                    ToleranceStatus.Red => criticalColor,
+                    _ => modelColor
                 };
 
-                var overrides = new OverrideGraphicSettings();
-                overrides.SetProjectionLineColor(color);
-                overrides.SetProjectionLineWeight(5);
+                var modelOverrides = new OverrideGraphicSettings();
+                modelOverrides.SetProjectionLineColor(modelColor);
+                modelOverrides.SetProjectionLineWeight(5);
 
                 // Apply to model point
                 var modelElement = doc.GetElement(deviation.ElementId);
@@ -497,7 +914,7 @@ namespace RevitSuite.Host.Commands
                 {
                     try
                     {
-                        view.SetElementOverrides(modelElement.Id, overrides);
+                        view.SetElementOverrides(modelElement.Id, modelOverrides);
                     }
                     catch (Exception ex)
                     {
@@ -508,9 +925,13 @@ namespace RevitSuite.Host.Commands
                 // Apply to corresponding field point using fast dictionary lookup
                 if (fieldPointsDict.TryGetValue(deviation.PointNumber, out var fieldPointId))
                 {
+                    var fieldOverrides = new OverrideGraphicSettings();
+                    fieldOverrides.SetProjectionLineColor(asBuiltColor);
+                    fieldOverrides.SetProjectionLineWeight(5);
+
                     try
                     {
-                        view.SetElementOverrides(fieldPointId, overrides);
+                        view.SetElementOverrides(fieldPointId, fieldOverrides);
                     }
                     catch (Exception ex)
                     {
@@ -523,6 +944,7 @@ namespace RevitSuite.Host.Commands
         private void CreateDeviationIndicators(Document doc, List<DeviationResult> deviations, QaqcConfig config, string correlationId)
         {
             var greenMaterialId = EnsureMaterial(doc, "QAQC_Green", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(34, 197, 94));
+            var blueMaterialId = EnsureMaterial(doc, "QAQC_Blue", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(59, 130, 246));
             var yellowMaterialId = EnsureMaterial(doc, "QAQC_Yellow", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(234, 179, 8));
             var redMaterialId = EnsureMaterial(doc, "QAQC_Red", config.VisualizationTransparency, new Autodesk.Revit.DB.Color(239, 68, 68));
 
@@ -536,6 +958,7 @@ namespace RevitSuite.Host.Commands
                     var materialId = deviation.Status switch
                     {
                         ToleranceStatus.Green => greenMaterialId,
+                        ToleranceStatus.Blue => blueMaterialId,
                         ToleranceStatus.Yellow => yellowMaterialId,
                         ToleranceStatus.Red => redMaterialId,
                         _ => greenMaterialId
