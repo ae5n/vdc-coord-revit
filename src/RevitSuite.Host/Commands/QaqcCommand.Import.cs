@@ -801,6 +801,9 @@ namespace RevitSuite.Host.Commands
                     {
                         commentsParam.Set($"Field measurement for {deviation.PointNumber}");
                     }
+
+                    // Keep reference to the as-built point instance for downstream annotations (e.g., spot elevation).
+                    deviation.FieldElementId = fieldInstance.Id;
                 }
                 catch (Exception ex)
                 {

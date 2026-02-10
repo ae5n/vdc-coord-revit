@@ -230,6 +230,34 @@ namespace RevitSuite.Host.Commands
                 LogManager.Warn(correlationId, $"Failed to delete old detail lines: {ex.Message}");
             }
 
+            // Delete existing spot elevations in this view to prevent duplicate elevation tags.
+            try
+            {
+                var existingSpotElevations = new FilteredElementCollector(doc, view.Id)
+                    .OfClass(typeof(SpotDimension))
+                    .ToList();
+
+                var deletedSpots = 0;
+                foreach (var spot in existingSpotElevations)
+                {
+                    try
+                    {
+                        doc.Delete(spot.Id);
+                        deletedSpots++;
+                    }
+                    catch
+                    {
+                        // Skip locked/system-owned elements.
+                    }
+                }
+
+                LogManager.Info(correlationId, $"Deleted {deletedSpots} existing spot elevations in current view.");
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Failed to delete old spot elevations: {ex.Message}");
+            }
+
             // Get a valid TextNoteType from the document
             var textNoteType = new FilteredElementCollector(doc)
                 .OfClass(typeof(TextNoteType))
@@ -262,15 +290,20 @@ namespace RevitSuite.Host.Commands
                         // Add +/- signs
                         var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
                         var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
-                        annotationLines.Add($"E: {eastingSign}{eastingFtIn}");
-                        annotationLines.Add($"N: {northingSign}{northingFtIn}");
+                        annotationLines.Add($"ΔE: {eastingSign}{eastingFtIn}");
+                        annotationLines.Add($"ΔN: {northingSign}{northingFtIn}");
                     }
 
                     if (includeElevationAnnotations)
                     {
                         var elevationFtIn = FormatFeetInches(Math.Abs(deviation.DeviationElevation));
                         var elevationSign = deviation.DeviationElevation >= 0 ? "+" : "-";
-                        annotationLines.Add($"Z: {elevationSign}{elevationFtIn}");
+                        annotationLines.Add($"ΔZ: {elevationSign}{elevationFtIn}");
+
+                        if (TryGetPointElevationForAnnotation(doc, deviation, out var elevationValue))
+                        {
+                            annotationLines.Add($"Z: {FormatFeetInches(elevationValue)}");
+                        }
                     }
 
                     var annotationText = string.Join("\n", annotationLines);
@@ -281,18 +314,23 @@ namespace RevitSuite.Host.Commands
                         deviation.ModelPoint.Y + 1.0,  // 1 foot up
                         deviation.ModelPoint.Z);
 
+                    var annotationColor = deviation.Status switch
+                    {
+                        ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(59, 130, 246),   // Verified
+                        ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
+                        ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
+                        _ => new Autodesk.Revit.DB.Color(34, 197, 94)                         // Model/default
+                    };
+
                     var textNote = TextNote.Create(doc, view.Id, annotationPoint, annotationText, textNoteType.Id);
+
+                    if (includeElevationAnnotations)
+                    {
+                        TryCreateSpotElevationAnnotation(doc, view, deviation, annotationColor, correlationId);
+                    }
 
                     if (textNote != null)
                     {
-                        var annotationColor = deviation.Status switch
-                        {
-                            ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(59, 130, 246),   // Verified
-                            ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
-                            ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
-                            _ => new Autodesk.Revit.DB.Color(34, 197, 94)                         // Model/default
-                        };
-
                         var annotationOverrides = new OverrideGraphicSettings();
                         annotationOverrides.SetProjectionLineColor(annotationColor);
                         annotationOverrides.SetProjectionLineWeight(3);
@@ -330,6 +368,275 @@ namespace RevitSuite.Host.Commands
             }
 
             LogManager.Info(correlationId, $"Created {annotationsCreated} deviation annotations.");
+        }
+
+        private void TryCreateSpotElevationAnnotation(
+            Document doc,
+            Autodesk.Revit.DB.View view,
+            DeviationResult deviation,
+            Autodesk.Revit.DB.Color annotationColor,
+            string correlationId)
+        {
+            Element sourceElement = null;
+            XYZ fallbackPoint = deviation.ModelPoint;
+
+            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            {
+                sourceElement = doc.GetElement(deviation.FieldElementId);
+                if (sourceElement?.Location is LocationPoint fieldLoc)
+                {
+                    fallbackPoint = fieldLoc.Point;
+                }
+            }
+
+            if (sourceElement == null)
+            {
+                sourceElement = doc.GetElement(deviation.ElementId);
+            }
+
+            if (sourceElement == null || fallbackPoint == null)
+            {
+                return;
+            }
+
+            var target = GetSpotElevationTarget(sourceElement, fallbackPoint);
+            if (target == null || target.Reference == null || target.Point == null)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation skipped for Point {deviation.PointNumber}: no valid face/reference found.");
+                return;
+            }
+
+            try
+            {
+                var origin = target.Point;
+                var bend = new XYZ(origin.X + 1.5, origin.Y + 1.0, origin.Z);
+                var end = new XYZ(origin.X + 3.0, origin.Y + 1.0, origin.Z);
+                var refPoint = origin;
+
+                var spot = doc.Create.NewSpotElevation(view, target.Reference, origin, bend, end, refPoint, true);
+                if (spot != null)
+                {
+                    var overrides = new OverrideGraphicSettings();
+                    overrides.SetProjectionLineColor(annotationColor);
+                    overrides.SetProjectionLineWeight(3);
+                    view.SetElementOverrides(spot.Id, overrides);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation annotation failed for Point {deviation.PointNumber}: {ex.Message}");
+            }
+        }
+
+        private class SpotElevationTarget
+        {
+            public Reference Reference { get; set; }
+            public XYZ Point { get; set; }
+        }
+
+        private bool TryGetPointElevationForAnnotation(Document doc, DeviationResult deviation, out double elevation)
+        {
+            elevation = 0.0;
+
+            Element pointElement = null;
+            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            {
+                pointElement = doc.GetElement(deviation.FieldElementId);
+            }
+
+            if (pointElement == null)
+            {
+                pointElement = doc.GetElement(deviation.ElementId);
+            }
+
+            if (pointElement == null)
+            {
+                return false;
+            }
+
+            var value = GetParameterValueDouble(pointElement, CsElevationGuid);
+            if (value.HasValue)
+            {
+                elevation = value.Value;
+                return true;
+            }
+
+            return false;
+        }
+
+        private SpotElevationTarget GetSpotElevationTarget(Element element, XYZ fallbackPoint)
+        {
+            try
+            {
+                var directReference = new Reference(element);
+                if (directReference != null)
+                {
+                    return new SpotElevationTarget
+                    {
+                        Reference = directReference,
+                        Point = fallbackPoint
+                    };
+                }
+            }
+            catch
+            {
+                // Fall back to geometry-based references.
+            }
+
+            try
+            {
+                var options = new Options
+                {
+                    ComputeReferences = true,
+                    IncludeNonVisibleObjects = true,
+                    DetailLevel = ViewDetailLevel.Fine
+                };
+
+                var geometry = element.get_Geometry(options);
+                if (geometry == null)
+                {
+                    return null;
+                }
+
+                var topFaceTarget = FindBestHorizontalFaceTarget(geometry);
+                if (topFaceTarget != null)
+                {
+                    return topFaceTarget;
+                }
+
+                var genericFaceTarget = FindFirstGeometryFaceTarget(geometry);
+                if (genericFaceTarget != null)
+                {
+                    return genericFaceTarget;
+                }
+            }
+            catch
+            {
+                // Fall through.
+            }
+
+            return null;
+        }
+
+        private SpotElevationTarget FindBestHorizontalFaceTarget(GeometryElement geometry)
+        {
+            foreach (var obj in geometry)
+            {
+                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
+                {
+                    PlanarFace bestFace = null;
+                    XYZ bestPoint = null;
+
+                    foreach (Face face in solid.Faces)
+                    {
+                        if (face is PlanarFace planarFace &&
+                            planarFace.Reference != null &&
+                            Math.Abs(planarFace.FaceNormal.Z) > 0.9)
+                        {
+                            var point = EvaluateFaceMidpoint(planarFace);
+                            if (point == null)
+                            {
+                                continue;
+                            }
+
+                            if (bestFace == null || point.Z > bestPoint.Z)
+                            {
+                                bestFace = planarFace;
+                                bestPoint = point;
+                            }
+                        }
+                    }
+
+                    if (bestFace != null && bestPoint != null)
+                    {
+                        return new SpotElevationTarget
+                        {
+                            Reference = bestFace.Reference,
+                            Point = bestPoint
+                        };
+                    }
+                }
+
+                if (obj is GeometryInstance instance)
+                {
+                    var nested = instance.GetInstanceGeometry();
+                    var nestedTarget = FindBestHorizontalFaceTarget(nested);
+                    if (nestedTarget != null)
+                    {
+                        return nestedTarget;
+                    }
+
+                    var symbolGeometry = instance.GetSymbolGeometry();
+                    var symbolTarget = FindBestHorizontalFaceTarget(symbolGeometry);
+                    if (symbolTarget != null)
+                    {
+                        return symbolTarget;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private SpotElevationTarget FindFirstGeometryFaceTarget(GeometryElement geometry)
+        {
+            foreach (var obj in geometry)
+            {
+                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
+                {
+                    foreach (Face face in solid.Faces)
+                    {
+                        if (face?.Reference == null)
+                        {
+                            continue;
+                        }
+
+                        var point = EvaluateFaceMidpoint(face);
+                        if (point == null)
+                        {
+                            continue;
+                        }
+
+                        return new SpotElevationTarget
+                        {
+                            Reference = face.Reference,
+                            Point = point
+                        };
+                    }
+                }
+
+                if (obj is GeometryInstance instance)
+                {
+                    var nested = instance.GetInstanceGeometry();
+                    var nestedTarget = FindFirstGeometryFaceTarget(nested);
+                    if (nestedTarget != null)
+                    {
+                        return nestedTarget;
+                    }
+
+                    var symbolGeometry = instance.GetSymbolGeometry();
+                    var symbolTarget = FindFirstGeometryFaceTarget(symbolGeometry);
+                    if (symbolTarget != null)
+                    {
+                        return symbolTarget;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private XYZ EvaluateFaceMidpoint(Face face)
+        {
+            var bounds = face.GetBoundingBox();
+            if (bounds == null)
+            {
+                return null;
+            }
+
+            var midU = (bounds.Min.U + bounds.Max.U) * 0.5;
+            var midV = (bounds.Min.V + bounds.Max.V) * 0.5;
+            return face.Evaluate(new UV(midU, midV));
         }
 
         private string FormatFeetInches(double feet)
@@ -428,6 +735,7 @@ namespace RevitSuite.Host.Commands
         {
             public string PointNumber { get; set; }
             public ElementId ElementId { get; set; }
+            public ElementId FieldElementId { get; set; }
             public string UniqueId { get; set; }
             public double DeviationEasting { get; set; }
             public double DeviationNorthing { get; set; }
