@@ -322,6 +322,14 @@ namespace RevitSuite.Host.Commands
                         {
                             createdTags++;
                         }
+                        try
+                        {
+                            TryCreateSpotElevationForDeviation(doc, view, deviation, basePoint, tagOffsetEast, tagOffsetNorth, annotationColor, correlationId);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogManager.Warn(correlationId, $"Spot elevation failed for Point {deviation.PointNumber}: {ex.Message}");
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -331,6 +339,293 @@ namespace RevitSuite.Host.Commands
             }
 
             LogManager.Info(correlationId, $"Created {createdTags} deviation tag annotation(s).");
+        }
+
+        private bool TryCreateSpotElevationForDeviation(
+            Document doc,
+            Autodesk.Revit.DB.View view,
+            DeviationResult deviation,
+            XYZ basePoint,
+            double tagOffsetEast,
+            double tagOffsetNorth,
+            Autodesk.Revit.DB.Color annotationColor,
+            string correlationId)
+        {
+            if (deviation == null || deviation.FieldElementId == null || deviation.FieldElementId == ElementId.InvalidElementId)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation skipped for point '{deviation?.PointNumber ?? "Unknown"}' - no as-built element id.");
+                return false;
+            }
+
+            var element = doc.GetElement(deviation.FieldElementId);
+            if (element == null)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation skipped for point '{deviation.PointNumber}' - as-built element not found.");
+                return false;
+            }
+
+            return TryCreateSpotElevation(doc, view, element, basePoint, tagOffsetEast, tagOffsetNorth, annotationColor, correlationId);
+        }
+
+        private bool TryCreateSpotElevation(
+            Document doc,
+            Autodesk.Revit.DB.View view,
+            Element targetElement,
+            XYZ basePoint,
+            double tagOffsetEast,
+            double tagOffsetNorth,
+            Autodesk.Revit.DB.Color annotationColor,
+            string correlationId)
+        {
+            var candidates = GetSpotElevationReferenceCandidates(targetElement, view, basePoint);
+            if (candidates.Count == 0)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation skipped on element {targetElement.Id} - no valid geometric reference.");
+                LogSpotReferenceDiagnostics(targetElement, view, basePoint, correlationId);
+                return false;
+            }
+
+            Exception lastException = null;
+            foreach (var candidate in candidates)
+            {
+                var origin = candidate.ReferencePoint;
+                // Keep spot elevation under the point so it does not overlap the custom deviation tag.
+                var spotEastOffset = tagOffsetEast;
+                var spotSouthOffset = -Math.Max(Math.Abs(tagOffsetNorth), 1.5);
+                var bend = new XYZ(origin.X + spotEastOffset, origin.Y + spotSouthOffset, origin.Z);
+                var endDirection = spotEastOffset >= 0 ? 1.0 : -1.0;
+                var end = new XYZ(bend.X + endDirection, bend.Y, bend.Z);
+
+                try
+                {
+                    var spot = doc.Create.NewSpotElevation(view, candidate.Reference, origin, bend, end, candidate.ReferencePoint, true);
+                    if (spot == null)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var annotationOverrides = new OverrideGraphicSettings();
+                        annotationOverrides.SetProjectionLineColor(annotationColor);
+                        annotationOverrides.SetProjectionLineWeight(3);
+                        view.SetElementOverrides(spot.Id, annotationOverrides);
+                    }
+                    catch
+                    {
+                        // Non-fatal
+                    }
+
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+                }
+            }
+
+            LogManager.Warn(
+                correlationId,
+                $"Spot elevation failed on element {targetElement.Id}: {lastException?.Message ?? "No candidate references succeeded."}");
+            LogSpotReferenceDiagnostics(targetElement, view, basePoint, correlationId);
+            return false;
+        }
+
+        private List<SpotElevationReferenceCandidate> GetSpotElevationReferenceCandidates(
+            Element element,
+            Autodesk.Revit.DB.View view,
+            XYZ samplePoint)
+        {
+            var candidates = new List<SpotElevationReferenceCandidate>();
+
+            if (!(element is FamilyInstance familyInstance))
+            {
+                return candidates;
+            }
+
+            TryAddStrongFamilyReferenceCandidates(familyInstance, samplePoint, candidates);
+
+            return candidates
+                .GroupBy(c => GetStableReferenceKey(familyInstance.Document, c.Reference))
+                .Select(g => g.OrderBy(x => x.Distance).First())
+                .OrderBy(c => c.Distance)
+                .ToList();
+        }
+
+        private static string GetStableReferenceKey(Document doc, Reference reference)
+        {
+            if (doc == null || reference == null)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return reference.ConvertToStableRepresentation(doc);
+            }
+            catch
+            {
+                return reference.ElementId.IntegerValue.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        private void TryAddStrongFamilyReferenceCandidates(
+            FamilyInstance familyInstance,
+            XYZ samplePoint,
+            List<SpotElevationReferenceCandidate> candidates)
+        {
+            if (familyInstance == null || candidates == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var refs = familyInstance.GetReferences(FamilyInstanceReferenceType.StrongReference);
+                if (refs == null)
+                {
+                    return;
+                }
+
+                foreach (var r in refs)
+                {
+                    if (r != null)
+                    {
+                        candidates.Add(new SpotElevationReferenceCandidate(r, samplePoint, 0.1));
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore unsupported reference extraction.
+            }
+        }
+
+        private void LogSpotReferenceDiagnostics(
+            Element element,
+            Autodesk.Revit.DB.View view,
+            XYZ samplePoint,
+            string correlationId)
+        {
+            if (element == null)
+            {
+                return;
+            }
+
+            try
+            {
+                LogManager.Warn(
+                    correlationId,
+                    $"Spot debug: element={element.Id.IntegerValue}, category='{element.Category?.Name}', sample=({samplePoint?.X:F3},{samplePoint?.Y:F3},{samplePoint?.Z:F3})");
+
+                if (element is FamilyInstance fi)
+                {
+                    var namedRef = fi.GetReferenceByName("Reference");
+                    LogManager.Warn(correlationId, $"Spot debug: named 'Reference' exists={namedRef != null}");
+
+                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.StrongReference, "StrongReference", correlationId);
+                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.CenterLeftRight, "CenterLeftRight", correlationId);
+                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.CenterFrontBack, "CenterFrontBack", correlationId);
+                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.CenterElevation, "CenterElevation", correlationId);
+                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.WeakReference, "WeakReference", correlationId);
+                }
+
+                var options = new Options
+                {
+                    ComputeReferences = true,
+                    IncludeNonVisibleObjects = true,
+                    View = view
+                };
+
+                GeometryElement geometry;
+                try
+                {
+                    geometry = element.get_Geometry(options);
+                }
+                catch
+                {
+                    geometry = element.get_Geometry(new Options
+                    {
+                        ComputeReferences = true,
+                        IncludeNonVisibleObjects = true
+                    });
+                }
+
+                if (geometry == null)
+                {
+                    LogManager.Warn(correlationId, "Spot debug: geometry is null.");
+                    return;
+                }
+
+                var faceCount = 0;
+                var refFaceCount = 0;
+                var sampleLines = new List<string>();
+                var stack = new Stack<GeometryElement>();
+                stack.Push(geometry);
+                while (stack.Count > 0)
+                {
+                    var current = stack.Pop();
+                    foreach (GeometryObject obj in current)
+                    {
+                        if (obj is Solid solid && solid.Faces.Size > 0)
+                        {
+                            foreach (Face face in solid.Faces)
+                            {
+                                faceCount++;
+                                if (face?.Reference == null)
+                                {
+                                    continue;
+                                }
+
+                                refFaceCount++;
+                                if (sampleLines.Count < 8)
+                                {
+                                    var stable = GetStableReferenceKey(element.Document, face.Reference);
+                                    var proj = face.Project(samplePoint);
+                                    var distance = proj?.Distance ?? double.NaN;
+                                    sampleLines.Add($"ref='{stable}', projDist={distance:F6}");
+                                }
+                            }
+                        }
+                        else if (obj is GeometryInstance gi)
+                        {
+                            var inst = gi.GetInstanceGeometry();
+                            if (inst != null)
+                            {
+                                stack.Push(inst);
+                            }
+                        }
+                    }
+                }
+
+                LogManager.Warn(correlationId, $"Spot debug: faces={faceCount}, facesWithRef={refFaceCount}");
+                foreach (var line in sampleLines)
+                {
+                    LogManager.Warn(correlationId, $"Spot debug ref: {line}");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Spot debug failed for element {element.Id.IntegerValue}: {ex.Message}");
+            }
+        }
+
+        private void LogFamilyReferenceTypeCount(
+            FamilyInstance fi,
+            FamilyInstanceReferenceType type,
+            string label,
+            string correlationId)
+        {
+            try
+            {
+                var refs = fi.GetReferences(type);
+                var count = refs?.Count ?? 0;
+                LogManager.Warn(correlationId, $"Spot debug: {label} count={count}");
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Spot debug: {label} unavailable ({ex.Message})");
+            }
         }
 
         private static Autodesk.Revit.DB.Color GetAnnotationColorByStatus(ToleranceStatus status)
@@ -570,6 +865,20 @@ namespace RevitSuite.Host.Commands
             public double Easting { get; set; }
             public double Northing { get; set; }
             public double Elevation { get; set; }
+        }
+
+        private class SpotElevationReferenceCandidate
+        {
+            public SpotElevationReferenceCandidate(Reference reference, XYZ referencePoint, double distance)
+            {
+                Reference = reference;
+                ReferencePoint = referencePoint;
+                Distance = distance;
+            }
+
+            public Reference Reference { get; }
+            public XYZ ReferencePoint { get; }
+            public double Distance { get; }
         }
 
         private enum SogSelectionMode
