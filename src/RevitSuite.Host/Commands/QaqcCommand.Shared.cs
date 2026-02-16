@@ -292,7 +292,7 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            DeleteExistingDeviationTags(doc, view, config, correlationId);
+            // Preserve existing annotations. New run adds/updates only current run outputs.
 
             var createdTags = 0;
             foreach (var deviation in deviations)
