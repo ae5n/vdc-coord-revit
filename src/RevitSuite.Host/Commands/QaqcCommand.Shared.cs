@@ -612,7 +612,7 @@ namespace RevitSuite.Host.Commands
             private void InitializeComponent()
             {
                 Text = "QAQC - Control Point Verification";
-                Size = new System.Drawing.Size(600, 660);
+                Size = new System.Drawing.Size(620, 710);
                 StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
                 FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
                 MaximizeBox = false;
@@ -697,7 +697,7 @@ namespace RevitSuite.Host.Commands
 
                 placeRadioButton = new System.Windows.Forms.RadioButton
                 {
-                    Text = "Place Control Points",
+                    Text = "Place Model Control Points",
                     Location = new System.Drawing.Point(18, 28),
                     Size = new System.Drawing.Size(220, 25),
                     Checked = true,
@@ -707,16 +707,16 @@ namespace RevitSuite.Host.Commands
 
                 exportRadioButton = new System.Windows.Forms.RadioButton
                 {
-                    Text = "Export Model Points",
+                    Text = "Export Model Points (CSV Template)",
                     Location = new System.Drawing.Point(18, 55),
-                    Size = new System.Drawing.Size(220, 25),
+                    Size = new System.Drawing.Size(340, 25),
                     Tag = QaqcMode.Export
                 };
                 modeGroupBox.Controls.Add(exportRadioButton);
 
                 importRadioButton = new System.Windows.Forms.RadioButton
                 {
-                    Text = "Import && Analyze Field Data",
+                    Text = "Place && Analyze As-built Points",
                     Location = new System.Drawing.Point(18, 82),
                     Size = new System.Drawing.Size(240, 25),
                     Tag = QaqcMode.ImportAndAnalyze
@@ -725,9 +725,9 @@ namespace RevitSuite.Host.Commands
 
                 thresholdGroupBox = new System.Windows.Forms.GroupBox
                 {
-                    Text = "Thresholds (Import Mode)",
+                    Text = "Thresholds for Deviation Calculation && Tag Placement",
                     Location = new System.Drawing.Point(16, 290),
-                    Size = new System.Drawing.Size(550, 270),
+                    Size = new System.Drawing.Size(550, 305),
                     Visible = false
                 };
                 Controls.Add(thresholdGroupBox);
@@ -862,7 +862,7 @@ namespace RevitSuite.Host.Commands
 
                 thresholdHelpLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Per enabled check: <= Verified => Verified (Green), > Critical => Critical (Red), otherwise Deviation (Orange).",
+                    Text = "Deviation thresholds by enabled check: <= Verified => Verified (Green), > Critical => Critical (Red), otherwise Deviation (Orange).",
                     Location = new System.Drawing.Point(14, 194),
                     Size = new System.Drawing.Size(510, 34),
                     ForeColor = System.Drawing.Color.DimGray,
@@ -926,7 +926,7 @@ namespace RevitSuite.Host.Commands
                 okButton = new System.Windows.Forms.Button
                 {
                     Text = "OK",
-                    Location = new System.Drawing.Point(396, 578),
+                    Location = new System.Drawing.Point(396, 624),
                     Size = new System.Drawing.Size(80, 32),
                     DialogResult = System.Windows.Forms.DialogResult.OK
                 };
@@ -935,7 +935,7 @@ namespace RevitSuite.Host.Commands
                 cancelButton = new System.Windows.Forms.Button
                 {
                     Text = "Cancel",
-                    Location = new System.Drawing.Point(486, 578),
+                    Location = new System.Drawing.Point(486, 624),
                     Size = new System.Drawing.Size(80, 32),
                     DialogResult = System.Windows.Forms.DialogResult.Cancel
                 };
