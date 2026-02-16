@@ -973,7 +973,7 @@ namespace RevitSuite.Host.Commands
                 var generalGroupBox = new System.Windows.Forms.GroupBox
                 {
                     Text = "General",
-                    Location = new System.Drawing.Point(16, 64),
+                    Location = new System.Drawing.Point(16, 190),
                     Size = new System.Drawing.Size(550, 92)
                 };
                 Controls.Add(generalGroupBox);
@@ -1023,7 +1023,7 @@ namespace RevitSuite.Host.Commands
                 var modeGroupBox = new System.Windows.Forms.GroupBox
                 {
                     Text = "Mode",
-                    Location = new System.Drawing.Point(16, 164),
+                    Location = new System.Drawing.Point(16, 64),
                     Size = new System.Drawing.Size(550, 118)
                 };
                 Controls.Add(modeGroupBox);
