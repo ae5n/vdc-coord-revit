@@ -309,7 +309,7 @@ namespace RevitSuite.Host.Commands
                     if (includeHorizontalAnnotations)
                     {
                         var horizontalHead = new XYZ(basePoint.X + tagOffsetEast, basePoint.Y + tagOffsetNorth, basePoint.Z);
-                        if (TryCreateDeviationTag(doc, view, targetElement, horizontalTagSymbol, horizontalHead, annotationColor, correlationId))
+                        if (TryCreateDeviationTag(doc, view, targetElement, horizontalTagSymbol, horizontalHead, annotationColor, true, correlationId, out _))
                         {
                             createdTags++;
                         }
@@ -317,18 +317,36 @@ namespace RevitSuite.Host.Commands
 
                     if (includeElevationAnnotations)
                     {
-                        var elevationHead = new XYZ(basePoint.X + tagOffsetEast, basePoint.Y + tagOffsetNorth, basePoint.Z);
-                        if (TryCreateDeviationTag(doc, view, targetElement, elevationTagSymbol, elevationHead, annotationColor, correlationId))
+                        if (TryCreateSpotElevationForDeviation(
+                                doc,
+                                view,
+                                deviation,
+                                basePoint,
+                                tagOffsetEast,
+                                tagOffsetNorth,
+                                annotationColor,
+                                correlationId,
+                                out _))
                         {
-                            createdTags++;
-                        }
-                        try
-                        {
-                            TryCreateSpotElevationForDeviation(doc, view, deviation, basePoint, tagOffsetEast, tagOffsetNorth, annotationColor, correlationId);
-                        }
-                        catch (Exception ex)
-                        {
-                            LogManager.Warn(correlationId, $"Spot elevation failed for Point {deviation.PointNumber}: {ex.Message}");
+                            // Keep Z deviation tag under spot elevation text.
+                            var elevationHead = new XYZ(
+                                basePoint.X + tagOffsetEast,
+                                basePoint.Y + tagOffsetNorth - 0.8,
+                                basePoint.Z);
+
+                            if (TryCreateDeviationTag(
+                                    doc,
+                                    view,
+                                    targetElement,
+                                    elevationTagSymbol,
+                                    elevationHead,
+                                    annotationColor,
+                                    false,
+                                    correlationId,
+                                    out var elevationTagId))
+                            {
+                                createdTags++;
+                            }
                         }
                     }
                 }
@@ -349,8 +367,10 @@ namespace RevitSuite.Host.Commands
             double tagOffsetEast,
             double tagOffsetNorth,
             Autodesk.Revit.DB.Color annotationColor,
-            string correlationId)
+            string correlationId,
+            out ElementId spotId)
         {
+            spotId = ElementId.InvalidElementId;
             if (deviation == null || deviation.FieldElementId == null || deviation.FieldElementId == ElementId.InvalidElementId)
             {
                 LogManager.Warn(correlationId, $"Spot elevation skipped for point '{deviation?.PointNumber ?? "Unknown"}' - no as-built element id.");
@@ -364,7 +384,7 @@ namespace RevitSuite.Host.Commands
                 return false;
             }
 
-            return TryCreateSpotElevation(doc, view, element, basePoint, tagOffsetEast, tagOffsetNorth, annotationColor, correlationId);
+            return TryCreateSpotElevation(doc, view, element, basePoint, tagOffsetEast, tagOffsetNorth, annotationColor, correlationId, out spotId);
         }
 
         private bool TryCreateSpotElevation(
@@ -375,8 +395,10 @@ namespace RevitSuite.Host.Commands
             double tagOffsetEast,
             double tagOffsetNorth,
             Autodesk.Revit.DB.Color annotationColor,
-            string correlationId)
+            string correlationId,
+            out ElementId spotId)
         {
+            spotId = ElementId.InvalidElementId;
             var candidates = GetSpotElevationReferenceCandidates(targetElement, view, basePoint);
             if (candidates.Count == 0)
             {
@@ -389,11 +411,9 @@ namespace RevitSuite.Host.Commands
             foreach (var candidate in candidates)
             {
                 var origin = candidate.ReferencePoint;
-                // Keep spot elevation under the point so it does not overlap the custom deviation tag.
-                var spotEastOffset = tagOffsetEast;
-                var spotSouthOffset = -Math.Max(Math.Abs(tagOffsetNorth), 1.5);
-                var bend = new XYZ(origin.X + spotEastOffset, origin.Y + spotSouthOffset, origin.Z);
-                var endDirection = spotEastOffset >= 0 ? 1.0 : -1.0;
+                // Respect user-entered East/North offsets for spot position.
+                var bend = new XYZ(origin.X + tagOffsetEast, origin.Y + tagOffsetNorth, origin.Z);
+                var endDirection = tagOffsetEast >= 0 ? 1.0 : -1.0;
                 var end = new XYZ(bend.X + endDirection, bend.Y, bend.Z);
 
                 try
@@ -416,6 +436,7 @@ namespace RevitSuite.Host.Commands
                         // Non-fatal
                     }
 
+                    spotId = spot.Id;
                     return true;
                 }
                 catch (Exception ex)
@@ -730,8 +751,11 @@ namespace RevitSuite.Host.Commands
             FamilySymbol tagSymbol,
             XYZ tagHeadPoint,
             Autodesk.Revit.DB.Color annotationColor,
-            string correlationId)
+            bool hasLeader,
+            string correlationId,
+            out ElementId tagId)
         {
+            tagId = ElementId.InvalidElementId;
             Reference reference;
             try
             {
@@ -750,7 +774,7 @@ namespace RevitSuite.Host.Commands
                     doc,
                     view.Id,
                     reference,
-                    true,
+                    hasLeader,
                     TagMode.TM_ADDBY_CATEGORY,
                     TagOrientation.Horizontal,
                     tagHeadPoint);
@@ -765,6 +789,7 @@ namespace RevitSuite.Host.Commands
             {
                 return false;
             }
+            tagId = tag.Id;
 
             try
             {
