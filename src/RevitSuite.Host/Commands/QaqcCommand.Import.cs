@@ -137,6 +137,8 @@ namespace RevitSuite.Host.Commands
                         UpdateSharedParameters(doc, deviations, correlationId);
                         ApplyModelPointType(doc, deviations, config, correlationId);
                         PlaceFieldPoints(doc, deviations, config, correlationId);
+                        // Ensure newly created/updated instances have stable locations before tagging.
+                        doc.Regenerate();
                         // Keep point coloring type/material-driven. Annotation overrides are applied separately.
                         // CreateDeviationLines(doc, deviations, correlationId); // Temporarily disabled for performance
                         if (config.CreateDeviationArrows)

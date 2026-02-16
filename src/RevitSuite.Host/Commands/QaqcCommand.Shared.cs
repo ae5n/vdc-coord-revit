@@ -403,7 +403,6 @@ namespace RevitSuite.Host.Commands
             if (candidates.Count == 0)
             {
                 LogManager.Warn(correlationId, $"Spot elevation skipped on element {targetElement.Id} - no valid geometric reference.");
-                LogSpotReferenceDiagnostics(targetElement, view, basePoint, correlationId);
                 return false;
             }
 
@@ -448,7 +447,6 @@ namespace RevitSuite.Host.Commands
             LogManager.Warn(
                 correlationId,
                 $"Spot elevation failed on element {targetElement.Id}: {lastException?.Message ?? "No candidate references succeeded."}");
-            LogSpotReferenceDiagnostics(targetElement, view, basePoint, correlationId);
             return false;
         }
 
@@ -519,133 +517,6 @@ namespace RevitSuite.Host.Commands
             catch
             {
                 // Ignore unsupported reference extraction.
-            }
-        }
-
-        private void LogSpotReferenceDiagnostics(
-            Element element,
-            Autodesk.Revit.DB.View view,
-            XYZ samplePoint,
-            string correlationId)
-        {
-            if (element == null)
-            {
-                return;
-            }
-
-            try
-            {
-                LogManager.Warn(
-                    correlationId,
-                    $"Spot debug: element={element.Id.IntegerValue}, category='{element.Category?.Name}', sample=({samplePoint?.X:F3},{samplePoint?.Y:F3},{samplePoint?.Z:F3})");
-
-                if (element is FamilyInstance fi)
-                {
-                    var namedRef = fi.GetReferenceByName("Reference");
-                    LogManager.Warn(correlationId, $"Spot debug: named 'Reference' exists={namedRef != null}");
-
-                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.StrongReference, "StrongReference", correlationId);
-                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.CenterLeftRight, "CenterLeftRight", correlationId);
-                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.CenterFrontBack, "CenterFrontBack", correlationId);
-                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.CenterElevation, "CenterElevation", correlationId);
-                    LogFamilyReferenceTypeCount(fi, FamilyInstanceReferenceType.WeakReference, "WeakReference", correlationId);
-                }
-
-                var options = new Options
-                {
-                    ComputeReferences = true,
-                    IncludeNonVisibleObjects = true,
-                    View = view
-                };
-
-                GeometryElement geometry;
-                try
-                {
-                    geometry = element.get_Geometry(options);
-                }
-                catch
-                {
-                    geometry = element.get_Geometry(new Options
-                    {
-                        ComputeReferences = true,
-                        IncludeNonVisibleObjects = true
-                    });
-                }
-
-                if (geometry == null)
-                {
-                    LogManager.Warn(correlationId, "Spot debug: geometry is null.");
-                    return;
-                }
-
-                var faceCount = 0;
-                var refFaceCount = 0;
-                var sampleLines = new List<string>();
-                var stack = new Stack<GeometryElement>();
-                stack.Push(geometry);
-                while (stack.Count > 0)
-                {
-                    var current = stack.Pop();
-                    foreach (GeometryObject obj in current)
-                    {
-                        if (obj is Solid solid && solid.Faces.Size > 0)
-                        {
-                            foreach (Face face in solid.Faces)
-                            {
-                                faceCount++;
-                                if (face?.Reference == null)
-                                {
-                                    continue;
-                                }
-
-                                refFaceCount++;
-                                if (sampleLines.Count < 8)
-                                {
-                                    var stable = GetStableReferenceKey(element.Document, face.Reference);
-                                    var proj = face.Project(samplePoint);
-                                    var distance = proj?.Distance ?? double.NaN;
-                                    sampleLines.Add($"ref='{stable}', projDist={distance:F6}");
-                                }
-                            }
-                        }
-                        else if (obj is GeometryInstance gi)
-                        {
-                            var inst = gi.GetInstanceGeometry();
-                            if (inst != null)
-                            {
-                                stack.Push(inst);
-                            }
-                        }
-                    }
-                }
-
-                LogManager.Warn(correlationId, $"Spot debug: faces={faceCount}, facesWithRef={refFaceCount}");
-                foreach (var line in sampleLines)
-                {
-                    LogManager.Warn(correlationId, $"Spot debug ref: {line}");
-                }
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Spot debug failed for element {element.Id.IntegerValue}: {ex.Message}");
-            }
-        }
-
-        private void LogFamilyReferenceTypeCount(
-            FamilyInstance fi,
-            FamilyInstanceReferenceType type,
-            string label,
-            string correlationId)
-        {
-            try
-            {
-                var refs = fi.GetReferences(type);
-                var count = refs?.Count ?? 0;
-                LogManager.Warn(correlationId, $"Spot debug: {label} count={count}");
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Spot debug: {label} unavailable ({ex.Message})");
             }
         }
 
