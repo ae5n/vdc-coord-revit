@@ -12,8 +12,6 @@ namespace RevitSuite.Host.Commands
 {
     public partial class QaqcCommand
     {
-        private const int HorizontalAnnotationFractionDenominator = 8; // ΔE, ΔN
-        private const int ElevationAnnotationFractionDenominator = 8;  // ΔZ, Z
 
 
         private bool IsPointInCropRegion(XYZ point, XYZ min, XYZ max)
@@ -159,6 +157,7 @@ namespace RevitSuite.Host.Commands
         private void CreateDeviationAnnotations(
             Document doc,
             List<DeviationResult> deviations,
+            RevitSuite.Host.Config.QaqcConfig config,
             bool includeHorizontalAnnotations,
             bool includeElevationAnnotations,
             string correlationId)
@@ -166,7 +165,7 @@ namespace RevitSuite.Host.Commands
             var view = doc.ActiveView;
             if (view == null || view.ViewType == ViewType.Schedule || view.ViewType == ViewType.Legend || view.ViewType == ViewType.ThreeD)
             {
-                LogManager.Warn(correlationId, "Active view not suitable for text notes - skipping annotations. Use a plan, section, or elevation view.");
+                LogManager.Warn(correlationId, "Active view not suitable for tags - skipping annotations. Use a plan/section/elevation view.");
                 return;
             }
 
@@ -176,535 +175,224 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            // Delete all existing text notes in this view to prevent duplicates
-            try
+            if (!TryGetDeviationTagSymbols(doc, config, out var horizontalTagSymbol, out var elevationTagSymbol))
             {
-                var existingTextNotes = new FilteredElementCollector(doc, view.Id)
-                    .OfClass(typeof(TextNote))
-                    .ToList();
-
-                int deletedCount = 0;
-                foreach (var textNote in existingTextNotes)
-                {
-                    try
-                    {
-                        doc.Delete(textNote.Id);
-                        deletedCount++;
-                    }
-                    catch
-                    {
-                        // Some text notes might be locked or system-owned, skip them
-                    }
-                }
-
-                LogManager.Info(correlationId, $"Deleted {deletedCount} existing annotations in current view.");
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Failed to delete old annotations: {ex.Message}");
-            }
-
-            // Delete all existing detail lines in this view (leader lines)
-            try
-            {
-                var existingDetailLines = new FilteredElementCollector(doc, view.Id)
-                    .OfClass(typeof(CurveElement))
-                    .OfType<DetailCurve>()
-                    .ToList();
-
-                int deletedLines = 0;
-                foreach (var line in existingDetailLines)
-                {
-                    try
-                    {
-                        doc.Delete(line.Id);
-                        deletedLines++;
-                    }
-                    catch
-                    {
-                        // Skip locked elements
-                    }
-                }
-
-                LogManager.Info(correlationId, $"Deleted {deletedLines} existing detail lines in current view.");
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Failed to delete old detail lines: {ex.Message}");
-            }
-
-            // Delete existing spot elevations in this view to prevent duplicate elevation tags.
-            try
-            {
-                var existingSpotElevations = new FilteredElementCollector(doc, view.Id)
-                    .OfClass(typeof(SpotDimension))
-                    .ToList();
-
-                var deletedSpots = 0;
-                foreach (var spot in existingSpotElevations)
-                {
-                    try
-                    {
-                        doc.Delete(spot.Id);
-                        deletedSpots++;
-                    }
-                    catch
-                    {
-                        // Skip locked/system-owned elements.
-                    }
-                }
-
-                LogManager.Info(correlationId, $"Deleted {deletedSpots} existing spot elevations in current view.");
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Failed to delete old spot elevations: {ex.Message}");
-            }
-
-            // Get a valid TextNoteType from the document
-            var textNoteType = new FilteredElementCollector(doc)
-                .OfClass(typeof(TextNoteType))
-                .FirstOrDefault() as TextNoteType;
-
-            if (textNoteType == null)
-            {
-                LogManager.Warn(correlationId, "No TextNoteType found in document - skipping annotations.");
+                LogManager.Warn(correlationId, $"Tag family '{config.DeviationTagFamilyName}' with types '{config.DeviationTagHorizontalTypeName}' and '{config.DeviationTagElevationTypeName}' not found.");
                 return;
             }
 
-            LogManager.Info(correlationId, $"Using TextNoteType: {textNoteType.Name}");
+            if ((includeHorizontalAnnotations && horizontalTagSymbol == null) ||
+                (includeElevationAnnotations && elevationTagSymbol == null))
+            {
+                LogManager.Warn(correlationId, $"Required tag types not found in '{config.DeviationTagFamilyName}'.");
+                return;
+            }
 
-            int annotationsCreated = 0;
+            DeleteExistingDeviationTags(doc, view, config, correlationId);
 
+            var createdTags = 0;
             foreach (var deviation in deviations)
             {
-                if (deviation.ModelPoint == null)
+                var targetElement = ResolveTagTargetElement(doc, deviation);
+                if (targetElement == null || !TryGetTagHeadBasePoint(targetElement, deviation.ModelPoint, out var basePoint))
+                {
                     continue;
+                }
 
+                var annotationColor = GetAnnotationColorByStatus(deviation.Status);
                 try
                 {
-                    var annotationLines = new List<string>();
                     if (includeHorizontalAnnotations)
                     {
-                        // Convert deviations to feet-inches format (Revit standard)
-                        var eastingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationEasting));
-                        var northingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationNorthing));
-
-                        // Add +/- signs
-                        var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
-                        var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
-                        annotationLines.Add($"ΔE: {eastingSign}{eastingFtIn}");
-                        annotationLines.Add($"ΔN: {northingSign}{northingFtIn}");
+                        var horizontalHead = new XYZ(basePoint.X + 2.0, basePoint.Y + 1.0, basePoint.Z);
+                        if (TryCreateDeviationTag(doc, view, targetElement, horizontalTagSymbol, horizontalHead, annotationColor, correlationId))
+                        {
+                            createdTags++;
+                        }
                     }
 
                     if (includeElevationAnnotations)
                     {
-                        var elevationFtIn = FormatElevationFeetInches(Math.Abs(deviation.DeviationElevation));
-                        var elevationSign = deviation.DeviationElevation >= 0 ? "+" : "-";
-                        annotationLines.Add($"ΔZ: {elevationSign}{elevationFtIn}");
-
-                        if (TryGetPointElevationForAnnotation(doc, deviation, out var elevationValue))
+                        var yOffset = includeHorizontalAnnotations ? 2.0 : 1.0;
+                        var elevationHead = new XYZ(basePoint.X + 2.0, basePoint.Y + yOffset, basePoint.Z);
+                        if (TryCreateDeviationTag(doc, view, targetElement, elevationTagSymbol, elevationHead, annotationColor, correlationId))
                         {
-                            annotationLines.Add($"Z: {FormatElevationFeetInches(elevationValue)}");
+                            createdTags++;
                         }
-                    }
-
-                    var annotationText = string.Join("\n", annotationLines);
-
-                    // Offset annotation point slightly to the right and up from Control Point
-                    var annotationPoint = new XYZ(
-                        deviation.ModelPoint.X + 2.0,  // 2 feet to the right
-                        deviation.ModelPoint.Y + 1.0,  // 1 foot up
-                        deviation.ModelPoint.Z);
-
-                    var annotationColor = deviation.Status switch
-                    {
-                        ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(34, 197, 94),   // Verified
-                        ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
-                        ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
-                        _ => new Autodesk.Revit.DB.Color(59, 130, 246)                        // Model/default
-                    };
-
-                    var textNote = TextNote.Create(doc, view.Id, annotationPoint, annotationText, textNoteType.Id);
-
-                    if (includeElevationAnnotations)
-                    {
-                        TryCreateSpotElevationAnnotation(doc, view, deviation, annotationColor, correlationId);
-                    }
-
-                    if (textNote != null)
-                    {
-                        var annotationOverrides = new OverrideGraphicSettings();
-                        annotationOverrides.SetProjectionLineColor(annotationColor);
-                        annotationOverrides.SetProjectionLineWeight(3);
-                        try
-                        {
-                            view.SetElementOverrides(textNote.Id, annotationOverrides);
-                        }
-                        catch
-                        {
-                            // If text-note override fails in this view type, keep annotation creation.
-                        }
-
-                        // Create a detail line from annotation to model point as a leader
-                        try
-                        {
-                            var leaderLine = Line.CreateBound(annotationPoint, deviation.ModelPoint);
-                            var leaderCurve = doc.Create.NewDetailCurve(view, leaderLine);
-                            if (leaderCurve != null)
-                            {
-                                view.SetElementOverrides(leaderCurve.Id, annotationOverrides);
-                            }
-                        }
-                        catch
-                        {
-                            // Leader line creation might fail, continue anyway
-                        }
-
-                        annotationsCreated++;
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogManager.Warn(correlationId, $"Failed to create annotation for Point {deviation.PointNumber}: {ex.Message}");
+                    LogManager.Warn(correlationId, $"Failed to create tag annotation for Point {deviation.PointNumber}: {ex.Message}");
                 }
             }
 
-            LogManager.Info(correlationId, $"Created {annotationsCreated} deviation annotations.");
+            LogManager.Info(correlationId, $"Created {createdTags} deviation tag annotation(s).");
         }
 
-        private void TryCreateSpotElevationAnnotation(
-            Document doc,
-            Autodesk.Revit.DB.View view,
-            DeviationResult deviation,
-            Autodesk.Revit.DB.Color annotationColor,
-            string correlationId)
+        private static Autodesk.Revit.DB.Color GetAnnotationColorByStatus(ToleranceStatus status)
         {
-            Element sourceElement = null;
-            XYZ fallbackPoint = deviation.ModelPoint;
-
-            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            return status switch
             {
-                sourceElement = doc.GetElement(deviation.FieldElementId);
-                if (sourceElement?.Location is LocationPoint fieldLoc)
-                {
-                    fallbackPoint = fieldLoc.Point;
-                }
-            }
+                ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(34, 197, 94),   // Verified
+                ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
+                ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
+                _ => new Autodesk.Revit.DB.Color(59, 130, 246)                        // Model/default
+            };
+        }
 
-            if (sourceElement == null)
-            {
-                sourceElement = doc.GetElement(deviation.ElementId);
-            }
+        private bool TryGetDeviationTagSymbols(
+            Document doc,
+            RevitSuite.Host.Config.QaqcConfig config,
+            out FamilySymbol horizontalTagSymbol,
+            out FamilySymbol elevationTagSymbol)
+        {
+            horizontalTagSymbol = null;
+            elevationTagSymbol = null;
 
-            if (sourceElement == null || fallbackPoint == null)
-            {
-                return;
-            }
+            var symbols = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>()
+                .Where(s => s.FamilyName != null &&
+                            s.FamilyName.Equals(config.DeviationTagFamilyName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
-            var target = GetSpotElevationTarget(sourceElement, fallbackPoint);
-            if (target == null || target.Reference == null || target.Point == null)
-            {
-                LogManager.Warn(correlationId, $"Spot elevation skipped for Point {deviation.PointNumber}: no valid face/reference found.");
-                return;
-            }
+            horizontalTagSymbol = symbols.FirstOrDefault(s => s.Name.Equals(config.DeviationTagHorizontalTypeName, StringComparison.OrdinalIgnoreCase));
+            elevationTagSymbol = symbols.FirstOrDefault(s => s.Name.Equals(config.DeviationTagElevationTypeName, StringComparison.OrdinalIgnoreCase));
 
+            return horizontalTagSymbol != null || elevationTagSymbol != null;
+        }
+
+        private void DeleteExistingDeviationTags(Document doc, Autodesk.Revit.DB.View view, RevitSuite.Host.Config.QaqcConfig config, string correlationId)
+        {
             try
             {
-                var origin = target.Point;
-                var bend = new XYZ(origin.X + 1.5, origin.Y + 1.0, origin.Z);
-                var end = new XYZ(origin.X + 3.0, origin.Y + 1.0, origin.Z);
-                var refPoint = origin;
+                var existingTags = new FilteredElementCollector(doc, view.Id)
+                    .OfClass(typeof(IndependentTag))
+                    .Cast<IndependentTag>()
+                    .Where(t => IsDeviationTagFamily(t, config))
+                    .Select(t => t.Id)
+                    .ToList();
 
-                var spot = doc.Create.NewSpotElevation(view, target.Reference, origin, bend, end, refPoint, true);
-                if (spot != null)
+                if (existingTags.Count == 0)
                 {
-                    var overrides = new OverrideGraphicSettings();
-                    overrides.SetProjectionLineColor(annotationColor);
-                    overrides.SetProjectionLineWeight(3);
-                    view.SetElementOverrides(spot.Id, overrides);
+                    return;
                 }
+
+                doc.Delete(existingTags);
+                LogManager.Info(correlationId, $"Deleted {existingTags.Count} existing deviation tags in current view.");
             }
             catch (Exception ex)
             {
-                LogManager.Warn(correlationId, $"Spot elevation annotation failed for Point {deviation.PointNumber}: {ex.Message}");
+                LogManager.Warn(correlationId, $"Failed to delete existing deviation tags: {ex.Message}");
             }
         }
 
-        private class SpotElevationTarget
+        private bool IsDeviationTagFamily(IndependentTag tag, RevitSuite.Host.Config.QaqcConfig config)
         {
-            public Reference Reference { get; set; }
-            public XYZ Point { get; set; }
-        }
-
-        private bool TryGetPointElevationForAnnotation(Document doc, DeviationResult deviation, out double elevation)
-        {
-            elevation = 0.0;
-
-            Element pointElement = null;
-            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
-            {
-                pointElement = doc.GetElement(deviation.FieldElementId);
-            }
-
-            if (pointElement == null)
-            {
-                pointElement = doc.GetElement(deviation.ElementId);
-            }
-
-            if (pointElement == null)
+            if (tag == null)
             {
                 return false;
             }
 
-            var value = GetParameterValueDouble(pointElement, CsElevationGuid);
-            if (value.HasValue)
-            {
-                elevation = value.Value;
-                return true;
-            }
-
-            return false;
+            var tagType = tag.Document.GetElement(tag.GetTypeId()) as FamilySymbol;
+            return tagType?.FamilyName != null &&
+                   tagType.FamilyName.Equals(config.DeviationTagFamilyName, StringComparison.OrdinalIgnoreCase);
         }
 
-        private SpotElevationTarget GetSpotElevationTarget(Element element, XYZ fallbackPoint)
+        private Element ResolveTagTargetElement(Document doc, DeviationResult deviation)
         {
+            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            {
+                var fieldElement = doc.GetElement(deviation.FieldElementId);
+                if (fieldElement != null)
+                {
+                    return fieldElement;
+                }
+            }
+
+            return doc.GetElement(deviation.ElementId);
+        }
+
+        private bool TryGetTagHeadBasePoint(Element element, XYZ fallbackPoint, out XYZ basePoint)
+        {
+            basePoint = fallbackPoint;
+            if (element?.Location is LocationPoint locationPoint)
+            {
+                basePoint = locationPoint.Point;
+            }
+
+            return basePoint != null;
+        }
+
+        private bool TryCreateDeviationTag(
+            Document doc,
+            Autodesk.Revit.DB.View view,
+            Element targetElement,
+            FamilySymbol tagSymbol,
+            XYZ tagHeadPoint,
+            Autodesk.Revit.DB.Color annotationColor,
+            string correlationId)
+        {
+            Reference reference;
             try
             {
-                var directReference = new Reference(element);
-                if (directReference != null)
-                {
-                    return new SpotElevationTarget
-                    {
-                        Reference = directReference,
-                        Point = fallbackPoint
-                    };
-                }
+                reference = new Reference(targetElement);
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall back to geometry-based references.
+                LogManager.Warn(correlationId, $"Failed to get tag reference for element {targetElement?.Id}: {ex.Message}");
+                return false;
+            }
+
+            IndependentTag tag;
+            try
+            {
+                tag = IndependentTag.Create(
+                    doc,
+                    view.Id,
+                    reference,
+                    true,
+                    TagMode.TM_ADDBY_CATEGORY,
+                    TagOrientation.Horizontal,
+                    tagHeadPoint);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Failed to create deviation tag on element {targetElement?.Id}: {ex.Message}");
+                return false;
+            }
+
+            if (tag == null)
+            {
+                return false;
             }
 
             try
             {
-                var options = new Options
+                if (tag.GetTypeId() != tagSymbol.Id)
                 {
-                    ComputeReferences = true,
-                    IncludeNonVisibleObjects = true,
-                    DetailLevel = ViewDetailLevel.Fine
-                };
-
-                var geometry = element.get_Geometry(options);
-                if (geometry == null)
-                {
-                    return null;
-                }
-
-                var topFaceTarget = FindBestHorizontalFaceTarget(geometry);
-                if (topFaceTarget != null)
-                {
-                    return topFaceTarget;
-                }
-
-                var genericFaceTarget = FindFirstGeometryFaceTarget(geometry);
-                if (genericFaceTarget != null)
-                {
-                    return genericFaceTarget;
+                    tag.ChangeTypeId(tagSymbol.Id);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall through.
+                LogManager.Warn(correlationId, $"Failed to set tag type '{tagSymbol.Name}' for tag {tag.Id}: {ex.Message}");
             }
 
-            return null;
-        }
-
-        private SpotElevationTarget FindBestHorizontalFaceTarget(GeometryElement geometry)
-        {
-            foreach (var obj in geometry)
+            try
             {
-                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
-                {
-                    PlanarFace bestFace = null;
-                    XYZ bestPoint = null;
-
-                    foreach (Face face in solid.Faces)
-                    {
-                        if (face is PlanarFace planarFace &&
-                            planarFace.Reference != null &&
-                            Math.Abs(planarFace.FaceNormal.Z) > 0.9)
-                        {
-                            var point = EvaluateFaceMidpoint(planarFace);
-                            if (point == null)
-                            {
-                                continue;
-                            }
-
-                            if (bestFace == null || point.Z > bestPoint.Z)
-                            {
-                                bestFace = planarFace;
-                                bestPoint = point;
-                            }
-                        }
-                    }
-
-                    if (bestFace != null && bestPoint != null)
-                    {
-                        return new SpotElevationTarget
-                        {
-                            Reference = bestFace.Reference,
-                            Point = bestPoint
-                        };
-                    }
-                }
-
-                if (obj is GeometryInstance instance)
-                {
-                    var nested = instance.GetInstanceGeometry();
-                    var nestedTarget = FindBestHorizontalFaceTarget(nested);
-                    if (nestedTarget != null)
-                    {
-                        return nestedTarget;
-                    }
-
-                    var symbolGeometry = instance.GetSymbolGeometry();
-                    var symbolTarget = FindBestHorizontalFaceTarget(symbolGeometry);
-                    if (symbolTarget != null)
-                    {
-                        return symbolTarget;
-                    }
-                }
+                var annotationOverrides = new OverrideGraphicSettings();
+                annotationOverrides.SetProjectionLineColor(annotationColor);
+                annotationOverrides.SetProjectionLineWeight(3);
+                view.SetElementOverrides(tag.Id, annotationOverrides);
             }
-
-            return null;
-        }
-
-        private SpotElevationTarget FindFirstGeometryFaceTarget(GeometryElement geometry)
-        {
-            foreach (var obj in geometry)
+            catch (Exception ex)
             {
-                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
-                {
-                    foreach (Face face in solid.Faces)
-                    {
-                        if (face?.Reference == null)
-                        {
-                            continue;
-                        }
-
-                        var point = EvaluateFaceMidpoint(face);
-                        if (point == null)
-                        {
-                            continue;
-                        }
-
-                        return new SpotElevationTarget
-                        {
-                            Reference = face.Reference,
-                            Point = point
-                        };
-                    }
-                }
-
-                if (obj is GeometryInstance instance)
-                {
-                    var nested = instance.GetInstanceGeometry();
-                    var nestedTarget = FindFirstGeometryFaceTarget(nested);
-                    if (nestedTarget != null)
-                    {
-                        return nestedTarget;
-                    }
-
-                    var symbolGeometry = instance.GetSymbolGeometry();
-                    var symbolTarget = FindFirstGeometryFaceTarget(symbolGeometry);
-                    if (symbolTarget != null)
-                    {
-                        return symbolTarget;
-                    }
-                }
+                LogManager.Warn(correlationId, $"Failed to apply color override to tag {tag.Id}: {ex.Message}");
             }
 
-            return null;
-        }
-
-        private XYZ EvaluateFaceMidpoint(Face face)
-        {
-            var bounds = face.GetBoundingBox();
-            if (bounds == null)
-            {
-                return null;
-            }
-
-            var midU = (bounds.Min.U + bounds.Max.U) * 0.5;
-            var midV = (bounds.Min.V + bounds.Max.V) * 0.5;
-            return face.Evaluate(new UV(midU, midV));
-        }
-
-        private string FormatHorizontalFeetInches(double feet)
-        {
-            return FormatFeetInches(feet, HorizontalAnnotationFractionDenominator);
-        }
-
-        private string FormatElevationFeetInches(double feet)
-        {
-            return FormatFeetInches(feet, ElevationAnnotationFractionDenominator);
-        }
-
-        private string FormatFeetInches(double feet, int fractionDenominator)
-        {
-            // Convert feet to feet and inches
-            int wholeFeet = (int)Math.Floor(feet);
-            double remainingInches = (feet - wholeFeet) * 12.0;
-
-            var denominator = fractionDenominator > 0 ? fractionDenominator : 8;
-
-            // Round to nearest configured fraction of an inch.
-            double fractionUnits = Math.Round(remainingInches * denominator);
-            int wholeInches = (int)(fractionUnits / denominator);
-            int fractionalUnits = (int)(fractionUnits % denominator);
-
-            // Build string
-            if (wholeFeet == 0 && wholeInches == 0 && fractionalUnits == 0)
-                return "0\"";
-
-            var result = "";
-            if (wholeFeet > 0)
-                result += $"{wholeFeet}'-";
-
-            if (wholeInches > 0 || wholeFeet > 0)
-                result += $"{wholeInches}";
-
-            // Add fraction if needed
-            if (fractionalUnits > 0)
-            {
-                // Simplify fraction
-                var (num, den) = SimplifyFraction(fractionalUnits, denominator);
-                result += $" {num}/{den}";
-            }
-
-            result += "\"";
-
-            return result.Replace("'-0\"", "'"); // Clean up cases like "1'-0"" to "1'"
-        }
-
-        private (int numerator, int denominator) SimplifyFraction(int num, int den)
-        {
-            // Simplify fraction (e.g., 4/8 -> 1/2)
-            int gcd = GCD(num, den);
-            return (num / gcd, den / gcd);
-        }
-
-        private int GCD(int a, int b)
-        {
-            while (b != 0)
-            {
-                int temp = b;
-                b = a % b;
-                a = temp;
-            }
-            return a;
+            return true;
         }
 
         #region Nested Classes
