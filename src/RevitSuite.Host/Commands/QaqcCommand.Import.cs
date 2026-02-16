@@ -900,7 +900,6 @@ namespace RevitSuite.Host.Commands
                 .WhereElementIsNotElementType()
                 .OfType<FamilyInstance>()
                 .Where(fi =>
-                    fi.Symbol?.Name == "Field" ||
                     fi.Symbol?.Name == "Verified" ||
                     fi.Symbol?.Name == "Deviation" ||
                     fi.Symbol?.Name == "Critical")
@@ -1076,7 +1075,7 @@ namespace RevitSuite.Host.Commands
                 .OfType<FamilyInstance>()
                 .Where(fi =>
                     fi.Symbol?.Family?.Name == config.DefaultFamilyName &&
-                    (fi.Symbol?.Name == "Verified" || fi.Symbol?.Name == "Deviation" || fi.Symbol?.Name == "Critical" || fi.Symbol?.Name == "Field"))
+                    (fi.Symbol?.Name == "Verified" || fi.Symbol?.Name == "Deviation" || fi.Symbol?.Name == "Critical"))
                 .ToList();
 
             foreach (var fp in fieldPoints)
