@@ -551,6 +551,7 @@ namespace RevitSuite.Host.Commands
             else
             {
                 var candidateModels = allControlPoints
+                    .Where(cp => string.Equals(cp.Symbol?.Name, "Model", StringComparison.OrdinalIgnoreCase))
                     .Select(cp => new ProximityModelCandidate
                     {
                         Element = cp,
@@ -560,25 +561,22 @@ namespace RevitSuite.Host.Commands
                         Elevation = GetParameterValueDouble(cp, CsElevationGuid) ?? double.MinValue
                     })
                     .Where(x => x.Easting > double.MinValue && x.Northing > double.MinValue && x.Elevation > double.MinValue)
-                    .Where(x => selectedPointNumbers == null || (!string.IsNullOrWhiteSpace(x.PointNumber) && selectedPointNumbers.Contains(x.PointNumber)))
+                    .Where(x => selectedPointNumbers == null || selectedPointNumbers.Contains($"ID:{x.Element.Id.IntegerValue}"))
                     .ToList();
 
-                var remaining = new List<ProximityModelCandidate>(candidateModels);
+                LogManager.Info(correlationId, $"Proximity pairing direction: Model->Nearest CSV. Candidate model points: {candidateModels.Count}.");
 
-                foreach (var record in records)
+                var remainingRecords = records
+                    .Where(r => r.FieldEasting.HasValue && r.FieldNorthing.HasValue)
+                    .Where(r => !useElevationThreshold || r.FieldElevation.HasValue)
+                    .ToList();
+
+                foreach (var candidate in candidateModels)
                 {
-                    if (!record.FieldEasting.HasValue || !record.FieldNorthing.HasValue)
-                    {
-                        continue;
-                    }
-                    if (useElevationThreshold && !record.FieldElevation.HasValue)
-                    {
-                        continue;
-                    }
-
-                    ProximityModelCandidate nearest = null;
+                    ControlPointRecord nearestRecord = null;
                     var minDistanceSq = double.MaxValue;
-                    foreach (var candidate in remaining)
+
+                    foreach (var record in remainingRecords)
                     {
                         var dx = record.FieldEasting.Value - candidate.Easting;
                         var dy = record.FieldNorthing.Value - candidate.Northing;
@@ -586,25 +584,25 @@ namespace RevitSuite.Host.Commands
                         if (distanceSq < minDistanceSq)
                         {
                             minDistanceSq = distanceSq;
-                            nearest = candidate;
+                            nearestRecord = record;
                         }
                     }
 
-                    if (nearest == null)
+                    if (nearestRecord == null)
                     {
-                        break;
+                        continue;
                     }
 
-                    remaining.Remove(nearest);
+                    remainingRecords.Remove(nearestRecord);
 
-                    var modelEasting = nearest.Easting;
-                    var modelNorthing = nearest.Northing;
-                    var modelElevation = nearest.Elevation;
+                    var modelEasting = candidate.Easting;
+                    var modelNorthing = candidate.Northing;
+                    var modelElevation = candidate.Elevation;
 
-                    var devEasting = record.FieldEasting.Value - modelEasting;
-                    var devNorthing = record.FieldNorthing.Value - modelNorthing;
-                    var devElevation = record.FieldElevation.HasValue
-                        ? record.FieldElevation.Value - modelElevation
+                    var devEasting = nearestRecord.FieldEasting.Value - modelEasting;
+                    var devNorthing = nearestRecord.FieldNorthing.Value - modelNorthing;
+                    var devElevation = nearestRecord.FieldElevation.HasValue
+                        ? nearestRecord.FieldElevation.Value - modelElevation
                         : 0.0;
                     var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
                     var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
@@ -622,23 +620,23 @@ namespace RevitSuite.Host.Commands
                         : (isVerified ? ToleranceStatus.Blue : ToleranceStatus.Yellow);
 
                     XYZ modelPoint = null;
-                    if (nearest.Element.Location is LocationPoint locPoint)
+                    if (candidate.Element.Location is LocationPoint locPoint)
                     {
                         modelPoint = locPoint.Point;
                     }
 
-                    var resolvedPointNumber = nearest.PointNumber;
+                    var resolvedPointNumber = candidate.PointNumber;
                     if (string.IsNullOrWhiteSpace(resolvedPointNumber))
                     {
-                        resolvedPointNumber = $"MODEL-{nearest.Element.Id.IntegerValue}";
+                        resolvedPointNumber = $"MODEL-{candidate.Element.Id.IntegerValue}";
                     }
 
                     deviations.Add(new DeviationResult
                     {
                         PointNumber = resolvedPointNumber,
-                        ElementId = nearest.Element.Id,
-                        UniqueId = nearest.Element.UniqueId,
-                        SourceComment = record.Comment,
+                        ElementId = candidate.Element.Id,
+                        UniqueId = candidate.Element.UniqueId,
+                        SourceComment = nearestRecord.Comment,
                         DeviationEasting = devEasting,
                         DeviationNorthing = devNorthing,
                         DeviationElevation = devElevation,
@@ -688,21 +686,20 @@ namespace RevitSuite.Host.Commands
                 var selectedPointNumbers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var reference in proximityReferences)
                 {
-                    var element = doc.GetElement(reference);
-                    var pointNumber = GetParameterValueString(element, PointNumberGuid);
-                    if (!string.IsNullOrWhiteSpace(pointNumber))
+                    if (doc.GetElement(reference) is FamilyInstance instance &&
+                        string.Equals(instance.Symbol?.Name, "Model", StringComparison.OrdinalIgnoreCase))
                     {
-                        selectedPointNumbers.Add(pointNumber);
+                        selectedPointNumbers.Add($"ID:{instance.Id.IntegerValue}");
                     }
                 }
 
                 if (selectedPointNumbers.Count == 0)
                 {
-                    TaskDialog.Show("RevitSuite", "No valid model control points were selected.");
+                    TaskDialog.Show("RevitSuite", "No valid model control points were selected. Select points with type 'Model'.");
                     return null;
                 }
 
-                LogManager.Info(correlationId, $"Selected point filter configured for proximity mode: {selectedPointNumbers.Count} point(s).");
+                LogManager.Info(correlationId, $"Selected point filter configured for proximity mode: {selectedPointNumbers.Count} model element(s).");
                 return selectedPointNumbers;
             }
 
