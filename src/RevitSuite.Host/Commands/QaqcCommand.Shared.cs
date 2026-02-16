@@ -89,6 +89,108 @@ namespace RevitSuite.Host.Commands
             return value;
         }
 
+        private static bool TryParseThresholdInput(string text, out double value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            var trimmed = text.Trim();
+            if (double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            {
+                return value > 0;
+            }
+
+            var parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2 &&
+                double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var whole) &&
+                TryParseFraction(parts[1], out var mixedFraction))
+            {
+                value = whole + mixedFraction;
+                return value > 0;
+            }
+
+            if (TryParseFraction(trimmed, out var fraction))
+            {
+                value = fraction;
+                return value > 0;
+            }
+
+            return false;
+        }
+
+        private static double InchesToFeet(double inches)
+        {
+            return inches / 12.0;
+        }
+
+        private static double FeetToInches(double feet)
+        {
+            return feet * 12.0;
+        }
+
+        private static string FormatFeetAsInchFraction(double feet)
+        {
+            var inches = FeetToInches(feet);
+            if (inches <= 0)
+            {
+                return "0";
+            }
+
+            const int denominator = 8;
+            var whole = (int)Math.Floor(inches);
+            var fractional = inches - whole;
+            var numerator = (int)Math.Round(fractional * denominator);
+
+            if (numerator == denominator)
+            {
+                whole += 1;
+                numerator = 0;
+            }
+
+            if (numerator == 0)
+            {
+                return whole.ToString(CultureInfo.InvariantCulture);
+            }
+
+            if (whole == 0)
+            {
+                return $"{numerator}/{denominator}";
+            }
+
+            return $"{whole} {numerator}/{denominator}";
+        }
+
+        private static bool TryParseFraction(string text, out double value)
+        {
+            value = 0;
+            var fractionParts = text.Split('/');
+            if (fractionParts.Length != 2)
+            {
+                return false;
+            }
+
+            if (!double.TryParse(fractionParts[0].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var numerator))
+            {
+                return false;
+            }
+
+            if (!double.TryParse(fractionParts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var denominator))
+            {
+                return false;
+            }
+
+            if (Math.Abs(denominator) < 1e-9)
+            {
+                return false;
+            }
+
+            value = numerator / denominator;
+            return true;
+        }
+
         private ElementId EnsureMaterial(Document doc, string name, int transparency, Autodesk.Revit.DB.Color color)
         {
             var existing = new FilteredElementCollector(doc)
@@ -557,10 +659,10 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.RadioButton placeRadioButton;
             private System.Windows.Forms.NumericUpDown pourNumericUpDown;
             private System.Windows.Forms.Label pourLabel;
-            private System.Windows.Forms.NumericUpDown horizontalVerifiedThresholdNumericUpDown;
-            private System.Windows.Forms.NumericUpDown horizontalCriticalThresholdNumericUpDown;
-            private System.Windows.Forms.NumericUpDown elevationVerifiedThresholdNumericUpDown;
-            private System.Windows.Forms.NumericUpDown elevationCriticalThresholdNumericUpDown;
+            private System.Windows.Forms.TextBox horizontalVerifiedThresholdTextBox;
+            private System.Windows.Forms.TextBox horizontalCriticalThresholdTextBox;
+            private System.Windows.Forms.TextBox elevationVerifiedThresholdTextBox;
+            private System.Windows.Forms.TextBox elevationCriticalThresholdTextBox;
             private System.Windows.Forms.Label horizontalVerifiedThresholdLabel;
             private System.Windows.Forms.Label horizontalCriticalThresholdLabel;
             private System.Windows.Forms.Label elevationVerifiedThresholdLabel;
@@ -576,13 +678,17 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.NumericUpDown tagOffsetEastNumericUpDown;
             private System.Windows.Forms.Label tagOffsetNorthLabel;
             private System.Windows.Forms.NumericUpDown tagOffsetNorthNumericUpDown;
+            private double _selectedHorizontalVerifiedThreshold = InchesToFeet(0.125);
+            private double _selectedHorizontalCriticalThreshold = InchesToFeet(0.625);
+            private double _selectedElevationVerifiedThreshold = InchesToFeet(0.125);
+            private double _selectedElevationCriticalThreshold = InchesToFeet(0.625);
 
             public string SelectedCategory => categoryComboBox.SelectedItem?.ToString() ?? "Footings";
             public int SelectedPourNumber => (int)(pourNumericUpDown?.Value ?? 1);
-            public double SelectedHorizontalVerifiedThreshold => (double)(horizontalVerifiedThresholdNumericUpDown?.Value ?? 0.01m);
-            public double SelectedHorizontalCriticalThreshold => (double)(horizontalCriticalThresholdNumericUpDown?.Value ?? 0.05m);
-            public double SelectedElevationVerifiedThreshold => (double)(elevationVerifiedThresholdNumericUpDown?.Value ?? 0.01m);
-            public double SelectedElevationCriticalThreshold => (double)(elevationCriticalThresholdNumericUpDown?.Value ?? 0.05m);
+            public double SelectedHorizontalVerifiedThreshold => _selectedHorizontalVerifiedThreshold;
+            public double SelectedHorizontalCriticalThreshold => _selectedHorizontalCriticalThreshold;
+            public double SelectedElevationVerifiedThreshold => _selectedElevationVerifiedThreshold;
+            public double SelectedElevationCriticalThreshold => _selectedElevationCriticalThreshold;
             public bool SelectedUseHorizontalThreshold => useHorizontalThresholdCheckBox?.Checked ?? true;
             public bool SelectedUseElevationThreshold => useElevationThresholdCheckBox?.Checked ?? true;
             public bool SelectedUseSelectedPointThresholds => thresholdScopeComboBox?.SelectedIndex == 1;
@@ -766,47 +872,39 @@ namespace RevitSuite.Host.Commands
 
                 horizontalVerifiedThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "N/E Verified <= (ft):",
+                    Text = "N/E Verified <= (in):",
                     Location = new System.Drawing.Point(32, 88),
                     Size = new System.Drawing.Size(130, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdLabel);
 
-                horizontalVerifiedThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                horizontalVerifiedThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(170, 86),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.010m,
+                    Text = "1/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdTextBox);
 
                 horizontalCriticalThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "N/E Critical > (ft):",
+                    Text = "N/E Critical > (in):",
                     Location = new System.Drawing.Point(292, 88),
                     Size = new System.Drawing.Size(120, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(horizontalCriticalThresholdLabel);
 
-                horizontalCriticalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                horizontalCriticalThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(418, 86),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.050m,
+                    Text = "5/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(horizontalCriticalThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(horizontalCriticalThresholdTextBox);
 
                 useElevationThresholdCheckBox = new System.Windows.Forms.CheckBox
                 {
@@ -820,53 +918,46 @@ namespace RevitSuite.Host.Commands
 
                 elevationVerifiedThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Elev Verified <= (ft):",
+                    Text = "Elev Verified <= (in):",
                     Location = new System.Drawing.Point(32, 152),
                     Size = new System.Drawing.Size(130, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(elevationVerifiedThresholdLabel);
 
-                elevationVerifiedThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                elevationVerifiedThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(170, 150),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.010m,
+                    Text = "1/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(elevationVerifiedThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(elevationVerifiedThresholdTextBox);
 
                 elevationCriticalThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Elev Critical > (ft):",
+                    Text = "Elev Critical > (in):",
                     Location = new System.Drawing.Point(292, 152),
                     Size = new System.Drawing.Size(120, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(elevationCriticalThresholdLabel);
 
-                elevationCriticalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                elevationCriticalThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(418, 150),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.050m,
+                    Text = "5/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(elevationCriticalThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(elevationCriticalThresholdTextBox);
 
                 thresholdHelpLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Deviation thresholds by enabled check: <= Verified => Verified (Green), > Critical => Critical (Red), otherwise Deviation (Orange).",
+                    Text = "Threshold units are inches. Use decimal or fraction (for example: 0.125 or 1/8)." + Environment.NewLine +
+                           "<= Verified => Verified (Green), > Critical => Critical (Red), else Deviation (Orange).",
                     Location = new System.Drawing.Point(14, 194),
-                    Size = new System.Drawing.Size(510, 34),
+                    Size = new System.Drawing.Size(522, 40),
                     ForeColor = System.Drawing.Color.DimGray,
                     Visible = false
                 };
@@ -956,6 +1047,58 @@ namespace RevitSuite.Host.Commands
                 okButton.Click += (sender, args) =>
                 {
                     if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(horizontalVerifiedThresholdTextBox.Text, out _selectedHorizontalVerifiedThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid N/E Verified threshold. Enter inches (decimal or fraction, for example: 0.125 or 1/8).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(horizontalVerifiedThresholdTextBox.Text, out _selectedHorizontalVerifiedThreshold);
+                    }
+                    _selectedHorizontalVerifiedThreshold = InchesToFeet(_selectedHorizontalVerifiedThreshold);
+
+                    if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(horizontalCriticalThresholdTextBox.Text, out _selectedHorizontalCriticalThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid N/E Critical threshold. Enter inches (decimal or fraction, for example: 0.250 or 1/4).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(horizontalCriticalThresholdTextBox.Text, out _selectedHorizontalCriticalThreshold);
+                    }
+                    _selectedHorizontalCriticalThreshold = InchesToFeet(_selectedHorizontalCriticalThreshold);
+
+                    if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(elevationVerifiedThresholdTextBox.Text, out _selectedElevationVerifiedThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid Elev Verified threshold. Enter inches (decimal or fraction, for example: 0.125 or 1/8).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(elevationVerifiedThresholdTextBox.Text, out _selectedElevationVerifiedThreshold);
+                    }
+                    _selectedElevationVerifiedThreshold = InchesToFeet(_selectedElevationVerifiedThreshold);
+
+                    if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(elevationCriticalThresholdTextBox.Text, out _selectedElevationCriticalThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid Elev Critical threshold. Enter inches (decimal or fraction, for example: 0.250 or 1/4).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(elevationCriticalThresholdTextBox.Text, out _selectedElevationCriticalThreshold);
+                    }
+                    _selectedElevationCriticalThreshold = InchesToFeet(_selectedElevationCriticalThreshold);
+
+                    if (importRadioButton.Checked &&
                         !useHorizontalThresholdCheckBox.Checked &&
                         !useElevationThresholdCheckBox.Checked)
                     {
@@ -1015,13 +1158,13 @@ namespace RevitSuite.Host.Commands
                 useHorizontalThresholdCheckBox.Visible = showThresholds;
                 useElevationThresholdCheckBox.Visible = showThresholds;
                 horizontalVerifiedThresholdLabel.Visible = showThresholds;
-                horizontalVerifiedThresholdNumericUpDown.Visible = showThresholds;
+                horizontalVerifiedThresholdTextBox.Visible = showThresholds;
                 horizontalCriticalThresholdLabel.Visible = showThresholds;
-                horizontalCriticalThresholdNumericUpDown.Visible = showThresholds;
+                horizontalCriticalThresholdTextBox.Visible = showThresholds;
                 elevationVerifiedThresholdLabel.Visible = showThresholds;
-                elevationVerifiedThresholdNumericUpDown.Visible = showThresholds;
+                elevationVerifiedThresholdTextBox.Visible = showThresholds;
                 elevationCriticalThresholdLabel.Visible = showThresholds;
-                elevationCriticalThresholdNumericUpDown.Visible = showThresholds;
+                elevationCriticalThresholdTextBox.Visible = showThresholds;
                 thresholdHelpLabel.Visible = showThresholds;
                 tagPlacementLabel.Visible = showThresholds;
                 tagOffsetEastLabel.Visible = showThresholds;
@@ -1036,15 +1179,15 @@ namespace RevitSuite.Host.Commands
                 if (useHorizontalThresholdCheckBox != null)
                 {
                     var enabled = useHorizontalThresholdCheckBox.Checked;
-                    if (horizontalVerifiedThresholdNumericUpDown != null) horizontalVerifiedThresholdNumericUpDown.Enabled = enabled;
-                    if (horizontalCriticalThresholdNumericUpDown != null) horizontalCriticalThresholdNumericUpDown.Enabled = enabled;
+                    if (horizontalVerifiedThresholdTextBox != null) horizontalVerifiedThresholdTextBox.Enabled = enabled;
+                    if (horizontalCriticalThresholdTextBox != null) horizontalCriticalThresholdTextBox.Enabled = enabled;
                 }
 
                 if (useElevationThresholdCheckBox != null)
                 {
                     var enabled = useElevationThresholdCheckBox.Checked;
-                    if (elevationVerifiedThresholdNumericUpDown != null) elevationVerifiedThresholdNumericUpDown.Enabled = enabled;
-                    if (elevationCriticalThresholdNumericUpDown != null) elevationCriticalThresholdNumericUpDown.Enabled = enabled;
+                    if (elevationVerifiedThresholdTextBox != null) elevationVerifiedThresholdTextBox.Enabled = enabled;
+                    if (elevationCriticalThresholdTextBox != null) elevationCriticalThresholdTextBox.Enabled = enabled;
                 }
             }
         }
@@ -1291,7 +1434,7 @@ namespace RevitSuite.Host.Commands
 
                 var descriptionLabel = new System.Windows.Forms.Label
                 {
-                    Text = "These selected model points match CSV Point Number values. Set thresholds per point.",
+                    Text = "These selected model points match CSV Point Number values. Set thresholds per point in inches (fraction or decimal).",
                     Location = new System.Drawing.Point(12, 12),
                     Size = new System.Drawing.Size(580, 20)
                 };
@@ -1314,13 +1457,13 @@ namespace RevitSuite.Host.Commands
                 };
                 var horizontalColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
                 {
-                    HeaderText = "N/E Threshold (ft)",
+                    HeaderText = "N/E Threshold (in)",
                     Name = "HorizontalThreshold",
                     FillWeight = 25
                 };
                 var elevationColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
                 {
-                    HeaderText = "Elev Threshold (ft)",
+                    HeaderText = "Elev Threshold (in)",
                     Name = "ElevationThreshold",
                     FillWeight = 25
                 };
@@ -1329,7 +1472,7 @@ namespace RevitSuite.Host.Commands
 
                 foreach (var pointNumber in pointNumbers)
                 {
-                    _grid.Rows.Add(pointNumber, defaultHorizontalThreshold.ToString("F3", CultureInfo.InvariantCulture), defaultElevationThreshold.ToString("F3", CultureInfo.InvariantCulture));
+                    _grid.Rows.Add(pointNumber, FormatFeetAsInchFraction(defaultHorizontalThreshold), FormatFeetAsInchFraction(defaultElevationThreshold));
                 }
 
                 Controls.Add(_grid);
@@ -1364,14 +1507,14 @@ namespace RevitSuite.Host.Commands
 
                     if (!TryParsePositiveThreshold(row.Cells["HorizontalThreshold"].Value, out var horizontalThreshold))
                     {
-                        MessageBox.Show(this, $"Invalid N/E threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show(this, $"Invalid N/E threshold for point '{pointNumber}'. Enter inches (fraction or decimal).", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         DialogResult = System.Windows.Forms.DialogResult.None;
                         return;
                     }
 
                     if (!TryParsePositiveThreshold(row.Cells["ElevationThreshold"].Value, out var elevationThreshold))
                     {
-                        MessageBox.Show(this, $"Invalid Elev threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show(this, $"Invalid Elev threshold for point '{pointNumber}'. Enter inches (fraction or decimal).", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         DialogResult = System.Windows.Forms.DialogResult.None;
                         return;
                     }
@@ -1392,12 +1535,13 @@ namespace RevitSuite.Host.Commands
                     return false;
                 }
 
-                if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out threshold))
+                if (!TryParseThresholdInput(text, out threshold) || threshold <= 0)
                 {
                     return false;
                 }
 
-                return threshold > 0;
+                threshold = InchesToFeet(threshold);
+                return true;
             }
         }
 

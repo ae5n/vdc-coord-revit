@@ -168,8 +168,8 @@ namespace RevitSuite.Host.Commands
                     $"  Deviation (below threshold): {deviationCount}\n" +
                     $"  Critical (above threshold): {redCount}\n\n" +
                     $"Thresholds used:\n" +
-                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"Verified <= {horizontalVerifiedThreshold:F3} ft, Critical > {horizontalCriticalThreshold:F3} ft" : "Disabled")}\n" +
-                    $"  Elevation: {(useElevationThreshold ? $"Verified <= {elevationVerifiedThreshold:F3} ft, Critical > {elevationCriticalThreshold:F3} ft" : "Disabled")}");
+                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"Verified <= {FormatFeetAsInchFraction(horizontalVerifiedThreshold)} in, Critical > {FormatFeetAsInchFraction(horizontalCriticalThreshold)} in" : "Disabled")}\n" +
+                    $"  Elevation: {(useElevationThreshold ? $"Verified <= {FormatFeetAsInchFraction(elevationVerifiedThreshold)} in, Critical > {FormatFeetAsInchFraction(elevationCriticalThreshold)} in" : "Disabled")}");
 
                 return Result.Succeeded;
             }
