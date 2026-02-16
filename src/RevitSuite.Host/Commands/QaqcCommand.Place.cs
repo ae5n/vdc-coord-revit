@@ -327,6 +327,7 @@ namespace RevitSuite.Host.Commands
                 openDialog.FileName,
                 "Map Ready Points CSV Columns",
                 requireElevation: false,
+                requirePointNumber: true,
                 correlationId: correlationId);
             if (mapping == null)
             {
@@ -334,7 +335,12 @@ namespace RevitSuite.Host.Commands
                 return Result.Cancelled;
             }
 
-            var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, requireElevationValues: false);
+            var records = ParseCsvImport(
+                openDialog.FileName,
+                correlationId,
+                mapping,
+                requireElevationValues: false,
+                requirePointNumberValues: true);
             if (records.Count == 0)
             {
                 TaskDialog.Show("RevitSuite", "No valid points found in CSV. Expected columns include Point Number, Northing, Easting (Elevation optional).");

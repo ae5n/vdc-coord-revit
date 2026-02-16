@@ -510,6 +510,12 @@ namespace RevitSuite.Host.Commands
             ImportAndAnalyze
         }
 
+        private enum PairingMode
+        {
+            PointNumber,
+            Proximity
+        }
+
         private enum ToleranceStatus
         {
             Green,
@@ -555,6 +561,15 @@ namespace RevitSuite.Host.Commands
             public double TotalDeviation { get; set; }
             public ToleranceStatus Status { get; set; }
             public XYZ ModelPoint { get; set; }
+        }
+
+        private class ProximityModelCandidate
+        {
+            public FamilyInstance Element { get; set; }
+            public string PointNumber { get; set; }
+            public double Easting { get; set; }
+            public double Northing { get; set; }
+            public double Elevation { get; set; }
         }
 
         private enum SogSelectionMode
@@ -678,6 +693,8 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.NumericUpDown tagOffsetEastNumericUpDown;
             private System.Windows.Forms.Label tagOffsetNorthLabel;
             private System.Windows.Forms.NumericUpDown tagOffsetNorthNumericUpDown;
+            private System.Windows.Forms.Label pairingModeLabel;
+            private System.Windows.Forms.ComboBox pairingModeComboBox;
             private double _selectedHorizontalVerifiedThreshold = InchesToFeet(0.125);
             private double _selectedHorizontalCriticalThreshold = InchesToFeet(0.625);
             private double _selectedElevationVerifiedThreshold = InchesToFeet(0.125);
@@ -694,6 +711,9 @@ namespace RevitSuite.Host.Commands
             public bool SelectedUseSelectedPointThresholds => thresholdScopeComboBox?.SelectedIndex == 1;
             public double SelectedTagOffsetEast => (double)(tagOffsetEastNumericUpDown?.Value ?? 3.0m);
             public double SelectedTagOffsetNorth => (double)(tagOffsetNorthNumericUpDown?.Value ?? 3.0m);
+            public PairingMode SelectedPairingMode => (pairingModeComboBox?.SelectedIndex ?? 0) == 1
+                ? PairingMode.Proximity
+                : PairingMode.PointNumber;
             public QaqcMode SelectedMode
             {
                 get
@@ -859,6 +879,26 @@ namespace RevitSuite.Host.Commands
                 thresholdScopeComboBox.Items.AddRange(new object[] { "All points", "Selected points" });
                 thresholdScopeComboBox.SelectedIndex = 0;
                 thresholdGroupBox.Controls.Add(thresholdScopeComboBox);
+
+                pairingModeLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Pairing:",
+                    Location = new System.Drawing.Point(330, 30),
+                    Size = new System.Drawing.Size(62, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(pairingModeLabel);
+
+                pairingModeComboBox = new System.Windows.Forms.ComboBox
+                {
+                    Location = new System.Drawing.Point(394, 28),
+                    Size = new System.Drawing.Size(124, 25),
+                    DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList,
+                    Visible = false
+                };
+                pairingModeComboBox.Items.AddRange(new object[] { "Point Number", "Proximity" });
+                pairingModeComboBox.SelectedIndex = 0;
+                thresholdGroupBox.Controls.Add(pairingModeComboBox);
 
                 useHorizontalThresholdCheckBox = new System.Windows.Forms.CheckBox
                 {
@@ -1155,6 +1195,8 @@ namespace RevitSuite.Host.Commands
                 }
                 thresholdScopeLabel.Visible = showThresholds;
                 thresholdScopeComboBox.Visible = showThresholds;
+                pairingModeLabel.Visible = showThresholds;
+                pairingModeComboBox.Visible = showThresholds;
                 useHorizontalThresholdCheckBox.Visible = showThresholds;
                 useElevationThresholdCheckBox.Visible = showThresholds;
                 horizontalVerifiedThresholdLabel.Visible = showThresholds;
@@ -1244,6 +1286,7 @@ namespace RevitSuite.Host.Commands
             private readonly System.Windows.Forms.ComboBox _elevationComboBox = new System.Windows.Forms.ComboBox();
             private readonly System.Windows.Forms.ComboBox _commentComboBox = new System.Windows.Forms.ComboBox();
             private readonly bool _requireElevation;
+            private readonly bool _requirePointNumber;
 
             public CsvColumnMapping SelectedMapping { get; private set; }
 
@@ -1251,9 +1294,11 @@ namespace RevitSuite.Host.Commands
                 string[] headers,
                 CsvColumnMapping defaults,
                 bool requireElevation,
+                bool requirePointNumber,
                 string title)
             {
                 _requireElevation = requireElevation;
+                _requirePointNumber = requirePointNumber;
 
                 Text = string.IsNullOrWhiteSpace(title) ? "Map CSV Columns" : title;
                 Size = new System.Drawing.Size(560, 350);
@@ -1264,9 +1309,13 @@ namespace RevitSuite.Host.Commands
 
                 var helpLabel = new Label
                 {
-                    Text = requireElevation
-                        ? "Required: Point Number, Northing, Easting, Elevation."
-                        : "Required: Point Number, Northing, Easting. For N/E-only checks, set Elevation to <Not Used>.",
+                    Text = requirePointNumber
+                        ? (requireElevation
+                            ? "Required: Point Number, Northing, Easting, Elevation."
+                            : "Required: Point Number, Northing, Easting. For N/E-only checks, set Elevation to <Not Used>.")
+                        : (requireElevation
+                            ? "Required: Northing, Easting, Elevation. Point Number can be <Not Used>."
+                            : "Required: Northing, Easting. Point Number can be <Not Used>. Elevation can be <Not Used> for N/E-only checks."),
                     Location = new System.Drawing.Point(16, 14),
                     Size = new System.Drawing.Size(520, 20)
                 };
@@ -1278,13 +1327,13 @@ namespace RevitSuite.Host.Commands
                 AddMappingRow("Elevation:", _elevationComboBox, 170);
                 AddMappingRow("Comment:", _commentComboBox, 210);
 
-                PopulateHeaderOptions(_pointNumberComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_pointNumberComboBox, headers, allowNone: !requirePointNumber);
                 PopulateHeaderOptions(_northingComboBox, headers, allowNone: false);
                 PopulateHeaderOptions(_eastingComboBox, headers, allowNone: false);
                 PopulateHeaderOptions(_elevationComboBox, headers, allowNone: !requireElevation);
                 PopulateHeaderOptions(_commentComboBox, headers, allowNone: true);
 
-                SetSelectedIndex(_pointNumberComboBox, defaults?.PointNumberIndex ?? -1);
+                SetSelectedIndex(_pointNumberComboBox, requirePointNumber ? (defaults?.PointNumberIndex ?? -1) : -1);
                 SetSelectedIndex(_northingComboBox, defaults?.NorthingIndex ?? -1);
                 SetSelectedIndex(_eastingComboBox, defaults?.EastingIndex ?? -1);
                 SetSelectedIndex(_elevationComboBox, requireElevation ? (defaults?.ElevationIndex ?? -1) : -1);
@@ -1366,9 +1415,11 @@ namespace RevitSuite.Host.Commands
                 var elevationIndex = GetSelectedColumnIndex(_elevationComboBox);
                 var commentIndex = GetSelectedColumnIndex(_commentComboBox);
 
-                if (pointIndex < 0 || northingIndex < 0 || eastingIndex < 0)
+                if ((_requirePointNumber && pointIndex < 0) || northingIndex < 0 || eastingIndex < 0)
                 {
-                    MessageBox.Show(this, "Point Number, Northing, and Easting are required.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(this, _requirePointNumber
+                        ? "Point Number, Northing, and Easting are required."
+                        : "Northing and Easting are required.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
@@ -1378,7 +1429,11 @@ namespace RevitSuite.Host.Commands
                     return;
                 }
 
-                var usedIndices = new HashSet<int> { pointIndex, northingIndex, eastingIndex };
+                var usedIndices = new HashSet<int> { northingIndex, eastingIndex };
+                if (pointIndex >= 0)
+                {
+                    usedIndices.Add(pointIndex);
+                }
                 if (_requireElevation && elevationIndex >= 0)
                 {
                     usedIndices.Add(elevationIndex);
@@ -1388,7 +1443,7 @@ namespace RevitSuite.Host.Commands
                     usedIndices.Add(commentIndex);
                 }
 
-                var expectedCount = (_requireElevation ? 4 : 3) + (commentIndex >= 0 ? 1 : 0);
+                var expectedCount = 2 + (pointIndex >= 0 ? 1 : 0) + (_requireElevation ? 1 : 0) + (commentIndex >= 0 ? 1 : 0);
                 if (usedIndices.Count != expectedCount)
                 {
                     MessageBox.Show(this, "Each mapped field must use a different CSV column.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);

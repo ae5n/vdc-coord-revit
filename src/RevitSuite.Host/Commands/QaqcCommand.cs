@@ -50,6 +50,7 @@ namespace RevitSuite.Host.Commands
                 bool selectedUseHorizontalThreshold;
                 bool selectedUseElevationThreshold;
                 bool selectedUseSelectedPointThresholds;
+                PairingMode selectedPairingMode;
                 double selectedTagOffsetEast;
                 double selectedTagOffsetNorth;
                 using (var form = new QaqcDialog())
@@ -70,6 +71,7 @@ namespace RevitSuite.Host.Commands
                     selectedUseHorizontalThreshold = form.SelectedUseHorizontalThreshold;
                     selectedUseElevationThreshold = form.SelectedUseElevationThreshold;
                     selectedUseSelectedPointThresholds = form.SelectedUseSelectedPointThresholds;
+                    selectedPairingMode = form.SelectedPairingMode;
                     selectedTagOffsetEast = form.SelectedTagOffsetEast;
                     selectedTagOffsetNorth = form.SelectedTagOffsetNorth;
                 }
@@ -106,6 +108,7 @@ namespace RevitSuite.Host.Commands
                     selectedUseHorizontalThreshold,
                     selectedUseElevationThreshold,
                     selectedUseSelectedPointThresholds,
+                    selectedPairingMode,
                     selectedTagOffsetEast,
                     selectedTagOffsetNorth);
             }
