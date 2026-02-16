@@ -424,6 +424,14 @@ namespace RevitSuite.Host.Commands
                             SetParameterByGuid(existingInstance, DeviationEastingGuid, 0.0);
                             SetParameterByGuid(existingInstance, DeviationNorthingGuid, 0.0);
                             SetDeviationElevationParameter(existingInstance, 0.0);
+                            if (record.Comment != null)
+                            {
+                                var commentsParam = existingInstance.LookupParameter("Comments");
+                                if (commentsParam != null && !commentsParam.IsReadOnly)
+                                {
+                                    commentsParam.Set(record.Comment);
+                                }
+                            }
                             touchedPointIds.Add(existingInstance.Id);
                             updatedCount++;
                             continue;
@@ -440,6 +448,14 @@ namespace RevitSuite.Host.Commands
                         SetParameterByGuid(newInstance, DeviationEastingGuid, 0.0);
                         SetParameterByGuid(newInstance, DeviationNorthingGuid, 0.0);
                         SetDeviationElevationParameter(newInstance, 0.0);
+                        if (record.Comment != null)
+                        {
+                            var commentsParam = newInstance.LookupParameter("Comments");
+                            if (commentsParam != null && !commentsParam.IsReadOnly)
+                            {
+                                commentsParam.Set(record.Comment);
+                            }
+                        }
                         touchedPointIds.Add(newInstance.Id);
                         createdCount++;
                     }

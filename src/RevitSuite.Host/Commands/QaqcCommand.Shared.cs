@@ -428,6 +428,7 @@ namespace RevitSuite.Host.Commands
         {
             public string PointNumber { get; set; }
             public string Description { get; set; }
+            public string Comment { get; set; }
             public double ModelEasting { get; set; }
             public double ModelNorthing { get; set; }
             public double ModelElevation { get; set; }
@@ -444,6 +445,7 @@ namespace RevitSuite.Host.Commands
             public ElementId ElementId { get; set; }
             public ElementId FieldElementId { get; set; }
             public string UniqueId { get; set; }
+            public string SourceComment { get; set; }
             public double DeviationEasting { get; set; }
             public double DeviationNorthing { get; set; }
             public double DeviationElevation { get; set; }
@@ -1061,18 +1063,20 @@ namespace RevitSuite.Host.Commands
 
         private class CsvColumnMapping
         {
-            public CsvColumnMapping(int pointNumberIndex, int northingIndex, int eastingIndex, int elevationIndex)
+            public CsvColumnMapping(int pointNumberIndex, int northingIndex, int eastingIndex, int elevationIndex, int commentIndex)
             {
                 PointNumberIndex = pointNumberIndex;
                 NorthingIndex = northingIndex;
                 EastingIndex = eastingIndex;
                 ElevationIndex = elevationIndex;
+                CommentIndex = commentIndex;
             }
 
             public int PointNumberIndex { get; }
             public int NorthingIndex { get; }
             public int EastingIndex { get; }
             public int ElevationIndex { get; }
+            public int CommentIndex { get; }
         }
 
         private class CsvColumnMappingForm : System.Windows.Forms.Form
@@ -1095,6 +1099,7 @@ namespace RevitSuite.Host.Commands
             private readonly System.Windows.Forms.ComboBox _northingComboBox = new System.Windows.Forms.ComboBox();
             private readonly System.Windows.Forms.ComboBox _eastingComboBox = new System.Windows.Forms.ComboBox();
             private readonly System.Windows.Forms.ComboBox _elevationComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _commentComboBox = new System.Windows.Forms.ComboBox();
             private readonly bool _requireElevation;
 
             public CsvColumnMapping SelectedMapping { get; private set; }
@@ -1108,7 +1113,7 @@ namespace RevitSuite.Host.Commands
                 _requireElevation = requireElevation;
 
                 Text = string.IsNullOrWhiteSpace(title) ? "Map CSV Columns" : title;
-                Size = new System.Drawing.Size(560, 310);
+                Size = new System.Drawing.Size(560, 350);
                 StartPosition = FormStartPosition.CenterParent;
                 FormBorderStyle = FormBorderStyle.FixedDialog;
                 MaximizeBox = false;
@@ -1128,21 +1133,24 @@ namespace RevitSuite.Host.Commands
                 AddMappingRow("Northing:", _northingComboBox, 90);
                 AddMappingRow("Easting:", _eastingComboBox, 130);
                 AddMappingRow("Elevation:", _elevationComboBox, 170);
+                AddMappingRow("Comment:", _commentComboBox, 210);
 
                 PopulateHeaderOptions(_pointNumberComboBox, headers, allowNone: false);
                 PopulateHeaderOptions(_northingComboBox, headers, allowNone: false);
                 PopulateHeaderOptions(_eastingComboBox, headers, allowNone: false);
                 PopulateHeaderOptions(_elevationComboBox, headers, allowNone: !requireElevation);
+                PopulateHeaderOptions(_commentComboBox, headers, allowNone: true);
 
                 SetSelectedIndex(_pointNumberComboBox, defaults?.PointNumberIndex ?? -1);
                 SetSelectedIndex(_northingComboBox, defaults?.NorthingIndex ?? -1);
                 SetSelectedIndex(_eastingComboBox, defaults?.EastingIndex ?? -1);
                 SetSelectedIndex(_elevationComboBox, requireElevation ? (defaults?.ElevationIndex ?? -1) : -1);
+                SetSelectedIndex(_commentComboBox, defaults?.CommentIndex ?? -1);
 
                 var okButton = new Button
                 {
                     Text = "OK",
-                    Location = new System.Drawing.Point(370, 225),
+                    Location = new System.Drawing.Point(370, 265),
                     Size = new System.Drawing.Size(75, 28)
                 };
                 okButton.Click += OnOkClick;
@@ -1151,7 +1159,7 @@ namespace RevitSuite.Host.Commands
                 var cancelButton = new Button
                 {
                     Text = "Cancel",
-                    Location = new System.Drawing.Point(455, 225),
+                    Location = new System.Drawing.Point(455, 265),
                     Size = new System.Drawing.Size(75, 28),
                     DialogResult = DialogResult.Cancel
                 };
@@ -1213,6 +1221,7 @@ namespace RevitSuite.Host.Commands
                 var northingIndex = GetSelectedColumnIndex(_northingComboBox);
                 var eastingIndex = GetSelectedColumnIndex(_eastingComboBox);
                 var elevationIndex = GetSelectedColumnIndex(_elevationComboBox);
+                var commentIndex = GetSelectedColumnIndex(_commentComboBox);
 
                 if (pointIndex < 0 || northingIndex < 0 || eastingIndex < 0)
                 {
@@ -1231,15 +1240,19 @@ namespace RevitSuite.Host.Commands
                 {
                     usedIndices.Add(elevationIndex);
                 }
+                if (commentIndex >= 0)
+                {
+                    usedIndices.Add(commentIndex);
+                }
 
-                var expectedCount = _requireElevation ? 4 : 3;
+                var expectedCount = (_requireElevation ? 4 : 3) + (commentIndex >= 0 ? 1 : 0);
                 if (usedIndices.Count != expectedCount)
                 {
                     MessageBox.Show(this, "Each mapped field must use a different CSV column.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                SelectedMapping = new CsvColumnMapping(pointIndex, northingIndex, eastingIndex, elevationIndex);
+                SelectedMapping = new CsvColumnMapping(pointIndex, northingIndex, eastingIndex, elevationIndex, commentIndex);
                 DialogResult = DialogResult.OK;
                 Close();
             }

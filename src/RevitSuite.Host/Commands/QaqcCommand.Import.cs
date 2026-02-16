@@ -251,12 +251,19 @@ namespace RevitSuite.Host.Commands
                             continue;
                         }
 
+                        string comment = null;
+                        if (mapping.CommentIndex >= 0 && values.Length > mapping.CommentIndex)
+                        {
+                            comment = values[mapping.CommentIndex].Trim();
+                        }
+
                         records.Add(new ControlPointRecord
                         {
                             PointNumber = pointNumber,
                             FieldEasting = fieldEasting,
                             FieldNorthing = fieldNorthing,
-                            FieldElevation = fieldElevation
+                            FieldElevation = fieldElevation,
+                            Comment = comment
                         });
                     }
                     catch (Exception ex)
@@ -292,7 +299,7 @@ namespace RevitSuite.Host.Commands
                 var selected = form.SelectedMapping;
                 LogManager.Info(
                     correlationId,
-                    $"CSV mapping selected. PointNumber={selected.PointNumberIndex}, Northing={selected.NorthingIndex}, Easting={selected.EastingIndex}, Elevation={selected.ElevationIndex}");
+                    $"CSV mapping selected. PointNumber={selected.PointNumberIndex}, Northing={selected.NorthingIndex}, Easting={selected.EastingIndex}, Elevation={selected.ElevationIndex}, Comment={selected.CommentIndex}");
                 return selected;
             }
         }
@@ -317,6 +324,7 @@ namespace RevitSuite.Host.Commands
             var northingIndex = FindHeaderIndex(headers, "northing", "north");
             var eastingIndex = FindHeaderIndex(headers, "easting", "east");
             var elevationIndex = FindHeaderIndex(headers, "elevation", "elev", "z");
+            var commentIndex = FindHeaderIndex(headers, "comment", "comments", "note", "notes", "remark", "remarks", "description", "desc");
 
             // Backward-compatible defaults for legacy 8-column QAQC format.
             if (pointNumberIndex < 0 && headers.Length >= 1)
@@ -347,7 +355,7 @@ namespace RevitSuite.Host.Commands
                 elevationIndex = elevationIndex >= 0 ? elevationIndex : -1;
             }
 
-            return new CsvColumnMapping(pointNumberIndex, northingIndex, eastingIndex, elevationIndex);
+            return new CsvColumnMapping(pointNumberIndex, northingIndex, eastingIndex, elevationIndex, commentIndex);
         }
 
         private static int FindHeaderIndex(string[] headers, params string[] aliases)
@@ -494,6 +502,7 @@ namespace RevitSuite.Host.Commands
                     PointNumber = record.PointNumber,
                     ElementId = matchingElement.Id,
                     UniqueId = matchingElement.UniqueId,
+                    SourceComment = record.Comment,
                     DeviationEasting = devEasting,
                     DeviationNorthing = devNorthing,
                     DeviationElevation = devElevation,
@@ -809,7 +818,7 @@ namespace RevitSuite.Host.Commands
                     var commentsParam = fieldInstance.LookupParameter("Comments");
                     if (commentsParam != null && !commentsParam.IsReadOnly)
                     {
-                        commentsParam.Set($"Field measurement for {deviation.PointNumber}");
+                        commentsParam.Set(deviation.SourceComment ?? $"Field measurement for {deviation.PointNumber}");
                     }
 
                     // Keep reference to the as-built point instance for downstream annotations (e.g., spot elevation).
