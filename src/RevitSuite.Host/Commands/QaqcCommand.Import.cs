@@ -28,7 +28,9 @@ namespace RevitSuite.Host.Commands
             double elevationCriticalThreshold,
             bool useHorizontalThreshold,
             bool useElevationThreshold,
-            bool useSelectedPointThresholds)
+            bool useSelectedPointThresholds,
+            double tagOffsetEast,
+            double tagOffsetNorth)
         {
             try
             {
@@ -132,7 +134,15 @@ namespace RevitSuite.Host.Commands
                         {
                             CreateDeviationIndicators(doc, deviations, config, correlationId);
                         }
-                        CreateDeviationAnnotations(doc, deviations, config, useHorizontalThreshold, useElevationThreshold, correlationId);
+                        CreateDeviationAnnotations(
+                            doc,
+                            deviations,
+                            config,
+                            useHorizontalThreshold,
+                            useElevationThreshold,
+                            tagOffsetEast,
+                            tagOffsetNorth,
+                            correlationId);
 
                         tx.Commit();
                     }

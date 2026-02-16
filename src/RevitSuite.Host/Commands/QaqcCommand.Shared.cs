@@ -160,6 +160,8 @@ namespace RevitSuite.Host.Commands
             RevitSuite.Host.Config.QaqcConfig config,
             bool includeHorizontalAnnotations,
             bool includeElevationAnnotations,
+            double tagOffsetEast,
+            double tagOffsetNorth,
             string correlationId)
         {
             var view = doc.ActiveView;
@@ -204,7 +206,7 @@ namespace RevitSuite.Host.Commands
                 {
                     if (includeHorizontalAnnotations)
                     {
-                        var horizontalHead = new XYZ(basePoint.X + 2.0, basePoint.Y + 1.0, basePoint.Z);
+                        var horizontalHead = new XYZ(basePoint.X + tagOffsetEast, basePoint.Y + tagOffsetNorth, basePoint.Z);
                         if (TryCreateDeviationTag(doc, view, targetElement, horizontalTagSymbol, horizontalHead, annotationColor, correlationId))
                         {
                             createdTags++;
@@ -213,8 +215,7 @@ namespace RevitSuite.Host.Commands
 
                     if (includeElevationAnnotations)
                     {
-                        var yOffset = includeHorizontalAnnotations ? 2.0 : 1.0;
-                        var elevationHead = new XYZ(basePoint.X + 2.0, basePoint.Y + yOffset, basePoint.Z);
+                        var elevationHead = new XYZ(basePoint.X + tagOffsetEast, basePoint.Y + tagOffsetNorth, basePoint.Z);
                         if (TryCreateDeviationTag(doc, view, targetElement, elevationTagSymbol, elevationHead, annotationColor, correlationId))
                         {
                             createdTags++;
@@ -374,6 +375,9 @@ namespace RevitSuite.Host.Commands
                 {
                     tag.ChangeTypeId(tagSymbol.Id);
                 }
+
+                // Force final head position so UI offsets are honored after type change.
+                tag.TagHeadPosition = tagHeadPoint;
             }
             catch (Exception ex)
             {
@@ -565,6 +569,11 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.ComboBox thresholdScopeComboBox;
             private System.Windows.Forms.Label thresholdScopeLabel;
             private System.Windows.Forms.GroupBox thresholdGroupBox;
+            private System.Windows.Forms.Label tagPlacementLabel;
+            private System.Windows.Forms.Label tagOffsetEastLabel;
+            private System.Windows.Forms.NumericUpDown tagOffsetEastNumericUpDown;
+            private System.Windows.Forms.Label tagOffsetNorthLabel;
+            private System.Windows.Forms.NumericUpDown tagOffsetNorthNumericUpDown;
 
             public string SelectedCategory => categoryComboBox.SelectedItem?.ToString() ?? "Footings";
             public int SelectedPourNumber => (int)(pourNumericUpDown?.Value ?? 1);
@@ -575,6 +584,8 @@ namespace RevitSuite.Host.Commands
             public bool SelectedUseHorizontalThreshold => useHorizontalThresholdCheckBox?.Checked ?? true;
             public bool SelectedUseElevationThreshold => useElevationThresholdCheckBox?.Checked ?? true;
             public bool SelectedUseSelectedPointThresholds => thresholdScopeComboBox?.SelectedIndex == 1;
+            public double SelectedTagOffsetEast => (double)(tagOffsetEastNumericUpDown?.Value ?? 3.0m);
+            public double SelectedTagOffsetNorth => (double)(tagOffsetNorthNumericUpDown?.Value ?? 3.0m);
             public QaqcMode SelectedMode
             {
                 get
@@ -853,11 +864,64 @@ namespace RevitSuite.Host.Commands
                 {
                     Text = "Per enabled check: <= Verified => Verified (Green), > Critical => Critical (Red), otherwise Deviation (Orange).",
                     Location = new System.Drawing.Point(14, 194),
-                    Size = new System.Drawing.Size(510, 36),
+                    Size = new System.Drawing.Size(510, 34),
                     ForeColor = System.Drawing.Color.DimGray,
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(thresholdHelpLabel);
+
+                tagPlacementLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Tag Placement (ft):",
+                    Location = new System.Drawing.Point(14, 232),
+                    Size = new System.Drawing.Size(160, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagPlacementLabel);
+
+                tagOffsetEastLabel = new System.Windows.Forms.Label
+                {
+                    Text = "East:",
+                    Location = new System.Drawing.Point(32, 254),
+                    Size = new System.Drawing.Size(40, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetEastLabel);
+
+                tagOffsetEastNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(72, 252),
+                    Size = new System.Drawing.Size(84, 25),
+                    DecimalPlaces = 2,
+                    Increment = 0.10m,
+                    Minimum = -50m,
+                    Maximum = 50m,
+                    Value = 3.00m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetEastNumericUpDown);
+
+                tagOffsetNorthLabel = new System.Windows.Forms.Label
+                {
+                    Text = "North:",
+                    Location = new System.Drawing.Point(174, 254),
+                    Size = new System.Drawing.Size(50, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetNorthLabel);
+
+                tagOffsetNorthNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(224, 252),
+                    Size = new System.Drawing.Size(84, 25),
+                    DecimalPlaces = 2,
+                    Increment = 0.10m,
+                    Minimum = -50m,
+                    Maximum = 50m,
+                    Value = 3.00m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetNorthNumericUpDown);
 
                 okButton = new System.Windows.Forms.Button
                 {
@@ -957,6 +1021,11 @@ namespace RevitSuite.Host.Commands
                 elevationCriticalThresholdLabel.Visible = showThresholds;
                 elevationCriticalThresholdNumericUpDown.Visible = showThresholds;
                 thresholdHelpLabel.Visible = showThresholds;
+                tagPlacementLabel.Visible = showThresholds;
+                tagOffsetEastLabel.Visible = showThresholds;
+                tagOffsetEastNumericUpDown.Visible = showThresholds;
+                tagOffsetNorthLabel.Visible = showThresholds;
+                tagOffsetNorthNumericUpDown.Visible = showThresholds;
                 UpdateThresholdEnableState();
             }
 
