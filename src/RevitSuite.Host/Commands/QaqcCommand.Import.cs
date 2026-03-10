@@ -31,7 +31,8 @@ namespace RevitSuite.Host.Commands
             bool useSelectedPointThresholds,
             PairingMode pairingMode,
             double tagOffsetEast,
-            double tagOffsetNorth)
+            double tagOffsetNorth,
+            double proximityMaxDistanceFt)
         {
             try
             {
@@ -119,7 +120,8 @@ namespace RevitSuite.Host.Commands
                     useHorizontalThreshold,
                     useElevationThreshold,
                     pairingMode,
-                    selectedPointNumbers);
+                    selectedPointNumbers,
+                    proximityMaxDistanceFt);
                 if (deviations.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No matching Control Points found in model.");
@@ -436,7 +438,8 @@ namespace RevitSuite.Host.Commands
             bool useHorizontalThreshold,
             bool useElevationThreshold,
             PairingMode pairingMode,
-            HashSet<string> selectedPointNumbers)
+            HashSet<string> selectedPointNumbers,
+            double proximityMaxDistanceFt)
         {
             var deviations = new List<DeviationResult>();
 
@@ -566,45 +569,52 @@ namespace RevitSuite.Host.Commands
                     .Where(x => selectedPointNumbers == null || selectedPointNumbers.Contains($"ID:{x.Element.Id.IntegerValue}"))
                     .ToList();
 
-                LogManager.Info(correlationId, $"Proximity pairing direction: Model->Nearest CSV. Candidate model points: {candidateModels.Count}.");
+                LogManager.Info(correlationId, $"Proximity pairing: {candidateModels.Count} model points, {records.Count} CSV records. Max match distance: {proximityMaxDistanceFt:F2} ft. Using globally-sorted nearest-neighbour matching.");
 
-                var remainingRecords = records
+                var validRecords = records
                     .Where(r => r.FieldEasting.HasValue && r.FieldNorthing.HasValue)
                     .Where(r => !useElevationThreshold || r.FieldElevation.HasValue)
                     .ToList();
 
-                foreach (var candidate in candidateModels)
+                // Build all candidate pairs sorted by distance ascending.
+                // Then greedily assign from closest pair, skipping any already-matched side.
+                // This is correct regardless of whether there are more model points or more CSV records.
+                var allPairs = new List<(double DistSq, ControlPointRecord Record, ProximityModelCandidate Candidate)>();
+                foreach (var record in validRecords)
                 {
-                    ControlPointRecord nearestRecord = null;
-                    var minDistanceSq = double.MaxValue;
-
-                    foreach (var record in remainingRecords)
+                    foreach (var candidate in candidateModels)
                     {
                         var dx = record.FieldEasting.Value - candidate.Easting;
                         var dy = record.FieldNorthing.Value - candidate.Northing;
-                        var distanceSq = dx * dx + dy * dy;
-                        if (distanceSq < minDistanceSq)
-                        {
-                            minDistanceSq = distanceSq;
-                            nearestRecord = record;
-                        }
+                        allPairs.Add((dx * dx + dy * dy, record, candidate));
                     }
+                }
+                allPairs.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
 
-                    if (nearestRecord == null)
-                    {
+                var matchedRecords = new HashSet<ControlPointRecord>();
+                var matchedCandidates = new HashSet<ProximityModelCandidate>();
+
+                var maxDistSq = proximityMaxDistanceFt * proximityMaxDistanceFt;
+
+                foreach (var (distSq, record, nearestCandidate) in allPairs)
+                {
+                    if (distSq > maxDistSq)
+                        break; // list is sorted — all remaining pairs are farther
+
+                    if (matchedRecords.Contains(record) || matchedCandidates.Contains(nearestCandidate))
                         continue;
-                    }
 
-                    remainingRecords.Remove(nearestRecord);
+                    matchedRecords.Add(record);
+                    matchedCandidates.Add(nearestCandidate);
 
-                    var modelEasting = candidate.Easting;
-                    var modelNorthing = candidate.Northing;
-                    var modelElevation = candidate.Elevation;
+                    var modelEasting = nearestCandidate.Easting;
+                    var modelNorthing = nearestCandidate.Northing;
+                    var modelElevation = nearestCandidate.Elevation;
 
-                    var devEasting = nearestRecord.FieldEasting.Value - modelEasting;
-                    var devNorthing = nearestRecord.FieldNorthing.Value - modelNorthing;
-                    var devElevation = nearestRecord.FieldElevation.HasValue
-                        ? nearestRecord.FieldElevation.Value - modelElevation
+                    var devEasting = record.FieldEasting.Value - modelEasting;
+                    var devNorthing = record.FieldNorthing.Value - modelNorthing;
+                    var devElevation = record.FieldElevation.HasValue
+                        ? record.FieldElevation.Value - modelElevation
                         : 0.0;
                     var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
                     var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
@@ -622,23 +632,23 @@ namespace RevitSuite.Host.Commands
                         : (isVerified ? ToleranceStatus.Blue : ToleranceStatus.Yellow);
 
                     XYZ modelPoint = null;
-                    if (candidate.Element.Location is LocationPoint locPoint)
+                    if (nearestCandidate.Element.Location is LocationPoint locPoint)
                     {
                         modelPoint = locPoint.Point;
                     }
 
-                    var resolvedPointNumber = candidate.PointNumber;
+                    var resolvedPointNumber = nearestCandidate.PointNumber;
                     if (string.IsNullOrWhiteSpace(resolvedPointNumber))
                     {
-                        resolvedPointNumber = $"MODEL-{candidate.Element.Id.IntegerValue}";
+                        resolvedPointNumber = $"MODEL-{nearestCandidate.Element.Id.IntegerValue}";
                     }
 
                     deviations.Add(new DeviationResult
                     {
                         PointNumber = resolvedPointNumber,
-                        ElementId = candidate.Element.Id,
-                        UniqueId = candidate.Element.UniqueId,
-                        SourceComment = nearestRecord.Comment,
+                        ElementId = nearestCandidate.Element.Id,
+                        UniqueId = nearestCandidate.Element.UniqueId,
+                        SourceComment = record.Comment,
                         DeviationEasting = devEasting,
                         DeviationNorthing = devNorthing,
                         DeviationElevation = devElevation,
@@ -930,11 +940,14 @@ namespace RevitSuite.Host.Commands
 
                 try
                 {
-                    // Calculate field point location (model point + deviations)
-                    var fieldPoint = new XYZ(
-                        deviation.ModelPoint.X + deviation.DeviationEasting,
-                        deviation.ModelPoint.Y + deviation.DeviationNorthing,
-                        deviation.ModelPoint.Z + deviation.DeviationElevation);
+                    // Calculate field point location: convert model point to survey coords,
+                    // apply deviation (which is in survey coord space), then convert back to internal.
+                    var modelSurvey = projectToShared.OfPoint(deviation.ModelPoint);
+                    var fieldSurvey = new XYZ(
+                        modelSurvey.X + deviation.DeviationEasting,
+                        modelSurvey.Y + deviation.DeviationNorthing,
+                        modelSurvey.Z + deviation.DeviationElevation);
+                    var fieldPoint = sharedToProject.OfPoint(fieldSurvey);
                     var fieldSymbol = deviation.Status switch
                     {
                         ToleranceStatus.Green => modelSymbol,

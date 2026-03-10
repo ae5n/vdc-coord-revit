@@ -285,10 +285,21 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            if ((includeHorizontalAnnotations && horizontalTagSymbol == null) ||
-                (includeElevationAnnotations && elevationTagSymbol == null))
+            if (includeHorizontalAnnotations && horizontalTagSymbol == null)
             {
-                LogManager.Warn(correlationId, $"Required tag types not found in '{config.DeviationTagFamilyName}'.");
+                LogManager.Warn(correlationId, $"Horizontal tag type '{config.DeviationTagHorizontalTypeName}' not found in '{config.DeviationTagFamilyName}' - horizontal tags will be skipped.");
+                includeHorizontalAnnotations = false;
+            }
+
+            if (includeElevationAnnotations && elevationTagSymbol == null)
+            {
+                LogManager.Warn(correlationId, $"Elevation tag type '{config.DeviationTagElevationTypeName}' not found in '{config.DeviationTagFamilyName}' - elevation tags will be skipped.");
+                includeElevationAnnotations = false;
+            }
+
+            if (!includeHorizontalAnnotations && !includeElevationAnnotations)
+            {
+                LogManager.Warn(correlationId, "No tag types available - skipping all annotations.");
                 return;
             }
 
@@ -900,6 +911,8 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.NumericUpDown tagOffsetNorthNumericUpDown;
             private System.Windows.Forms.Label pairingModeLabel;
             private System.Windows.Forms.ComboBox pairingModeComboBox;
+            private System.Windows.Forms.Label proximityMaxDistLabel;
+            private System.Windows.Forms.NumericUpDown proximityMaxDistNumericUpDown;
             private double _selectedHorizontalVerifiedThreshold = InchesToFeet(0.125);
             private double _selectedHorizontalCriticalThreshold = InchesToFeet(0.625);
             private double _selectedElevationVerifiedThreshold = InchesToFeet(0.125);
@@ -919,6 +932,7 @@ namespace RevitSuite.Host.Commands
             public PairingMode SelectedPairingMode => (pairingModeComboBox?.SelectedIndex ?? 0) == 1
                 ? PairingMode.Proximity
                 : PairingMode.PointNumber;
+            public double SelectedProximityMaxDistanceFt => (double)(proximityMaxDistNumericUpDown?.Value ?? 1.0m);
             public QaqcMode SelectedMode
             {
                 get
@@ -1261,6 +1275,28 @@ namespace RevitSuite.Host.Commands
                 };
                 thresholdGroupBox.Controls.Add(tagOffsetNorthNumericUpDown);
 
+                proximityMaxDistLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Max Match Dist (ft):",
+                    Location = new System.Drawing.Point(14, 283),
+                    Size = new System.Drawing.Size(130, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(proximityMaxDistLabel);
+
+                proximityMaxDistNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(148, 281),
+                    Size = new System.Drawing.Size(84, 25),
+                    DecimalPlaces = 2,
+                    Increment = 0.25m,
+                    Minimum = 0.10m,
+                    Maximum = 100m,
+                    Value = 1.00m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(proximityMaxDistNumericUpDown);
+
                 okButton = new System.Windows.Forms.Button
                 {
                     Text = "OK",
@@ -1289,6 +1325,7 @@ namespace RevitSuite.Host.Commands
                 importRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
                 useHorizontalThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
                 useElevationThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
+                pairingModeComboBox.SelectedIndexChanged += (sender, args) => UpdateThresholdVisibility();
                 okButton.Click += (sender, args) =>
                 {
                     if (importRadioButton.Checked &&
@@ -1418,6 +1455,9 @@ namespace RevitSuite.Host.Commands
                 tagOffsetEastNumericUpDown.Visible = showThresholds;
                 tagOffsetNorthLabel.Visible = showThresholds;
                 tagOffsetNorthNumericUpDown.Visible = showThresholds;
+                var showProximityDist = showThresholds && pairingModeComboBox?.SelectedIndex == 1;
+                proximityMaxDistLabel.Visible = showProximityDist;
+                proximityMaxDistNumericUpDown.Visible = showProximityDist;
                 UpdateThresholdEnableState();
             }
 

@@ -53,6 +53,7 @@ namespace RevitSuite.Host.Commands
                 PairingMode selectedPairingMode;
                 double selectedTagOffsetEast;
                 double selectedTagOffsetNorth;
+                double selectedProximityMaxDistanceFt;
                 using (var form = new QaqcDialog())
                 {
                     if (form.ShowDialog() != DialogResult.OK)
@@ -74,6 +75,7 @@ namespace RevitSuite.Host.Commands
                     selectedPairingMode = form.SelectedPairingMode;
                     selectedTagOffsetEast = form.SelectedTagOffsetEast;
                     selectedTagOffsetNorth = form.SelectedTagOffsetNorth;
+                    selectedProximityMaxDistanceFt = form.SelectedProximityMaxDistanceFt;
                 }
 
                 LogManager.Info(correlationId, $"QAQC mode: {selectedMode}, Category: {selectedCategory}");
@@ -110,7 +112,8 @@ namespace RevitSuite.Host.Commands
                     selectedUseSelectedPointThresholds,
                     selectedPairingMode,
                     selectedTagOffsetEast,
-                    selectedTagOffsetNorth);
+                    selectedTagOffsetNorth,
+                    selectedProximityMaxDistanceFt);
             }
             catch (Exception ex)
             {

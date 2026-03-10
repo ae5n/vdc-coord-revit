@@ -8,7 +8,7 @@ namespace RevitSuite.Host
 {
     public class App : IExternalApplication
     {
-        private const string TabName = "Coord+";
+        private const string TabName = "Lewis VDC";
         private const string AutomationPanelName = "Automation";
         private const string ReportsPanelName = "Reports";
         private const string ViewsPanelName = "Views";
