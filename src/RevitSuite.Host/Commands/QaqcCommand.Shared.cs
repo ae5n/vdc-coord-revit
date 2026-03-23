@@ -12,8 +12,6 @@ namespace RevitSuite.Host.Commands
 {
     public partial class QaqcCommand
     {
-        private const int HorizontalAnnotationFractionDenominator = 8; // ΔE, ΔN
-        private const int ElevationAnnotationFractionDenominator = 8;  // ΔZ, Z
 
 
         private bool IsPointInCropRegion(XYZ point, XYZ min, XYZ max)
@@ -91,6 +89,108 @@ namespace RevitSuite.Host.Commands
             return value;
         }
 
+        private static bool TryParseThresholdInput(string text, out double value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            var trimmed = text.Trim();
+            if (double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            {
+                return value > 0;
+            }
+
+            var parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2 &&
+                double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var whole) &&
+                TryParseFraction(parts[1], out var mixedFraction))
+            {
+                value = whole + mixedFraction;
+                return value > 0;
+            }
+
+            if (TryParseFraction(trimmed, out var fraction))
+            {
+                value = fraction;
+                return value > 0;
+            }
+
+            return false;
+        }
+
+        private static double InchesToFeet(double inches)
+        {
+            return inches / 12.0;
+        }
+
+        private static double FeetToInches(double feet)
+        {
+            return feet * 12.0;
+        }
+
+        private static string FormatFeetAsInchFraction(double feet)
+        {
+            var inches = FeetToInches(feet);
+            if (inches <= 0)
+            {
+                return "0";
+            }
+
+            const int denominator = 8;
+            var whole = (int)Math.Floor(inches);
+            var fractional = inches - whole;
+            var numerator = (int)Math.Round(fractional * denominator);
+
+            if (numerator == denominator)
+            {
+                whole += 1;
+                numerator = 0;
+            }
+
+            if (numerator == 0)
+            {
+                return whole.ToString(CultureInfo.InvariantCulture);
+            }
+
+            if (whole == 0)
+            {
+                return $"{numerator}/{denominator}";
+            }
+
+            return $"{whole} {numerator}/{denominator}";
+        }
+
+        private static bool TryParseFraction(string text, out double value)
+        {
+            value = 0;
+            var fractionParts = text.Split('/');
+            if (fractionParts.Length != 2)
+            {
+                return false;
+            }
+
+            if (!double.TryParse(fractionParts[0].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var numerator))
+            {
+                return false;
+            }
+
+            if (!double.TryParse(fractionParts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var denominator))
+            {
+                return false;
+            }
+
+            if (Math.Abs(denominator) < 1e-9)
+            {
+                return false;
+            }
+
+            value = numerator / denominator;
+            return true;
+        }
+
         private ElementId EnsureMaterial(Document doc, string name, int transparency, Autodesk.Revit.DB.Color color)
         {
             var existing = new FilteredElementCollector(doc)
@@ -159,14 +259,17 @@ namespace RevitSuite.Host.Commands
         private void CreateDeviationAnnotations(
             Document doc,
             List<DeviationResult> deviations,
+            RevitSuite.Host.Config.QaqcConfig config,
             bool includeHorizontalAnnotations,
             bool includeElevationAnnotations,
+            double tagOffsetEast,
+            double tagOffsetNorth,
             string correlationId)
         {
             var view = doc.ActiveView;
             if (view == null || view.ViewType == ViewType.Schedule || view.ViewType == ViewType.Legend || view.ViewType == ViewType.ThreeD)
             {
-                LogManager.Warn(correlationId, "Active view not suitable for text notes - skipping annotations. Use a plan, section, or elevation view.");
+                LogManager.Warn(correlationId, "Active view not suitable for tags - skipping annotations. Use a plan/section/elevation view.");
                 return;
             }
 
@@ -176,535 +279,428 @@ namespace RevitSuite.Host.Commands
                 return;
             }
 
-            // Delete all existing text notes in this view to prevent duplicates
-            try
+            if (!TryGetDeviationTagSymbols(doc, config, out var horizontalTagSymbol, out var elevationTagSymbol))
             {
-                var existingTextNotes = new FilteredElementCollector(doc, view.Id)
-                    .OfClass(typeof(TextNote))
-                    .ToList();
-
-                int deletedCount = 0;
-                foreach (var textNote in existingTextNotes)
-                {
-                    try
-                    {
-                        doc.Delete(textNote.Id);
-                        deletedCount++;
-                    }
-                    catch
-                    {
-                        // Some text notes might be locked or system-owned, skip them
-                    }
-                }
-
-                LogManager.Info(correlationId, $"Deleted {deletedCount} existing annotations in current view.");
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Failed to delete old annotations: {ex.Message}");
-            }
-
-            // Delete all existing detail lines in this view (leader lines)
-            try
-            {
-                var existingDetailLines = new FilteredElementCollector(doc, view.Id)
-                    .OfClass(typeof(CurveElement))
-                    .OfType<DetailCurve>()
-                    .ToList();
-
-                int deletedLines = 0;
-                foreach (var line in existingDetailLines)
-                {
-                    try
-                    {
-                        doc.Delete(line.Id);
-                        deletedLines++;
-                    }
-                    catch
-                    {
-                        // Skip locked elements
-                    }
-                }
-
-                LogManager.Info(correlationId, $"Deleted {deletedLines} existing detail lines in current view.");
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Failed to delete old detail lines: {ex.Message}");
-            }
-
-            // Delete existing spot elevations in this view to prevent duplicate elevation tags.
-            try
-            {
-                var existingSpotElevations = new FilteredElementCollector(doc, view.Id)
-                    .OfClass(typeof(SpotDimension))
-                    .ToList();
-
-                var deletedSpots = 0;
-                foreach (var spot in existingSpotElevations)
-                {
-                    try
-                    {
-                        doc.Delete(spot.Id);
-                        deletedSpots++;
-                    }
-                    catch
-                    {
-                        // Skip locked/system-owned elements.
-                    }
-                }
-
-                LogManager.Info(correlationId, $"Deleted {deletedSpots} existing spot elevations in current view.");
-            }
-            catch (Exception ex)
-            {
-                LogManager.Warn(correlationId, $"Failed to delete old spot elevations: {ex.Message}");
-            }
-
-            // Get a valid TextNoteType from the document
-            var textNoteType = new FilteredElementCollector(doc)
-                .OfClass(typeof(TextNoteType))
-                .FirstOrDefault() as TextNoteType;
-
-            if (textNoteType == null)
-            {
-                LogManager.Warn(correlationId, "No TextNoteType found in document - skipping annotations.");
+                LogManager.Warn(correlationId, $"Tag family '{config.DeviationTagFamilyName}' with types '{config.DeviationTagHorizontalTypeName}' and '{config.DeviationTagElevationTypeName}' not found.");
                 return;
             }
 
-            LogManager.Info(correlationId, $"Using TextNoteType: {textNoteType.Name}");
+            if (includeHorizontalAnnotations && horizontalTagSymbol == null)
+            {
+                LogManager.Warn(correlationId, $"Horizontal tag type '{config.DeviationTagHorizontalTypeName}' not found in '{config.DeviationTagFamilyName}' - horizontal tags will be skipped.");
+                includeHorizontalAnnotations = false;
+            }
 
-            int annotationsCreated = 0;
+            if (includeElevationAnnotations && elevationTagSymbol == null)
+            {
+                LogManager.Warn(correlationId, $"Elevation tag type '{config.DeviationTagElevationTypeName}' not found in '{config.DeviationTagFamilyName}' - elevation tags will be skipped.");
+                includeElevationAnnotations = false;
+            }
 
+            if (!includeHorizontalAnnotations && !includeElevationAnnotations)
+            {
+                LogManager.Warn(correlationId, "No tag types available - skipping all annotations.");
+                return;
+            }
+
+            // Preserve existing annotations. New run adds/updates only current run outputs.
+
+            var createdTags = 0;
             foreach (var deviation in deviations)
             {
-                if (deviation.ModelPoint == null)
+                var targetElement = ResolveTagTargetElement(doc, deviation);
+                if (targetElement == null || !TryGetTagHeadBasePoint(targetElement, deviation.ModelPoint, out var basePoint))
+                {
                     continue;
+                }
 
+                var annotationColor = GetAnnotationColorByStatus(deviation.Status);
                 try
                 {
-                    var annotationLines = new List<string>();
                     if (includeHorizontalAnnotations)
                     {
-                        // Convert deviations to feet-inches format (Revit standard)
-                        var eastingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationEasting));
-                        var northingFtIn = FormatHorizontalFeetInches(Math.Abs(deviation.DeviationNorthing));
-
-                        // Add +/- signs
-                        var eastingSign = deviation.DeviationEasting >= 0 ? "+" : "-";
-                        var northingSign = deviation.DeviationNorthing >= 0 ? "+" : "-";
-                        annotationLines.Add($"ΔE: {eastingSign}{eastingFtIn}");
-                        annotationLines.Add($"ΔN: {northingSign}{northingFtIn}");
+                        var horizontalHead = new XYZ(basePoint.X + tagOffsetEast, basePoint.Y + tagOffsetNorth, basePoint.Z);
+                        if (TryCreateDeviationTag(doc, view, targetElement, horizontalTagSymbol, horizontalHead, annotationColor, true, correlationId, out _))
+                        {
+                            createdTags++;
+                        }
                     }
 
                     if (includeElevationAnnotations)
                     {
-                        var elevationFtIn = FormatElevationFeetInches(Math.Abs(deviation.DeviationElevation));
-                        var elevationSign = deviation.DeviationElevation >= 0 ? "+" : "-";
-                        annotationLines.Add($"ΔZ: {elevationSign}{elevationFtIn}");
-
-                        if (TryGetPointElevationForAnnotation(doc, deviation, out var elevationValue))
+                        if (TryCreateSpotElevationForDeviation(
+                                doc,
+                                view,
+                                deviation,
+                                basePoint,
+                                tagOffsetEast,
+                                tagOffsetNorth,
+                                annotationColor,
+                                correlationId,
+                                out _))
                         {
-                            annotationLines.Add($"Z: {FormatElevationFeetInches(elevationValue)}");
-                        }
-                    }
+                            // Keep Z deviation tag under spot elevation text.
+                            var elevationHead = new XYZ(
+                                basePoint.X + tagOffsetEast,
+                                basePoint.Y + tagOffsetNorth - 0.8,
+                                basePoint.Z);
 
-                    var annotationText = string.Join("\n", annotationLines);
-
-                    // Offset annotation point slightly to the right and up from Control Point
-                    var annotationPoint = new XYZ(
-                        deviation.ModelPoint.X + 2.0,  // 2 feet to the right
-                        deviation.ModelPoint.Y + 1.0,  // 1 foot up
-                        deviation.ModelPoint.Z);
-
-                    var annotationColor = deviation.Status switch
-                    {
-                        ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(34, 197, 94),   // Verified
-                        ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
-                        ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
-                        _ => new Autodesk.Revit.DB.Color(59, 130, 246)                        // Model/default
-                    };
-
-                    var textNote = TextNote.Create(doc, view.Id, annotationPoint, annotationText, textNoteType.Id);
-
-                    if (includeElevationAnnotations)
-                    {
-                        TryCreateSpotElevationAnnotation(doc, view, deviation, annotationColor, correlationId);
-                    }
-
-                    if (textNote != null)
-                    {
-                        var annotationOverrides = new OverrideGraphicSettings();
-                        annotationOverrides.SetProjectionLineColor(annotationColor);
-                        annotationOverrides.SetProjectionLineWeight(3);
-                        try
-                        {
-                            view.SetElementOverrides(textNote.Id, annotationOverrides);
-                        }
-                        catch
-                        {
-                            // If text-note override fails in this view type, keep annotation creation.
-                        }
-
-                        // Create a detail line from annotation to model point as a leader
-                        try
-                        {
-                            var leaderLine = Line.CreateBound(annotationPoint, deviation.ModelPoint);
-                            var leaderCurve = doc.Create.NewDetailCurve(view, leaderLine);
-                            if (leaderCurve != null)
+                            if (TryCreateDeviationTag(
+                                    doc,
+                                    view,
+                                    targetElement,
+                                    elevationTagSymbol,
+                                    elevationHead,
+                                    annotationColor,
+                                    false,
+                                    correlationId,
+                                    out var elevationTagId))
                             {
-                                view.SetElementOverrides(leaderCurve.Id, annotationOverrides);
+                                createdTags++;
                             }
                         }
-                        catch
-                        {
-                            // Leader line creation might fail, continue anyway
-                        }
-
-                        annotationsCreated++;
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogManager.Warn(correlationId, $"Failed to create annotation for Point {deviation.PointNumber}: {ex.Message}");
+                    LogManager.Warn(correlationId, $"Failed to create tag annotation for Point {deviation.PointNumber}: {ex.Message}");
                 }
             }
 
-            LogManager.Info(correlationId, $"Created {annotationsCreated} deviation annotations.");
+            LogManager.Info(correlationId, $"Created {createdTags} deviation tag annotation(s).");
         }
 
-        private void TryCreateSpotElevationAnnotation(
+        private bool TryCreateSpotElevationForDeviation(
             Document doc,
             Autodesk.Revit.DB.View view,
             DeviationResult deviation,
+            XYZ basePoint,
+            double tagOffsetEast,
+            double tagOffsetNorth,
             Autodesk.Revit.DB.Color annotationColor,
-            string correlationId)
+            string correlationId,
+            out ElementId spotId)
         {
-            Element sourceElement = null;
-            XYZ fallbackPoint = deviation.ModelPoint;
-
-            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            spotId = ElementId.InvalidElementId;
+            if (deviation == null || deviation.FieldElementId == null || deviation.FieldElementId == ElementId.InvalidElementId)
             {
-                sourceElement = doc.GetElement(deviation.FieldElementId);
-                if (sourceElement?.Location is LocationPoint fieldLoc)
+                LogManager.Warn(correlationId, $"Spot elevation skipped for point '{deviation?.PointNumber ?? "Unknown"}' - no as-built element id.");
+                return false;
+            }
+
+            var element = doc.GetElement(deviation.FieldElementId);
+            if (element == null)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation skipped for point '{deviation.PointNumber}' - as-built element not found.");
+                return false;
+            }
+
+            return TryCreateSpotElevation(doc, view, element, basePoint, tagOffsetEast, tagOffsetNorth, annotationColor, correlationId, out spotId);
+        }
+
+        private bool TryCreateSpotElevation(
+            Document doc,
+            Autodesk.Revit.DB.View view,
+            Element targetElement,
+            XYZ basePoint,
+            double tagOffsetEast,
+            double tagOffsetNorth,
+            Autodesk.Revit.DB.Color annotationColor,
+            string correlationId,
+            out ElementId spotId)
+        {
+            spotId = ElementId.InvalidElementId;
+            var candidates = GetSpotElevationReferenceCandidates(targetElement, view, basePoint);
+            if (candidates.Count == 0)
+            {
+                LogManager.Warn(correlationId, $"Spot elevation skipped on element {targetElement.Id} - no valid geometric reference.");
+                return false;
+            }
+
+            Exception lastException = null;
+            foreach (var candidate in candidates)
+            {
+                var origin = candidate.ReferencePoint;
+                // Respect user-entered East/North offsets for spot position.
+                var bend = new XYZ(origin.X + tagOffsetEast, origin.Y + tagOffsetNorth, origin.Z);
+                var endDirection = tagOffsetEast >= 0 ? 1.0 : -1.0;
+                var end = new XYZ(bend.X + endDirection, bend.Y, bend.Z);
+
+                try
                 {
-                    fallbackPoint = fieldLoc.Point;
+                    var spot = doc.Create.NewSpotElevation(view, candidate.Reference, origin, bend, end, candidate.ReferencePoint, true);
+                    if (spot == null)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var annotationOverrides = new OverrideGraphicSettings();
+                        annotationOverrides.SetProjectionLineColor(annotationColor);
+                        annotationOverrides.SetProjectionLineWeight(3);
+                        view.SetElementOverrides(spot.Id, annotationOverrides);
+                    }
+                    catch
+                    {
+                        // Non-fatal
+                    }
+
+                    spotId = spot.Id;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
                 }
             }
 
-            if (sourceElement == null)
+            LogManager.Warn(
+                correlationId,
+                $"Spot elevation failed on element {targetElement.Id}: {lastException?.Message ?? "No candidate references succeeded."}");
+            return false;
+        }
+
+        private List<SpotElevationReferenceCandidate> GetSpotElevationReferenceCandidates(
+            Element element,
+            Autodesk.Revit.DB.View view,
+            XYZ samplePoint)
+        {
+            var candidates = new List<SpotElevationReferenceCandidate>();
+
+            if (!(element is FamilyInstance familyInstance))
             {
-                sourceElement = doc.GetElement(deviation.ElementId);
+                return candidates;
             }
 
-            if (sourceElement == null || fallbackPoint == null)
+            TryAddStrongFamilyReferenceCandidates(familyInstance, samplePoint, candidates);
+
+            return candidates
+                .GroupBy(c => GetStableReferenceKey(familyInstance.Document, c.Reference))
+                .Select(g => g.OrderBy(x => x.Distance).First())
+                .OrderBy(c => c.Distance)
+                .ToList();
+        }
+
+        private static string GetStableReferenceKey(Document doc, Reference reference)
+        {
+            if (doc == null || reference == null)
             {
-                return;
+                return string.Empty;
             }
 
-            var target = GetSpotElevationTarget(sourceElement, fallbackPoint);
-            if (target == null || target.Reference == null || target.Point == null)
+            try
             {
-                LogManager.Warn(correlationId, $"Spot elevation skipped for Point {deviation.PointNumber}: no valid face/reference found.");
+                return reference.ConvertToStableRepresentation(doc);
+            }
+            catch
+            {
+                return reference.ElementId.IntegerValue.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        private void TryAddStrongFamilyReferenceCandidates(
+            FamilyInstance familyInstance,
+            XYZ samplePoint,
+            List<SpotElevationReferenceCandidate> candidates)
+        {
+            if (familyInstance == null || candidates == null)
+            {
                 return;
             }
 
             try
             {
-                var origin = target.Point;
-                var bend = new XYZ(origin.X + 1.5, origin.Y + 1.0, origin.Z);
-                var end = new XYZ(origin.X + 3.0, origin.Y + 1.0, origin.Z);
-                var refPoint = origin;
-
-                var spot = doc.Create.NewSpotElevation(view, target.Reference, origin, bend, end, refPoint, true);
-                if (spot != null)
+                var refs = familyInstance.GetReferences(FamilyInstanceReferenceType.StrongReference);
+                if (refs == null)
                 {
-                    var overrides = new OverrideGraphicSettings();
-                    overrides.SetProjectionLineColor(annotationColor);
-                    overrides.SetProjectionLineWeight(3);
-                    view.SetElementOverrides(spot.Id, overrides);
+                    return;
                 }
+
+                foreach (var r in refs)
+                {
+                    if (r != null)
+                    {
+                        candidates.Add(new SpotElevationReferenceCandidate(r, samplePoint, 0.1));
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore unsupported reference extraction.
+            }
+        }
+
+        private static Autodesk.Revit.DB.Color GetAnnotationColorByStatus(ToleranceStatus status)
+        {
+            return status switch
+            {
+                ToleranceStatus.Blue => new Autodesk.Revit.DB.Color(34, 197, 94),   // Verified
+                ToleranceStatus.Yellow => new Autodesk.Revit.DB.Color(249, 115, 22), // Deviation
+                ToleranceStatus.Red => new Autodesk.Revit.DB.Color(239, 68, 68),     // Critical
+                _ => new Autodesk.Revit.DB.Color(59, 130, 246)                        // Model/default
+            };
+        }
+
+        private bool TryGetDeviationTagSymbols(
+            Document doc,
+            RevitSuite.Host.Config.QaqcConfig config,
+            out FamilySymbol horizontalTagSymbol,
+            out FamilySymbol elevationTagSymbol)
+        {
+            horizontalTagSymbol = null;
+            elevationTagSymbol = null;
+
+            var symbols = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>()
+                .Where(s => s.FamilyName != null &&
+                            s.FamilyName.Equals(config.DeviationTagFamilyName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            horizontalTagSymbol = symbols.FirstOrDefault(s => s.Name.Equals(config.DeviationTagHorizontalTypeName, StringComparison.OrdinalIgnoreCase));
+            elevationTagSymbol = symbols.FirstOrDefault(s => s.Name.Equals(config.DeviationTagElevationTypeName, StringComparison.OrdinalIgnoreCase));
+
+            return horizontalTagSymbol != null || elevationTagSymbol != null;
+        }
+
+        private void DeleteExistingDeviationTags(Document doc, Autodesk.Revit.DB.View view, RevitSuite.Host.Config.QaqcConfig config, string correlationId)
+        {
+            try
+            {
+                var existingTags = new FilteredElementCollector(doc, view.Id)
+                    .OfClass(typeof(IndependentTag))
+                    .Cast<IndependentTag>()
+                    .Where(t => IsDeviationTagFamily(t, config))
+                    .Select(t => t.Id)
+                    .ToList();
+
+                if (existingTags.Count == 0)
+                {
+                    return;
+                }
+
+                doc.Delete(existingTags);
+                LogManager.Info(correlationId, $"Deleted {existingTags.Count} existing deviation tags in current view.");
             }
             catch (Exception ex)
             {
-                LogManager.Warn(correlationId, $"Spot elevation annotation failed for Point {deviation.PointNumber}: {ex.Message}");
+                LogManager.Warn(correlationId, $"Failed to delete existing deviation tags: {ex.Message}");
             }
         }
 
-        private class SpotElevationTarget
+        private bool IsDeviationTagFamily(IndependentTag tag, RevitSuite.Host.Config.QaqcConfig config)
         {
-            public Reference Reference { get; set; }
-            public XYZ Point { get; set; }
-        }
-
-        private bool TryGetPointElevationForAnnotation(Document doc, DeviationResult deviation, out double elevation)
-        {
-            elevation = 0.0;
-
-            Element pointElement = null;
-            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
-            {
-                pointElement = doc.GetElement(deviation.FieldElementId);
-            }
-
-            if (pointElement == null)
-            {
-                pointElement = doc.GetElement(deviation.ElementId);
-            }
-
-            if (pointElement == null)
+            if (tag == null)
             {
                 return false;
             }
 
-            var value = GetParameterValueDouble(pointElement, CsElevationGuid);
-            if (value.HasValue)
-            {
-                elevation = value.Value;
-                return true;
-            }
-
-            return false;
+            var tagType = tag.Document.GetElement(tag.GetTypeId()) as FamilySymbol;
+            return tagType?.FamilyName != null &&
+                   tagType.FamilyName.Equals(config.DeviationTagFamilyName, StringComparison.OrdinalIgnoreCase);
         }
 
-        private SpotElevationTarget GetSpotElevationTarget(Element element, XYZ fallbackPoint)
+        private Element ResolveTagTargetElement(Document doc, DeviationResult deviation)
         {
+            if (deviation.FieldElementId != null && deviation.FieldElementId != ElementId.InvalidElementId)
+            {
+                var fieldElement = doc.GetElement(deviation.FieldElementId);
+                if (fieldElement != null)
+                {
+                    return fieldElement;
+                }
+            }
+
+            return doc.GetElement(deviation.ElementId);
+        }
+
+        private bool TryGetTagHeadBasePoint(Element element, XYZ fallbackPoint, out XYZ basePoint)
+        {
+            basePoint = fallbackPoint;
+            if (element?.Location is LocationPoint locationPoint)
+            {
+                basePoint = locationPoint.Point;
+            }
+
+            return basePoint != null;
+        }
+
+        private bool TryCreateDeviationTag(
+            Document doc,
+            Autodesk.Revit.DB.View view,
+            Element targetElement,
+            FamilySymbol tagSymbol,
+            XYZ tagHeadPoint,
+            Autodesk.Revit.DB.Color annotationColor,
+            bool hasLeader,
+            string correlationId,
+            out ElementId tagId)
+        {
+            tagId = ElementId.InvalidElementId;
+            Reference reference;
             try
             {
-                var directReference = new Reference(element);
-                if (directReference != null)
-                {
-                    return new SpotElevationTarget
-                    {
-                        Reference = directReference,
-                        Point = fallbackPoint
-                    };
-                }
+                reference = new Reference(targetElement);
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall back to geometry-based references.
+                LogManager.Warn(correlationId, $"Failed to get tag reference for element {targetElement?.Id}: {ex.Message}");
+                return false;
+            }
+
+            IndependentTag tag;
+            try
+            {
+                tag = IndependentTag.Create(
+                    doc,
+                    view.Id,
+                    reference,
+                    hasLeader,
+                    TagMode.TM_ADDBY_CATEGORY,
+                    TagOrientation.Horizontal,
+                    tagHeadPoint);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Failed to create deviation tag on element {targetElement?.Id}: {ex.Message}");
+                return false;
+            }
+
+            if (tag == null)
+            {
+                return false;
+            }
+            tagId = tag.Id;
+
+            try
+            {
+                if (tag.GetTypeId() != tagSymbol.Id)
+                {
+                    tag.ChangeTypeId(tagSymbol.Id);
+                }
+
+                // Force final head position so UI offsets are honored after type change.
+                tag.TagHeadPosition = tagHeadPoint;
+            }
+            catch (Exception ex)
+            {
+                LogManager.Warn(correlationId, $"Failed to set tag type '{tagSymbol.Name}' for tag {tag.Id}: {ex.Message}");
             }
 
             try
             {
-                var options = new Options
-                {
-                    ComputeReferences = true,
-                    IncludeNonVisibleObjects = true,
-                    DetailLevel = ViewDetailLevel.Fine
-                };
-
-                var geometry = element.get_Geometry(options);
-                if (geometry == null)
-                {
-                    return null;
-                }
-
-                var topFaceTarget = FindBestHorizontalFaceTarget(geometry);
-                if (topFaceTarget != null)
-                {
-                    return topFaceTarget;
-                }
-
-                var genericFaceTarget = FindFirstGeometryFaceTarget(geometry);
-                if (genericFaceTarget != null)
-                {
-                    return genericFaceTarget;
-                }
+                var annotationOverrides = new OverrideGraphicSettings();
+                annotationOverrides.SetProjectionLineColor(annotationColor);
+                annotationOverrides.SetProjectionLineWeight(3);
+                view.SetElementOverrides(tag.Id, annotationOverrides);
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall through.
+                LogManager.Warn(correlationId, $"Failed to apply color override to tag {tag.Id}: {ex.Message}");
             }
 
-            return null;
-        }
-
-        private SpotElevationTarget FindBestHorizontalFaceTarget(GeometryElement geometry)
-        {
-            foreach (var obj in geometry)
-            {
-                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
-                {
-                    PlanarFace bestFace = null;
-                    XYZ bestPoint = null;
-
-                    foreach (Face face in solid.Faces)
-                    {
-                        if (face is PlanarFace planarFace &&
-                            planarFace.Reference != null &&
-                            Math.Abs(planarFace.FaceNormal.Z) > 0.9)
-                        {
-                            var point = EvaluateFaceMidpoint(planarFace);
-                            if (point == null)
-                            {
-                                continue;
-                            }
-
-                            if (bestFace == null || point.Z > bestPoint.Z)
-                            {
-                                bestFace = planarFace;
-                                bestPoint = point;
-                            }
-                        }
-                    }
-
-                    if (bestFace != null && bestPoint != null)
-                    {
-                        return new SpotElevationTarget
-                        {
-                            Reference = bestFace.Reference,
-                            Point = bestPoint
-                        };
-                    }
-                }
-
-                if (obj is GeometryInstance instance)
-                {
-                    var nested = instance.GetInstanceGeometry();
-                    var nestedTarget = FindBestHorizontalFaceTarget(nested);
-                    if (nestedTarget != null)
-                    {
-                        return nestedTarget;
-                    }
-
-                    var symbolGeometry = instance.GetSymbolGeometry();
-                    var symbolTarget = FindBestHorizontalFaceTarget(symbolGeometry);
-                    if (symbolTarget != null)
-                    {
-                        return symbolTarget;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        private SpotElevationTarget FindFirstGeometryFaceTarget(GeometryElement geometry)
-        {
-            foreach (var obj in geometry)
-            {
-                if (obj is Solid solid && solid.Faces != null && solid.Faces.Size > 0)
-                {
-                    foreach (Face face in solid.Faces)
-                    {
-                        if (face?.Reference == null)
-                        {
-                            continue;
-                        }
-
-                        var point = EvaluateFaceMidpoint(face);
-                        if (point == null)
-                        {
-                            continue;
-                        }
-
-                        return new SpotElevationTarget
-                        {
-                            Reference = face.Reference,
-                            Point = point
-                        };
-                    }
-                }
-
-                if (obj is GeometryInstance instance)
-                {
-                    var nested = instance.GetInstanceGeometry();
-                    var nestedTarget = FindFirstGeometryFaceTarget(nested);
-                    if (nestedTarget != null)
-                    {
-                        return nestedTarget;
-                    }
-
-                    var symbolGeometry = instance.GetSymbolGeometry();
-                    var symbolTarget = FindFirstGeometryFaceTarget(symbolGeometry);
-                    if (symbolTarget != null)
-                    {
-                        return symbolTarget;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        private XYZ EvaluateFaceMidpoint(Face face)
-        {
-            var bounds = face.GetBoundingBox();
-            if (bounds == null)
-            {
-                return null;
-            }
-
-            var midU = (bounds.Min.U + bounds.Max.U) * 0.5;
-            var midV = (bounds.Min.V + bounds.Max.V) * 0.5;
-            return face.Evaluate(new UV(midU, midV));
-        }
-
-        private string FormatHorizontalFeetInches(double feet)
-        {
-            return FormatFeetInches(feet, HorizontalAnnotationFractionDenominator);
-        }
-
-        private string FormatElevationFeetInches(double feet)
-        {
-            return FormatFeetInches(feet, ElevationAnnotationFractionDenominator);
-        }
-
-        private string FormatFeetInches(double feet, int fractionDenominator)
-        {
-            // Convert feet to feet and inches
-            int wholeFeet = (int)Math.Floor(feet);
-            double remainingInches = (feet - wholeFeet) * 12.0;
-
-            var denominator = fractionDenominator > 0 ? fractionDenominator : 8;
-
-            // Round to nearest configured fraction of an inch.
-            double fractionUnits = Math.Round(remainingInches * denominator);
-            int wholeInches = (int)(fractionUnits / denominator);
-            int fractionalUnits = (int)(fractionUnits % denominator);
-
-            // Build string
-            if (wholeFeet == 0 && wholeInches == 0 && fractionalUnits == 0)
-                return "0\"";
-
-            var result = "";
-            if (wholeFeet > 0)
-                result += $"{wholeFeet}'-";
-
-            if (wholeInches > 0 || wholeFeet > 0)
-                result += $"{wholeInches}";
-
-            // Add fraction if needed
-            if (fractionalUnits > 0)
-            {
-                // Simplify fraction
-                var (num, den) = SimplifyFraction(fractionalUnits, denominator);
-                result += $" {num}/{den}";
-            }
-
-            result += "\"";
-
-            return result.Replace("'-0\"", "'"); // Clean up cases like "1'-0"" to "1'"
-        }
-
-        private (int numerator, int denominator) SimplifyFraction(int num, int den)
-        {
-            // Simplify fraction (e.g., 4/8 -> 1/2)
-            int gcd = GCD(num, den);
-            return (num / gcd, den / gcd);
-        }
-
-        private int GCD(int a, int b)
-        {
-            while (b != 0)
-            {
-                int temp = b;
-                b = a % b;
-                a = temp;
-            }
-            return a;
+            return true;
         }
 
         #region Nested Classes
@@ -714,6 +710,12 @@ namespace RevitSuite.Host.Commands
             Place,
             Export,
             ImportAndAnalyze
+        }
+
+        private enum PairingMode
+        {
+            PointNumber,
+            Proximity
         }
 
         private enum ToleranceStatus
@@ -736,6 +738,7 @@ namespace RevitSuite.Host.Commands
         {
             public string PointNumber { get; set; }
             public string Description { get; set; }
+            public string Comment { get; set; }
             public double ModelEasting { get; set; }
             public double ModelNorthing { get; set; }
             public double ModelElevation { get; set; }
@@ -752,6 +755,7 @@ namespace RevitSuite.Host.Commands
             public ElementId ElementId { get; set; }
             public ElementId FieldElementId { get; set; }
             public string UniqueId { get; set; }
+            public string SourceComment { get; set; }
             public double DeviationEasting { get; set; }
             public double DeviationNorthing { get; set; }
             public double DeviationElevation { get; set; }
@@ -759,6 +763,29 @@ namespace RevitSuite.Host.Commands
             public double TotalDeviation { get; set; }
             public ToleranceStatus Status { get; set; }
             public XYZ ModelPoint { get; set; }
+        }
+
+        private class ProximityModelCandidate
+        {
+            public FamilyInstance Element { get; set; }
+            public string PointNumber { get; set; }
+            public double Easting { get; set; }
+            public double Northing { get; set; }
+            public double Elevation { get; set; }
+        }
+
+        private class SpotElevationReferenceCandidate
+        {
+            public SpotElevationReferenceCandidate(Reference reference, XYZ referencePoint, double distance)
+            {
+                Reference = reference;
+                ReferencePoint = referencePoint;
+                Distance = distance;
+            }
+
+            public Reference Reference { get; }
+            public XYZ ReferencePoint { get; }
+            public double Distance { get; }
         }
 
         private enum SogSelectionMode
@@ -863,10 +890,10 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.RadioButton placeRadioButton;
             private System.Windows.Forms.NumericUpDown pourNumericUpDown;
             private System.Windows.Forms.Label pourLabel;
-            private System.Windows.Forms.NumericUpDown horizontalVerifiedThresholdNumericUpDown;
-            private System.Windows.Forms.NumericUpDown horizontalCriticalThresholdNumericUpDown;
-            private System.Windows.Forms.NumericUpDown elevationVerifiedThresholdNumericUpDown;
-            private System.Windows.Forms.NumericUpDown elevationCriticalThresholdNumericUpDown;
+            private System.Windows.Forms.TextBox horizontalVerifiedThresholdTextBox;
+            private System.Windows.Forms.TextBox horizontalCriticalThresholdTextBox;
+            private System.Windows.Forms.TextBox elevationVerifiedThresholdTextBox;
+            private System.Windows.Forms.TextBox elevationCriticalThresholdTextBox;
             private System.Windows.Forms.Label horizontalVerifiedThresholdLabel;
             private System.Windows.Forms.Label horizontalCriticalThresholdLabel;
             private System.Windows.Forms.Label elevationVerifiedThresholdLabel;
@@ -877,16 +904,35 @@ namespace RevitSuite.Host.Commands
             private System.Windows.Forms.ComboBox thresholdScopeComboBox;
             private System.Windows.Forms.Label thresholdScopeLabel;
             private System.Windows.Forms.GroupBox thresholdGroupBox;
+            private System.Windows.Forms.Label tagPlacementLabel;
+            private System.Windows.Forms.Label tagOffsetEastLabel;
+            private System.Windows.Forms.NumericUpDown tagOffsetEastNumericUpDown;
+            private System.Windows.Forms.Label tagOffsetNorthLabel;
+            private System.Windows.Forms.NumericUpDown tagOffsetNorthNumericUpDown;
+            private System.Windows.Forms.Label pairingModeLabel;
+            private System.Windows.Forms.ComboBox pairingModeComboBox;
+            private System.Windows.Forms.Label proximityMaxDistLabel;
+            private System.Windows.Forms.NumericUpDown proximityMaxDistNumericUpDown;
+            private double _selectedHorizontalVerifiedThreshold = InchesToFeet(0.125);
+            private double _selectedHorizontalCriticalThreshold = InchesToFeet(0.625);
+            private double _selectedElevationVerifiedThreshold = InchesToFeet(0.125);
+            private double _selectedElevationCriticalThreshold = InchesToFeet(0.625);
 
             public string SelectedCategory => categoryComboBox.SelectedItem?.ToString() ?? "Footings";
             public int SelectedPourNumber => (int)(pourNumericUpDown?.Value ?? 1);
-            public double SelectedHorizontalVerifiedThreshold => (double)(horizontalVerifiedThresholdNumericUpDown?.Value ?? 0.01m);
-            public double SelectedHorizontalCriticalThreshold => (double)(horizontalCriticalThresholdNumericUpDown?.Value ?? 0.05m);
-            public double SelectedElevationVerifiedThreshold => (double)(elevationVerifiedThresholdNumericUpDown?.Value ?? 0.01m);
-            public double SelectedElevationCriticalThreshold => (double)(elevationCriticalThresholdNumericUpDown?.Value ?? 0.05m);
+            public double SelectedHorizontalVerifiedThreshold => _selectedHorizontalVerifiedThreshold;
+            public double SelectedHorizontalCriticalThreshold => _selectedHorizontalCriticalThreshold;
+            public double SelectedElevationVerifiedThreshold => _selectedElevationVerifiedThreshold;
+            public double SelectedElevationCriticalThreshold => _selectedElevationCriticalThreshold;
             public bool SelectedUseHorizontalThreshold => useHorizontalThresholdCheckBox?.Checked ?? true;
             public bool SelectedUseElevationThreshold => useElevationThresholdCheckBox?.Checked ?? true;
             public bool SelectedUseSelectedPointThresholds => thresholdScopeComboBox?.SelectedIndex == 1;
+            public double SelectedTagOffsetEast => (double)(tagOffsetEastNumericUpDown?.Value ?? 3.0m);
+            public double SelectedTagOffsetNorth => (double)(tagOffsetNorthNumericUpDown?.Value ?? 3.0m);
+            public PairingMode SelectedPairingMode => (pairingModeComboBox?.SelectedIndex ?? 0) == 1
+                ? PairingMode.Proximity
+                : PairingMode.PointNumber;
+            public double SelectedProximityMaxDistanceFt => (double)(proximityMaxDistNumericUpDown?.Value ?? 1.0m);
             public QaqcMode SelectedMode
             {
                 get
@@ -913,7 +959,7 @@ namespace RevitSuite.Host.Commands
             private void InitializeComponent()
             {
                 Text = "QAQC - Control Point Verification";
-                Size = new System.Drawing.Size(600, 660);
+                Size = new System.Drawing.Size(620, 710);
                 StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
                 FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
                 MaximizeBox = false;
@@ -941,7 +987,7 @@ namespace RevitSuite.Host.Commands
                 var generalGroupBox = new System.Windows.Forms.GroupBox
                 {
                     Text = "General",
-                    Location = new System.Drawing.Point(16, 64),
+                    Location = new System.Drawing.Point(16, 190),
                     Size = new System.Drawing.Size(550, 92)
                 };
                 Controls.Add(generalGroupBox);
@@ -991,14 +1037,14 @@ namespace RevitSuite.Host.Commands
                 var modeGroupBox = new System.Windows.Forms.GroupBox
                 {
                     Text = "Mode",
-                    Location = new System.Drawing.Point(16, 164),
+                    Location = new System.Drawing.Point(16, 64),
                     Size = new System.Drawing.Size(550, 118)
                 };
                 Controls.Add(modeGroupBox);
 
                 placeRadioButton = new System.Windows.Forms.RadioButton
                 {
-                    Text = "Place Control Points",
+                    Text = "Place Model Control Points",
                     Location = new System.Drawing.Point(18, 28),
                     Size = new System.Drawing.Size(220, 25),
                     Checked = true,
@@ -1008,16 +1054,16 @@ namespace RevitSuite.Host.Commands
 
                 exportRadioButton = new System.Windows.Forms.RadioButton
                 {
-                    Text = "Export Model Points",
+                    Text = "Export Model Points (CSV Template)",
                     Location = new System.Drawing.Point(18, 55),
-                    Size = new System.Drawing.Size(220, 25),
+                    Size = new System.Drawing.Size(340, 25),
                     Tag = QaqcMode.Export
                 };
                 modeGroupBox.Controls.Add(exportRadioButton);
 
                 importRadioButton = new System.Windows.Forms.RadioButton
                 {
-                    Text = "Import && Analyze Field Data",
+                    Text = "Place && Analyze As-built Points",
                     Location = new System.Drawing.Point(18, 82),
                     Size = new System.Drawing.Size(240, 25),
                     Tag = QaqcMode.ImportAndAnalyze
@@ -1026,9 +1072,9 @@ namespace RevitSuite.Host.Commands
 
                 thresholdGroupBox = new System.Windows.Forms.GroupBox
                 {
-                    Text = "Thresholds (Import Mode)",
+                    Text = "Thresholds for Deviation Calculation && Tag Placement",
                     Location = new System.Drawing.Point(16, 290),
-                    Size = new System.Drawing.Size(550, 270),
+                    Size = new System.Drawing.Size(550, 305),
                     Visible = false
                 };
                 Controls.Add(thresholdGroupBox);
@@ -1053,6 +1099,26 @@ namespace RevitSuite.Host.Commands
                 thresholdScopeComboBox.SelectedIndex = 0;
                 thresholdGroupBox.Controls.Add(thresholdScopeComboBox);
 
+                pairingModeLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Pairing:",
+                    Location = new System.Drawing.Point(330, 30),
+                    Size = new System.Drawing.Size(62, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(pairingModeLabel);
+
+                pairingModeComboBox = new System.Windows.Forms.ComboBox
+                {
+                    Location = new System.Drawing.Point(394, 28),
+                    Size = new System.Drawing.Size(124, 25),
+                    DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList,
+                    Visible = false
+                };
+                pairingModeComboBox.Items.AddRange(new object[] { "Point Number", "Proximity" });
+                pairingModeComboBox.SelectedIndex = 0;
+                thresholdGroupBox.Controls.Add(pairingModeComboBox);
+
                 useHorizontalThresholdCheckBox = new System.Windows.Forms.CheckBox
                 {
                     Text = "Check horizontal (N/E)",
@@ -1065,47 +1131,39 @@ namespace RevitSuite.Host.Commands
 
                 horizontalVerifiedThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "N/E Verified <= (ft):",
+                    Text = "N/E Verified <= (in):",
                     Location = new System.Drawing.Point(32, 88),
                     Size = new System.Drawing.Size(130, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdLabel);
 
-                horizontalVerifiedThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                horizontalVerifiedThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(170, 86),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.010m,
+                    Text = "1/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(horizontalVerifiedThresholdTextBox);
 
                 horizontalCriticalThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "N/E Critical > (ft):",
+                    Text = "N/E Critical > (in):",
                     Location = new System.Drawing.Point(292, 88),
                     Size = new System.Drawing.Size(120, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(horizontalCriticalThresholdLabel);
 
-                horizontalCriticalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                horizontalCriticalThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(418, 86),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.050m,
+                    Text = "5/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(horizontalCriticalThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(horizontalCriticalThresholdTextBox);
 
                 useElevationThresholdCheckBox = new System.Windows.Forms.CheckBox
                 {
@@ -1119,62 +1177,130 @@ namespace RevitSuite.Host.Commands
 
                 elevationVerifiedThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Elev Verified <= (ft):",
+                    Text = "Elev Verified <= (in):",
                     Location = new System.Drawing.Point(32, 152),
                     Size = new System.Drawing.Size(130, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(elevationVerifiedThresholdLabel);
 
-                elevationVerifiedThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                elevationVerifiedThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(170, 150),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.010m,
+                    Text = "1/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(elevationVerifiedThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(elevationVerifiedThresholdTextBox);
 
                 elevationCriticalThresholdLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Elev Critical > (ft):",
+                    Text = "Elev Critical > (in):",
                     Location = new System.Drawing.Point(292, 152),
                     Size = new System.Drawing.Size(120, 20),
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(elevationCriticalThresholdLabel);
 
-                elevationCriticalThresholdNumericUpDown = new System.Windows.Forms.NumericUpDown
+                elevationCriticalThresholdTextBox = new System.Windows.Forms.TextBox
                 {
                     Location = new System.Drawing.Point(418, 150),
                     Size = new System.Drawing.Size(100, 25),
-                    DecimalPlaces = 3,
-                    Increment = 0.005m,
-                    Minimum = 0.001m,
-                    Maximum = 10m,
-                    Value = 0.050m,
+                    Text = "5/8",
                     Visible = false
                 };
-                thresholdGroupBox.Controls.Add(elevationCriticalThresholdNumericUpDown);
+                thresholdGroupBox.Controls.Add(elevationCriticalThresholdTextBox);
 
                 thresholdHelpLabel = new System.Windows.Forms.Label
                 {
-                    Text = "Per enabled check: <= Verified => Verified (Green), > Critical => Critical (Red), otherwise Deviation (Orange).",
+                    Text = "Threshold units are inches. Use decimal or fraction (for example: 0.125 or 1/8)." + Environment.NewLine +
+                           "<= Verified => Verified (Green), > Critical => Critical (Red), else Deviation (Orange).",
                     Location = new System.Drawing.Point(14, 194),
-                    Size = new System.Drawing.Size(510, 36),
+                    Size = new System.Drawing.Size(522, 40),
                     ForeColor = System.Drawing.Color.DimGray,
                     Visible = false
                 };
                 thresholdGroupBox.Controls.Add(thresholdHelpLabel);
 
+                tagPlacementLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Tag Placement (ft):",
+                    Location = new System.Drawing.Point(14, 232),
+                    Size = new System.Drawing.Size(160, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagPlacementLabel);
+
+                tagOffsetEastLabel = new System.Windows.Forms.Label
+                {
+                    Text = "East:",
+                    Location = new System.Drawing.Point(32, 254),
+                    Size = new System.Drawing.Size(40, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetEastLabel);
+
+                tagOffsetEastNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(72, 252),
+                    Size = new System.Drawing.Size(84, 25),
+                    DecimalPlaces = 2,
+                    Increment = 0.10m,
+                    Minimum = -50m,
+                    Maximum = 50m,
+                    Value = 3.00m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetEastNumericUpDown);
+
+                tagOffsetNorthLabel = new System.Windows.Forms.Label
+                {
+                    Text = "North:",
+                    Location = new System.Drawing.Point(174, 254),
+                    Size = new System.Drawing.Size(50, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetNorthLabel);
+
+                tagOffsetNorthNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(224, 252),
+                    Size = new System.Drawing.Size(84, 25),
+                    DecimalPlaces = 2,
+                    Increment = 0.10m,
+                    Minimum = -50m,
+                    Maximum = 50m,
+                    Value = 3.00m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(tagOffsetNorthNumericUpDown);
+
+                proximityMaxDistLabel = new System.Windows.Forms.Label
+                {
+                    Text = "Max Match Dist (ft):",
+                    Location = new System.Drawing.Point(14, 283),
+                    Size = new System.Drawing.Size(130, 20),
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(proximityMaxDistLabel);
+
+                proximityMaxDistNumericUpDown = new System.Windows.Forms.NumericUpDown
+                {
+                    Location = new System.Drawing.Point(148, 281),
+                    Size = new System.Drawing.Size(84, 25),
+                    DecimalPlaces = 2,
+                    Increment = 0.25m,
+                    Minimum = 0.10m,
+                    Maximum = 100m,
+                    Value = 1.00m,
+                    Visible = false
+                };
+                thresholdGroupBox.Controls.Add(proximityMaxDistNumericUpDown);
+
                 okButton = new System.Windows.Forms.Button
                 {
                     Text = "OK",
-                    Location = new System.Drawing.Point(396, 578),
+                    Location = new System.Drawing.Point(396, 624),
                     Size = new System.Drawing.Size(80, 32),
                     DialogResult = System.Windows.Forms.DialogResult.OK
                 };
@@ -1183,7 +1309,7 @@ namespace RevitSuite.Host.Commands
                 cancelButton = new System.Windows.Forms.Button
                 {
                     Text = "Cancel",
-                    Location = new System.Drawing.Point(486, 578),
+                    Location = new System.Drawing.Point(486, 624),
                     Size = new System.Drawing.Size(80, 32),
                     DialogResult = System.Windows.Forms.DialogResult.Cancel
                 };
@@ -1199,8 +1325,61 @@ namespace RevitSuite.Host.Commands
                 importRadioButton.CheckedChanged += (sender, args) => UpdateThresholdVisibility();
                 useHorizontalThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
                 useElevationThresholdCheckBox.CheckedChanged += (sender, args) => UpdateThresholdEnableState();
+                pairingModeComboBox.SelectedIndexChanged += (sender, args) => UpdateThresholdVisibility();
                 okButton.Click += (sender, args) =>
                 {
+                    if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(horizontalVerifiedThresholdTextBox.Text, out _selectedHorizontalVerifiedThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid N/E Verified threshold. Enter inches (decimal or fraction, for example: 0.125 or 1/8).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(horizontalVerifiedThresholdTextBox.Text, out _selectedHorizontalVerifiedThreshold);
+                    }
+                    _selectedHorizontalVerifiedThreshold = InchesToFeet(_selectedHorizontalVerifiedThreshold);
+
+                    if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(horizontalCriticalThresholdTextBox.Text, out _selectedHorizontalCriticalThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid N/E Critical threshold. Enter inches (decimal or fraction, for example: 0.250 or 1/4).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(horizontalCriticalThresholdTextBox.Text, out _selectedHorizontalCriticalThreshold);
+                    }
+                    _selectedHorizontalCriticalThreshold = InchesToFeet(_selectedHorizontalCriticalThreshold);
+
+                    if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(elevationVerifiedThresholdTextBox.Text, out _selectedElevationVerifiedThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid Elev Verified threshold. Enter inches (decimal or fraction, for example: 0.125 or 1/8).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(elevationVerifiedThresholdTextBox.Text, out _selectedElevationVerifiedThreshold);
+                    }
+                    _selectedElevationVerifiedThreshold = InchesToFeet(_selectedElevationVerifiedThreshold);
+
+                    if (importRadioButton.Checked &&
+                        !TryParseThresholdInput(elevationCriticalThresholdTextBox.Text, out _selectedElevationCriticalThreshold))
+                    {
+                        TaskDialog.Show("RevitSuite", "Invalid Elev Critical threshold. Enter inches (decimal or fraction, for example: 0.250 or 1/4).");
+                        this.DialogResult = System.Windows.Forms.DialogResult.None;
+                        return;
+                    }
+                    else if (!importRadioButton.Checked)
+                    {
+                        TryParseThresholdInput(elevationCriticalThresholdTextBox.Text, out _selectedElevationCriticalThreshold);
+                    }
+                    _selectedElevationCriticalThreshold = InchesToFeet(_selectedElevationCriticalThreshold);
+
                     if (importRadioButton.Checked &&
                         !useHorizontalThresholdCheckBox.Checked &&
                         !useElevationThresholdCheckBox.Checked)
@@ -1258,17 +1437,27 @@ namespace RevitSuite.Host.Commands
                 }
                 thresholdScopeLabel.Visible = showThresholds;
                 thresholdScopeComboBox.Visible = showThresholds;
+                pairingModeLabel.Visible = showThresholds;
+                pairingModeComboBox.Visible = showThresholds;
                 useHorizontalThresholdCheckBox.Visible = showThresholds;
                 useElevationThresholdCheckBox.Visible = showThresholds;
                 horizontalVerifiedThresholdLabel.Visible = showThresholds;
-                horizontalVerifiedThresholdNumericUpDown.Visible = showThresholds;
+                horizontalVerifiedThresholdTextBox.Visible = showThresholds;
                 horizontalCriticalThresholdLabel.Visible = showThresholds;
-                horizontalCriticalThresholdNumericUpDown.Visible = showThresholds;
+                horizontalCriticalThresholdTextBox.Visible = showThresholds;
                 elevationVerifiedThresholdLabel.Visible = showThresholds;
-                elevationVerifiedThresholdNumericUpDown.Visible = showThresholds;
+                elevationVerifiedThresholdTextBox.Visible = showThresholds;
                 elevationCriticalThresholdLabel.Visible = showThresholds;
-                elevationCriticalThresholdNumericUpDown.Visible = showThresholds;
+                elevationCriticalThresholdTextBox.Visible = showThresholds;
                 thresholdHelpLabel.Visible = showThresholds;
+                tagPlacementLabel.Visible = showThresholds;
+                tagOffsetEastLabel.Visible = showThresholds;
+                tagOffsetEastNumericUpDown.Visible = showThresholds;
+                tagOffsetNorthLabel.Visible = showThresholds;
+                tagOffsetNorthNumericUpDown.Visible = showThresholds;
+                var showProximityDist = showThresholds && pairingModeComboBox?.SelectedIndex == 1;
+                proximityMaxDistLabel.Visible = showProximityDist;
+                proximityMaxDistNumericUpDown.Visible = showProximityDist;
                 UpdateThresholdEnableState();
             }
 
@@ -1277,15 +1466,15 @@ namespace RevitSuite.Host.Commands
                 if (useHorizontalThresholdCheckBox != null)
                 {
                     var enabled = useHorizontalThresholdCheckBox.Checked;
-                    if (horizontalVerifiedThresholdNumericUpDown != null) horizontalVerifiedThresholdNumericUpDown.Enabled = enabled;
-                    if (horizontalCriticalThresholdNumericUpDown != null) horizontalCriticalThresholdNumericUpDown.Enabled = enabled;
+                    if (horizontalVerifiedThresholdTextBox != null) horizontalVerifiedThresholdTextBox.Enabled = enabled;
+                    if (horizontalCriticalThresholdTextBox != null) horizontalCriticalThresholdTextBox.Enabled = enabled;
                 }
 
                 if (useElevationThresholdCheckBox != null)
                 {
                     var enabled = useElevationThresholdCheckBox.Checked;
-                    if (elevationVerifiedThresholdNumericUpDown != null) elevationVerifiedThresholdNumericUpDown.Enabled = enabled;
-                    if (elevationCriticalThresholdNumericUpDown != null) elevationCriticalThresholdNumericUpDown.Enabled = enabled;
+                    if (elevationVerifiedThresholdTextBox != null) elevationVerifiedThresholdTextBox.Enabled = enabled;
+                    if (elevationCriticalThresholdTextBox != null) elevationCriticalThresholdTextBox.Enabled = enabled;
                 }
             }
         }
@@ -1304,18 +1493,20 @@ namespace RevitSuite.Host.Commands
 
         private class CsvColumnMapping
         {
-            public CsvColumnMapping(int pointNumberIndex, int northingIndex, int eastingIndex, int elevationIndex)
+            public CsvColumnMapping(int pointNumberIndex, int northingIndex, int eastingIndex, int elevationIndex, int commentIndex)
             {
                 PointNumberIndex = pointNumberIndex;
                 NorthingIndex = northingIndex;
                 EastingIndex = eastingIndex;
                 ElevationIndex = elevationIndex;
+                CommentIndex = commentIndex;
             }
 
             public int PointNumberIndex { get; }
             public int NorthingIndex { get; }
             public int EastingIndex { get; }
             public int ElevationIndex { get; }
+            public int CommentIndex { get; }
         }
 
         private class CsvColumnMappingForm : System.Windows.Forms.Form
@@ -1338,7 +1529,9 @@ namespace RevitSuite.Host.Commands
             private readonly System.Windows.Forms.ComboBox _northingComboBox = new System.Windows.Forms.ComboBox();
             private readonly System.Windows.Forms.ComboBox _eastingComboBox = new System.Windows.Forms.ComboBox();
             private readonly System.Windows.Forms.ComboBox _elevationComboBox = new System.Windows.Forms.ComboBox();
+            private readonly System.Windows.Forms.ComboBox _commentComboBox = new System.Windows.Forms.ComboBox();
             private readonly bool _requireElevation;
+            private readonly bool _requirePointNumber;
 
             public CsvColumnMapping SelectedMapping { get; private set; }
 
@@ -1346,12 +1539,14 @@ namespace RevitSuite.Host.Commands
                 string[] headers,
                 CsvColumnMapping defaults,
                 bool requireElevation,
+                bool requirePointNumber,
                 string title)
             {
                 _requireElevation = requireElevation;
+                _requirePointNumber = requirePointNumber;
 
                 Text = string.IsNullOrWhiteSpace(title) ? "Map CSV Columns" : title;
-                Size = new System.Drawing.Size(560, 310);
+                Size = new System.Drawing.Size(560, 350);
                 StartPosition = FormStartPosition.CenterParent;
                 FormBorderStyle = FormBorderStyle.FixedDialog;
                 MaximizeBox = false;
@@ -1359,9 +1554,13 @@ namespace RevitSuite.Host.Commands
 
                 var helpLabel = new Label
                 {
-                    Text = requireElevation
-                        ? "Required: Point Number, Northing, Easting, Elevation."
-                        : "Required: Point Number, Northing, Easting. For N/E-only checks, set Elevation to <Not Used>.",
+                    Text = requirePointNumber
+                        ? (requireElevation
+                            ? "Required: Point Number, Northing, Easting, Elevation."
+                            : "Required: Point Number, Northing, Easting. For N/E-only checks, set Elevation to <Not Used>.")
+                        : (requireElevation
+                            ? "Required: Northing, Easting, Elevation. Point Number can be <Not Used>."
+                            : "Required: Northing, Easting. Point Number can be <Not Used>. Elevation can be <Not Used> for N/E-only checks."),
                     Location = new System.Drawing.Point(16, 14),
                     Size = new System.Drawing.Size(520, 20)
                 };
@@ -1371,21 +1570,24 @@ namespace RevitSuite.Host.Commands
                 AddMappingRow("Northing:", _northingComboBox, 90);
                 AddMappingRow("Easting:", _eastingComboBox, 130);
                 AddMappingRow("Elevation:", _elevationComboBox, 170);
+                AddMappingRow("Comment:", _commentComboBox, 210);
 
-                PopulateHeaderOptions(_pointNumberComboBox, headers, allowNone: false);
+                PopulateHeaderOptions(_pointNumberComboBox, headers, allowNone: !requirePointNumber);
                 PopulateHeaderOptions(_northingComboBox, headers, allowNone: false);
                 PopulateHeaderOptions(_eastingComboBox, headers, allowNone: false);
                 PopulateHeaderOptions(_elevationComboBox, headers, allowNone: !requireElevation);
+                PopulateHeaderOptions(_commentComboBox, headers, allowNone: true);
 
-                SetSelectedIndex(_pointNumberComboBox, defaults?.PointNumberIndex ?? -1);
+                SetSelectedIndex(_pointNumberComboBox, requirePointNumber ? (defaults?.PointNumberIndex ?? -1) : -1);
                 SetSelectedIndex(_northingComboBox, defaults?.NorthingIndex ?? -1);
                 SetSelectedIndex(_eastingComboBox, defaults?.EastingIndex ?? -1);
                 SetSelectedIndex(_elevationComboBox, requireElevation ? (defaults?.ElevationIndex ?? -1) : -1);
+                SetSelectedIndex(_commentComboBox, defaults?.CommentIndex ?? -1);
 
                 var okButton = new Button
                 {
                     Text = "OK",
-                    Location = new System.Drawing.Point(370, 225),
+                    Location = new System.Drawing.Point(370, 265),
                     Size = new System.Drawing.Size(75, 28)
                 };
                 okButton.Click += OnOkClick;
@@ -1394,7 +1596,7 @@ namespace RevitSuite.Host.Commands
                 var cancelButton = new Button
                 {
                     Text = "Cancel",
-                    Location = new System.Drawing.Point(455, 225),
+                    Location = new System.Drawing.Point(455, 265),
                     Size = new System.Drawing.Size(75, 28),
                     DialogResult = DialogResult.Cancel
                 };
@@ -1456,10 +1658,13 @@ namespace RevitSuite.Host.Commands
                 var northingIndex = GetSelectedColumnIndex(_northingComboBox);
                 var eastingIndex = GetSelectedColumnIndex(_eastingComboBox);
                 var elevationIndex = GetSelectedColumnIndex(_elevationComboBox);
+                var commentIndex = GetSelectedColumnIndex(_commentComboBox);
 
-                if (pointIndex < 0 || northingIndex < 0 || eastingIndex < 0)
+                if ((_requirePointNumber && pointIndex < 0) || northingIndex < 0 || eastingIndex < 0)
                 {
-                    MessageBox.Show(this, "Point Number, Northing, and Easting are required.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(this, _requirePointNumber
+                        ? "Point Number, Northing, and Easting are required."
+                        : "Northing and Easting are required.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
@@ -1469,20 +1674,28 @@ namespace RevitSuite.Host.Commands
                     return;
                 }
 
-                var usedIndices = new HashSet<int> { pointIndex, northingIndex, eastingIndex };
+                var usedIndices = new HashSet<int> { northingIndex, eastingIndex };
+                if (pointIndex >= 0)
+                {
+                    usedIndices.Add(pointIndex);
+                }
                 if (_requireElevation && elevationIndex >= 0)
                 {
                     usedIndices.Add(elevationIndex);
                 }
+                if (commentIndex >= 0)
+                {
+                    usedIndices.Add(commentIndex);
+                }
 
-                var expectedCount = _requireElevation ? 4 : 3;
+                var expectedCount = 2 + (pointIndex >= 0 ? 1 : 0) + (_requireElevation ? 1 : 0) + (commentIndex >= 0 ? 1 : 0);
                 if (usedIndices.Count != expectedCount)
                 {
                     MessageBox.Show(this, "Each mapped field must use a different CSV column.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                SelectedMapping = new CsvColumnMapping(pointIndex, northingIndex, eastingIndex, elevationIndex);
+                SelectedMapping = new CsvColumnMapping(pointIndex, northingIndex, eastingIndex, elevationIndex, commentIndex);
                 DialogResult = DialogResult.OK;
                 Close();
             }
@@ -1521,7 +1734,7 @@ namespace RevitSuite.Host.Commands
 
                 var descriptionLabel = new System.Windows.Forms.Label
                 {
-                    Text = "These selected model points match CSV Point Number values. Set thresholds per point.",
+                    Text = "These selected model points match CSV Point Number values. Set thresholds per point in inches (fraction or decimal).",
                     Location = new System.Drawing.Point(12, 12),
                     Size = new System.Drawing.Size(580, 20)
                 };
@@ -1544,13 +1757,13 @@ namespace RevitSuite.Host.Commands
                 };
                 var horizontalColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
                 {
-                    HeaderText = "N/E Threshold (ft)",
+                    HeaderText = "N/E Threshold (in)",
                     Name = "HorizontalThreshold",
                     FillWeight = 25
                 };
                 var elevationColumn = new System.Windows.Forms.DataGridViewTextBoxColumn
                 {
-                    HeaderText = "Elev Threshold (ft)",
+                    HeaderText = "Elev Threshold (in)",
                     Name = "ElevationThreshold",
                     FillWeight = 25
                 };
@@ -1559,7 +1772,7 @@ namespace RevitSuite.Host.Commands
 
                 foreach (var pointNumber in pointNumbers)
                 {
-                    _grid.Rows.Add(pointNumber, defaultHorizontalThreshold.ToString("F3", CultureInfo.InvariantCulture), defaultElevationThreshold.ToString("F3", CultureInfo.InvariantCulture));
+                    _grid.Rows.Add(pointNumber, FormatFeetAsInchFraction(defaultHorizontalThreshold), FormatFeetAsInchFraction(defaultElevationThreshold));
                 }
 
                 Controls.Add(_grid);
@@ -1594,14 +1807,14 @@ namespace RevitSuite.Host.Commands
 
                     if (!TryParsePositiveThreshold(row.Cells["HorizontalThreshold"].Value, out var horizontalThreshold))
                     {
-                        MessageBox.Show(this, $"Invalid N/E threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show(this, $"Invalid N/E threshold for point '{pointNumber}'. Enter inches (fraction or decimal).", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         DialogResult = System.Windows.Forms.DialogResult.None;
                         return;
                     }
 
                     if (!TryParsePositiveThreshold(row.Cells["ElevationThreshold"].Value, out var elevationThreshold))
                     {
-                        MessageBox.Show(this, $"Invalid Elev threshold for point '{pointNumber}'.", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show(this, $"Invalid Elev threshold for point '{pointNumber}'. Enter inches (fraction or decimal).", "RevitSuite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         DialogResult = System.Windows.Forms.DialogResult.None;
                         return;
                     }
@@ -1622,12 +1835,13 @@ namespace RevitSuite.Host.Commands
                     return false;
                 }
 
-                if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out threshold))
+                if (!TryParseThresholdInput(text, out threshold) || threshold <= 0)
                 {
                     return false;
                 }
 
-                return threshold > 0;
+                threshold = InchesToFeet(threshold);
+                return true;
             }
         }
 

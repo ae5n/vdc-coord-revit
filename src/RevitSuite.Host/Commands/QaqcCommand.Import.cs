@@ -28,7 +28,11 @@ namespace RevitSuite.Host.Commands
             double elevationCriticalThreshold,
             bool useHorizontalThreshold,
             bool useElevationThreshold,
-            bool useSelectedPointThresholds)
+            bool useSelectedPointThresholds,
+            PairingMode pairingMode,
+            double tagOffsetEast,
+            double tagOffsetNorth,
+            double proximityMaxDistanceFt)
         {
             try
             {
@@ -50,6 +54,7 @@ namespace RevitSuite.Host.Commands
                     openDialog.FileName,
                     "Map As-Built CSV Columns",
                     useElevationThreshold,
+                    pairingMode == PairingMode.PointNumber,
                     correlationId);
                 if (mapping == null)
                 {
@@ -58,7 +63,12 @@ namespace RevitSuite.Host.Commands
                 }
 
                 // Parse CSV
-                var records = ParseCsvImport(openDialog.FileName, correlationId, mapping, useElevationThreshold);
+                var records = ParseCsvImport(
+                    openDialog.FileName,
+                    correlationId,
+                    mapping,
+                    useElevationThreshold,
+                    pairingMode == PairingMode.PointNumber);
                 if (records.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No valid data found in CSV file.");
@@ -66,7 +76,7 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
-                if (!useSelectedPointThresholds)
+                if (!useSelectedPointThresholds && pairingMode == PairingMode.PointNumber)
                 {
                     var modelPointNumbers = CollectModelPointNumbers(doc, config);
                     var matchedPointNumbers = new HashSet<string>(
@@ -88,6 +98,7 @@ namespace RevitSuite.Host.Commands
                     doc,
                     config,
                     useSelectedPointThresholds,
+                    pairingMode,
                     correlationId);
                 if (useSelectedPointThresholds && selectedPointNumbers == null)
                 {
@@ -108,7 +119,9 @@ namespace RevitSuite.Host.Commands
                     elevationCriticalThreshold,
                     useHorizontalThreshold,
                     useElevationThreshold,
-                    selectedPointNumbers);
+                    pairingMode,
+                    selectedPointNumbers,
+                    proximityMaxDistanceFt);
                 if (deviations.Count == 0)
                 {
                     TaskDialog.Show("RevitSuite", "No matching Control Points found in model.");
@@ -126,13 +139,23 @@ namespace RevitSuite.Host.Commands
                         UpdateSharedParameters(doc, deviations, correlationId);
                         ApplyModelPointType(doc, deviations, config, correlationId);
                         PlaceFieldPoints(doc, deviations, config, correlationId);
+                        // Ensure newly created/updated instances have stable locations before tagging.
+                        doc.Regenerate();
                         // Keep point coloring type/material-driven. Annotation overrides are applied separately.
                         // CreateDeviationLines(doc, deviations, correlationId); // Temporarily disabled for performance
                         if (config.CreateDeviationArrows)
                         {
                             CreateDeviationIndicators(doc, deviations, config, correlationId);
                         }
-                        CreateDeviationAnnotations(doc, deviations, useHorizontalThreshold, useElevationThreshold, correlationId);
+                        CreateDeviationAnnotations(
+                            doc,
+                            deviations,
+                            config,
+                            useHorizontalThreshold,
+                            useElevationThreshold,
+                            tagOffsetEast,
+                            tagOffsetNorth,
+                            correlationId);
 
                         tx.Commit();
                     }
@@ -158,8 +181,8 @@ namespace RevitSuite.Host.Commands
                     $"  Deviation (below threshold): {deviationCount}\n" +
                     $"  Critical (above threshold): {redCount}\n\n" +
                     $"Thresholds used:\n" +
-                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"Verified <= {horizontalVerifiedThreshold:F3} ft, Critical > {horizontalCriticalThreshold:F3} ft" : "Disabled")}\n" +
-                    $"  Elevation: {(useElevationThreshold ? $"Verified <= {elevationVerifiedThreshold:F3} ft, Critical > {elevationCriticalThreshold:F3} ft" : "Disabled")}");
+                    $"  Horizontal (N/E): {(useHorizontalThreshold ? $"Verified <= {FormatFeetAsInchFraction(horizontalVerifiedThreshold)} in, Critical > {FormatFeetAsInchFraction(horizontalCriticalThreshold)} in" : "Disabled")}\n" +
+                    $"  Elevation: {(useElevationThreshold ? $"Verified <= {FormatFeetAsInchFraction(elevationVerifiedThreshold)} in, Critical > {FormatFeetAsInchFraction(elevationCriticalThreshold)} in" : "Disabled")}");
 
                 return Result.Succeeded;
             }
@@ -174,7 +197,8 @@ namespace RevitSuite.Host.Commands
             string path,
             string correlationId,
             CsvColumnMapping mapping,
-            bool requireElevationValues)
+            bool requireElevationValues,
+            bool requirePointNumberValues)
         {
             var records = new List<ControlPointRecord>();
 
@@ -199,20 +223,37 @@ namespace RevitSuite.Host.Commands
 
                     try
                     {
-                        var maxRequiredIndex = Math.Max(
-                            Math.Max(mapping.PointNumberIndex, mapping.NorthingIndex),
-                            Math.Max(mapping.EastingIndex, mapping.ElevationIndex));
+                        var requiredIndices = new List<int> { mapping.NorthingIndex, mapping.EastingIndex };
+                        if (requirePointNumberValues)
+                        {
+                            requiredIndices.Add(mapping.PointNumberIndex);
+                        }
+                        if (mapping.ElevationIndex >= 0)
+                        {
+                            requiredIndices.Add(mapping.ElevationIndex);
+                        }
+                        if (mapping.CommentIndex >= 0)
+                        {
+                            requiredIndices.Add(mapping.CommentIndex);
+                        }
+                        var maxRequiredIndex = requiredIndices.Max();
                         if (values.Length <= maxRequiredIndex)
                         {
                             LogManager.Warn(correlationId, $"CSV line {lineNumber} has insufficient columns for mapped headers - skipped.");
                             continue;
                         }
 
-                        var pointNumber = values[mapping.PointNumberIndex].Trim();
-                        if (string.IsNullOrWhiteSpace(pointNumber))
+                        var pointNumber = mapping.PointNumberIndex >= 0 && values.Length > mapping.PointNumberIndex
+                            ? values[mapping.PointNumberIndex].Trim()
+                            : string.Empty;
+                        if (requirePointNumberValues && string.IsNullOrWhiteSpace(pointNumber))
                         {
                             LogManager.Warn(correlationId, $"CSV line {lineNumber} has empty Point Number - skipped.");
                             continue;
+                        }
+                        if (string.IsNullOrWhiteSpace(pointNumber))
+                        {
+                            pointNumber = $"CSV-{lineNumber}";
                         }
 
                         if (!double.TryParse(values[mapping.EastingIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var fieldEasting) ||
@@ -241,12 +282,19 @@ namespace RevitSuite.Host.Commands
                             continue;
                         }
 
+                        string comment = null;
+                        if (mapping.CommentIndex >= 0 && values.Length > mapping.CommentIndex)
+                        {
+                            comment = values[mapping.CommentIndex].Trim();
+                        }
+
                         records.Add(new ControlPointRecord
                         {
                             PointNumber = pointNumber,
                             FieldEasting = fieldEasting,
                             FieldNorthing = fieldNorthing,
-                            FieldElevation = fieldElevation
+                            FieldElevation = fieldElevation,
+                            Comment = comment
                         });
                     }
                     catch (Exception ex)
@@ -263,6 +311,7 @@ namespace RevitSuite.Host.Commands
             string csvPath,
             string dialogTitle,
             bool requireElevation,
+            bool requirePointNumber,
             string correlationId)
         {
             var headers = ReadCsvHeaders(csvPath);
@@ -271,8 +320,8 @@ namespace RevitSuite.Host.Commands
                 throw new InvalidDataException("CSV file is missing a header row.");
             }
 
-            var defaults = BuildDefaultCsvColumnMapping(headers, requireElevation);
-            using (var form = new CsvColumnMappingForm(headers, defaults, requireElevation, dialogTitle))
+            var defaults = BuildDefaultCsvColumnMapping(headers, requireElevation, requirePointNumber);
+            using (var form = new CsvColumnMappingForm(headers, defaults, requireElevation, requirePointNumber, dialogTitle))
             {
                 if (form.ShowDialog() != DialogResult.OK)
                 {
@@ -282,7 +331,7 @@ namespace RevitSuite.Host.Commands
                 var selected = form.SelectedMapping;
                 LogManager.Info(
                     correlationId,
-                    $"CSV mapping selected. PointNumber={selected.PointNumberIndex}, Northing={selected.NorthingIndex}, Easting={selected.EastingIndex}, Elevation={selected.ElevationIndex}");
+                    $"CSV mapping selected. PointNumber={selected.PointNumberIndex}, Northing={selected.NorthingIndex}, Easting={selected.EastingIndex}, Elevation={selected.ElevationIndex}, Comment={selected.CommentIndex}");
                 return selected;
             }
         }
@@ -301,15 +350,16 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private CsvColumnMapping BuildDefaultCsvColumnMapping(string[] headers, bool requireElevation)
+        private CsvColumnMapping BuildDefaultCsvColumnMapping(string[] headers, bool requireElevation, bool requirePointNumber)
         {
             var pointNumberIndex = FindHeaderIndex(headers, "pointnumber", "point number", "point_no", "point id", "point");
             var northingIndex = FindHeaderIndex(headers, "northing", "north");
             var eastingIndex = FindHeaderIndex(headers, "easting", "east");
             var elevationIndex = FindHeaderIndex(headers, "elevation", "elev", "z");
+            var commentIndex = FindHeaderIndex(headers, "comment", "comments", "note", "notes", "remark", "remarks", "description", "desc");
 
             // Backward-compatible defaults for legacy 8-column QAQC format.
-            if (pointNumberIndex < 0 && headers.Length >= 1)
+            if (requirePointNumber && pointNumberIndex < 0 && headers.Length >= 1)
             {
                 pointNumberIndex = 0;
             }
@@ -336,8 +386,12 @@ namespace RevitSuite.Host.Commands
             {
                 elevationIndex = elevationIndex >= 0 ? elevationIndex : -1;
             }
+            if (!requirePointNumber)
+            {
+                pointNumberIndex = -1;
+            }
 
-            return new CsvColumnMapping(pointNumberIndex, northingIndex, eastingIndex, elevationIndex);
+            return new CsvColumnMapping(pointNumberIndex, northingIndex, eastingIndex, elevationIndex, commentIndex);
         }
 
         private static int FindHeaderIndex(string[] headers, params string[] aliases)
@@ -383,7 +437,9 @@ namespace RevitSuite.Host.Commands
             double elevationCriticalThreshold,
             bool useHorizontalThreshold,
             bool useElevationThreshold,
-            HashSet<string> selectedPointNumbers)
+            PairingMode pairingMode,
+            HashSet<string> selectedPointNumbers,
+            double proximityMaxDistanceFt)
         {
             var deviations = new List<DeviationResult>();
 
@@ -414,84 +470,194 @@ namespace RevitSuite.Host.Commands
 
             LogManager.Info(correlationId, $"Built control points dictionary: {controlPointsDict.Count} entries for fast matching.");
 
-            foreach (var record in records)
+            if (pairingMode == PairingMode.PointNumber)
             {
-                if (selectedPointNumbers != null && !selectedPointNumbers.Contains(record.PointNumber))
+                foreach (var record in records)
                 {
-                    continue;
+                    if (selectedPointNumbers != null && !selectedPointNumbers.Contains(record.PointNumber))
+                    {
+                        continue;
+                    }
+
+                    // Fast dictionary lookup instead of linear search
+                    if (!controlPointsDict.TryGetValue(record.PointNumber, out var matchingElement))
+                    {
+                        LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' not found in model - skipped.");
+                        continue;
+                    }
+
+                    // Get model coordinates
+                    var modelEasting = GetParameterValueDouble(matchingElement, CsEastingGuid);
+                    var modelNorthing = GetParameterValueDouble(matchingElement, CsNorthingGuid);
+                    var modelElevation = GetParameterValueDouble(matchingElement, CsElevationGuid);
+
+                    if (!modelEasting.HasValue || !modelNorthing.HasValue || !modelElevation.HasValue)
+                    {
+                        LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing model coordinates - skipped.");
+                        continue;
+                    }
+
+                    // Calculate deviations
+                    if (!record.FieldEasting.HasValue || !record.FieldNorthing.HasValue)
+                    {
+                        LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Northing/Easting in CSV - skipped.");
+                        continue;
+                    }
+
+                    if (useElevationThreshold && !record.FieldElevation.HasValue)
+                    {
+                        LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Elevation in CSV while elevation check is enabled - skipped.");
+                        continue;
+                    }
+
+                    var devEasting = record.FieldEasting.Value - modelEasting.Value;
+                    var devNorthing = record.FieldNorthing.Value - modelNorthing.Value;
+                    var devElevation = record.FieldElevation.HasValue
+                        ? record.FieldElevation.Value - modelElevation.Value
+                        : 0.0;
+                    var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
+                    var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
+
+                    var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalCriticalThreshold;
+                    var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationCriticalThreshold;
+                    var isCritical = exceedsHorizontal || exceedsElevation;
+
+                    var withinHorizontalVerified = !useHorizontalThreshold || horizontalDev <= horizontalVerifiedThreshold;
+                    var withinElevationVerified = !useElevationThreshold || Math.Abs(devElevation) <= elevationVerifiedThreshold;
+                    var isVerified = (useHorizontalThreshold || useElevationThreshold) && withinHorizontalVerified && withinElevationVerified;
+
+                    var status = isCritical
+                        ? ToleranceStatus.Red
+                        : (isVerified ? ToleranceStatus.Blue : ToleranceStatus.Yellow);
+
+                    // Get model point location
+                    XYZ modelPoint = null;
+                    if (matchingElement.Location is LocationPoint locPoint)
+                    {
+                        modelPoint = locPoint.Point;
+                    }
+
+                    deviations.Add(new DeviationResult
+                    {
+                        PointNumber = record.PointNumber,
+                        ElementId = matchingElement.Id,
+                        UniqueId = matchingElement.UniqueId,
+                        SourceComment = record.Comment,
+                        DeviationEasting = devEasting,
+                        DeviationNorthing = devNorthing,
+                        DeviationElevation = devElevation,
+                        HorizontalDeviation = horizontalDev,
+                        TotalDeviation = totalDev,
+                        Status = status,
+                        ModelPoint = modelPoint
+                    });
                 }
+            }
+            else
+            {
+                var candidateModels = allControlPoints
+                    .Where(cp => string.Equals(cp.Symbol?.Name, "Model", StringComparison.OrdinalIgnoreCase))
+                    .Select(cp => new ProximityModelCandidate
+                    {
+                        Element = cp,
+                        PointNumber = GetParameterValueString(cp, PointNumberGuid),
+                        Easting = GetParameterValueDouble(cp, CsEastingGuid) ?? double.MinValue,
+                        Northing = GetParameterValueDouble(cp, CsNorthingGuid) ?? double.MinValue,
+                        Elevation = GetParameterValueDouble(cp, CsElevationGuid) ?? double.MinValue
+                    })
+                    .Where(x => x.Easting > double.MinValue && x.Northing > double.MinValue && x.Elevation > double.MinValue)
+                    .Where(x => selectedPointNumbers == null || selectedPointNumbers.Contains($"ID:{x.Element.Id.IntegerValue}"))
+                    .ToList();
 
-                // Fast dictionary lookup instead of linear search
-                if (!controlPointsDict.TryGetValue(record.PointNumber, out var matchingElement))
+                LogManager.Info(correlationId, $"Proximity pairing: {candidateModels.Count} model points, {records.Count} CSV records. Max match distance: {proximityMaxDistanceFt:F2} ft. Using globally-sorted nearest-neighbour matching.");
+
+                var validRecords = records
+                    .Where(r => r.FieldEasting.HasValue && r.FieldNorthing.HasValue)
+                    .Where(r => !useElevationThreshold || r.FieldElevation.HasValue)
+                    .ToList();
+
+                // Build all candidate pairs sorted by distance ascending.
+                // Then greedily assign from closest pair, skipping any already-matched side.
+                // This is correct regardless of whether there are more model points or more CSV records.
+                var allPairs = new List<(double DistSq, ControlPointRecord Record, ProximityModelCandidate Candidate)>();
+                foreach (var record in validRecords)
                 {
-                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' not found in model - skipped.");
-                    continue;
+                    foreach (var candidate in candidateModels)
+                    {
+                        var dx = record.FieldEasting.Value - candidate.Easting;
+                        var dy = record.FieldNorthing.Value - candidate.Northing;
+                        allPairs.Add((dx * dx + dy * dy, record, candidate));
+                    }
                 }
+                allPairs.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
 
-                // Get model coordinates
-                var modelEasting = GetParameterValueDouble(matchingElement, CsEastingGuid);
-                var modelNorthing = GetParameterValueDouble(matchingElement, CsNorthingGuid);
-                var modelElevation = GetParameterValueDouble(matchingElement, CsElevationGuid);
+                var matchedRecords = new HashSet<ControlPointRecord>();
+                var matchedCandidates = new HashSet<ProximityModelCandidate>();
 
-                if (!modelEasting.HasValue || !modelNorthing.HasValue || !modelElevation.HasValue)
+                var maxDistSq = proximityMaxDistanceFt * proximityMaxDistanceFt;
+
+                foreach (var (distSq, record, nearestCandidate) in allPairs)
                 {
-                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing model coordinates - skipped.");
-                    continue;
+                    if (distSq > maxDistSq)
+                        break; // list is sorted — all remaining pairs are farther
+
+                    if (matchedRecords.Contains(record) || matchedCandidates.Contains(nearestCandidate))
+                        continue;
+
+                    matchedRecords.Add(record);
+                    matchedCandidates.Add(nearestCandidate);
+
+                    var modelEasting = nearestCandidate.Easting;
+                    var modelNorthing = nearestCandidate.Northing;
+                    var modelElevation = nearestCandidate.Elevation;
+
+                    var devEasting = record.FieldEasting.Value - modelEasting;
+                    var devNorthing = record.FieldNorthing.Value - modelNorthing;
+                    var devElevation = record.FieldElevation.HasValue
+                        ? record.FieldElevation.Value - modelElevation
+                        : 0.0;
+                    var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
+                    var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
+
+                    var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalCriticalThreshold;
+                    var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationCriticalThreshold;
+                    var isCritical = exceedsHorizontal || exceedsElevation;
+
+                    var withinHorizontalVerified = !useHorizontalThreshold || horizontalDev <= horizontalVerifiedThreshold;
+                    var withinElevationVerified = !useElevationThreshold || Math.Abs(devElevation) <= elevationVerifiedThreshold;
+                    var isVerified = (useHorizontalThreshold || useElevationThreshold) && withinHorizontalVerified && withinElevationVerified;
+
+                    var status = isCritical
+                        ? ToleranceStatus.Red
+                        : (isVerified ? ToleranceStatus.Blue : ToleranceStatus.Yellow);
+
+                    XYZ modelPoint = null;
+                    if (nearestCandidate.Element.Location is LocationPoint locPoint)
+                    {
+                        modelPoint = locPoint.Point;
+                    }
+
+                    var resolvedPointNumber = nearestCandidate.PointNumber;
+                    if (string.IsNullOrWhiteSpace(resolvedPointNumber))
+                    {
+                        resolvedPointNumber = $"MODEL-{nearestCandidate.Element.Id.IntegerValue}";
+                    }
+
+                    deviations.Add(new DeviationResult
+                    {
+                        PointNumber = resolvedPointNumber,
+                        ElementId = nearestCandidate.Element.Id,
+                        UniqueId = nearestCandidate.Element.UniqueId,
+                        SourceComment = record.Comment,
+                        DeviationEasting = devEasting,
+                        DeviationNorthing = devNorthing,
+                        DeviationElevation = devElevation,
+                        HorizontalDeviation = horizontalDev,
+                        TotalDeviation = totalDev,
+                        Status = status,
+                        ModelPoint = modelPoint
+                    });
                 }
-
-                // Calculate deviations
-                if (!record.FieldEasting.HasValue || !record.FieldNorthing.HasValue)
-                {
-                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Northing/Easting in CSV - skipped.");
-                    continue;
-                }
-
-                if (useElevationThreshold && !record.FieldElevation.HasValue)
-                {
-                    LogManager.Warn(correlationId, $"Point Number '{record.PointNumber}' missing Elevation in CSV while elevation check is enabled - skipped.");
-                    continue;
-                }
-
-                var devEasting = record.FieldEasting.Value - modelEasting.Value;
-                var devNorthing = record.FieldNorthing.Value - modelNorthing.Value;
-                var devElevation = record.FieldElevation.HasValue
-                    ? record.FieldElevation.Value - modelElevation.Value
-                    : 0.0;
-                var horizontalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing);
-                var totalDev = Math.Sqrt(devEasting * devEasting + devNorthing * devNorthing + devElevation * devElevation);
-
-                var exceedsHorizontal = useHorizontalThreshold && horizontalDev > horizontalCriticalThreshold;
-                var exceedsElevation = useElevationThreshold && Math.Abs(devElevation) > elevationCriticalThreshold;
-                var isCritical = exceedsHorizontal || exceedsElevation;
-
-                var withinHorizontalVerified = !useHorizontalThreshold || horizontalDev <= horizontalVerifiedThreshold;
-                var withinElevationVerified = !useElevationThreshold || Math.Abs(devElevation) <= elevationVerifiedThreshold;
-                var isVerified = (useHorizontalThreshold || useElevationThreshold) && withinHorizontalVerified && withinElevationVerified;
-
-                var status = isCritical
-                    ? ToleranceStatus.Red
-                    : (isVerified ? ToleranceStatus.Blue : ToleranceStatus.Yellow);
-
-                // Get model point location
-                XYZ modelPoint = null;
-                if (matchingElement.Location is LocationPoint locPoint)
-                {
-                    modelPoint = locPoint.Point;
-                }
-
-                deviations.Add(new DeviationResult
-                {
-                    PointNumber = record.PointNumber,
-                    ElementId = matchingElement.Id,
-                    UniqueId = matchingElement.UniqueId,
-                    DeviationEasting = devEasting,
-                    DeviationNorthing = devNorthing,
-                    DeviationElevation = devElevation,
-                    HorizontalDeviation = horizontalDev,
-                    TotalDeviation = totalDev,
-                    Status = status,
-                    ModelPoint = modelPoint
-                });
             }
 
             return deviations;
@@ -503,11 +669,50 @@ namespace RevitSuite.Host.Commands
             Document doc,
             QaqcConfig config,
             bool useSelectedPointThresholds,
+            PairingMode pairingMode,
             string correlationId)
         {
             if (!useSelectedPointThresholds)
             {
                 return null;
+            }
+
+            if (pairingMode == PairingMode.Proximity)
+            {
+                IList<Reference> proximityReferences;
+                try
+                {
+                    TaskDialog.Show(
+                        "RevitSuite",
+                        "Select model control points in the view to analyze.\nPress Finish when done, or Esc to cancel.");
+                    proximityReferences = uiDoc.Selection.PickObjects(
+                        ObjectType.Element,
+                        new ControlPointSelectionFilter(config.DefaultFamilyName),
+                        "Select model control points to analyze.");
+                }
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                {
+                    return null;
+                }
+
+                var selectedPointNumbers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var reference in proximityReferences)
+                {
+                    if (doc.GetElement(reference) is FamilyInstance instance &&
+                        string.Equals(instance.Symbol?.Name, "Model", StringComparison.OrdinalIgnoreCase))
+                    {
+                        selectedPointNumbers.Add($"ID:{instance.Id.IntegerValue}");
+                    }
+                }
+
+                if (selectedPointNumbers.Count == 0)
+                {
+                    TaskDialog.Show("RevitSuite", "No valid model control points were selected. Select points with type 'Model'.");
+                    return null;
+                }
+
+                LogManager.Info(correlationId, $"Selected point filter configured for proximity mode: {selectedPointNumbers.Count} model element(s).");
+                return selectedPointNumbers;
             }
 
             IList<Reference> pickedReferences;
@@ -704,7 +909,6 @@ namespace RevitSuite.Host.Commands
                 .WhereElementIsNotElementType()
                 .OfType<FamilyInstance>()
                 .Where(fi =>
-                    fi.Symbol?.Name == "Field" ||
                     fi.Symbol?.Name == "Verified" ||
                     fi.Symbol?.Name == "Deviation" ||
                     fi.Symbol?.Name == "Critical")
@@ -736,11 +940,14 @@ namespace RevitSuite.Host.Commands
 
                 try
                 {
-                    // Calculate field point location (model point + deviations)
-                    var fieldPoint = new XYZ(
-                        deviation.ModelPoint.X + deviation.DeviationEasting,
-                        deviation.ModelPoint.Y + deviation.DeviationNorthing,
-                        deviation.ModelPoint.Z + deviation.DeviationElevation);
+                    // Calculate field point location: convert model point to survey coords,
+                    // apply deviation (which is in survey coord space), then convert back to internal.
+                    var modelSurvey = projectToShared.OfPoint(deviation.ModelPoint);
+                    var fieldSurvey = new XYZ(
+                        modelSurvey.X + deviation.DeviationEasting,
+                        modelSurvey.Y + deviation.DeviationNorthing,
+                        modelSurvey.Z + deviation.DeviationElevation);
+                    var fieldPoint = sharedToProject.OfPoint(fieldSurvey);
                     var fieldSymbol = deviation.Status switch
                     {
                         ToleranceStatus.Green => modelSymbol,
@@ -799,7 +1006,7 @@ namespace RevitSuite.Host.Commands
                     var commentsParam = fieldInstance.LookupParameter("Comments");
                     if (commentsParam != null && !commentsParam.IsReadOnly)
                     {
-                        commentsParam.Set($"Field measurement for {deviation.PointNumber}");
+                        commentsParam.Set(deviation.SourceComment ?? $"Field measurement for {deviation.PointNumber}");
                     }
 
                     // Keep reference to the as-built point instance for downstream annotations (e.g., spot elevation).
@@ -880,7 +1087,7 @@ namespace RevitSuite.Host.Commands
                 .OfType<FamilyInstance>()
                 .Where(fi =>
                     fi.Symbol?.Family?.Name == config.DefaultFamilyName &&
-                    (fi.Symbol?.Name == "Verified" || fi.Symbol?.Name == "Deviation" || fi.Symbol?.Name == "Critical" || fi.Symbol?.Name == "Field"))
+                    (fi.Symbol?.Name == "Verified" || fi.Symbol?.Name == "Deviation" || fi.Symbol?.Name == "Critical"))
                 .ToList();
 
             foreach (var fp in fieldPoints)

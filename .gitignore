@@ -13,6 +13,9 @@ __pycache__/
 # Logs
 *.log
 
+# Revit family files
+*.rfa
+
 # VS Code
 .vscode/*.log
 .vscode/.ropeproject
@@ -28,3 +31,4 @@ git diff.txt
 *.csv
 Screenshot *.png
 docs/
+.claude/*

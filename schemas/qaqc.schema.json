@@ -164,6 +164,21 @@
       "type": "string",
       "default": "Model",
       "description": "Default family type name for control point selection filter."
+    },
+    "deviationTagFamilyName": {
+      "type": "string",
+      "default": "Site - Deviation Tag",
+      "description": "Tag family used for QAQC deviation annotations."
+    },
+    "deviationTagHorizontalTypeName": {
+      "type": "string",
+      "default": "N-E",
+      "description": "Tag type used when N/E comparison is enabled."
+    },
+    "deviationTagElevationTypeName": {
+      "type": "string",
+      "default": "Elev",
+      "description": "Tag type used when elevation comparison is enabled."
     }
   },
   "additionalProperties": false

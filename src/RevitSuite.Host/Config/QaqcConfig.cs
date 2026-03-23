@@ -11,6 +11,9 @@ namespace RevitSuite.Host.Config
         // Global settings
         public string DefaultFamilyName { get; }
         public string DefaultTypeName { get; }
+        public string DeviationTagFamilyName { get; }
+        public string DeviationTagHorizontalTypeName { get; }
+        public string DeviationTagElevationTypeName { get; }
         public int CoordinatePrecision { get; }
         public int VisualizationTransparency { get; }
         public bool CreateDeviationArrows { get; }
@@ -27,6 +30,9 @@ namespace RevitSuite.Host.Config
         private QaqcConfig(
             string defaultFamilyName,
             string defaultTypeName,
+            string deviationTagFamilyName,
+            string deviationTagHorizontalTypeName,
+            string deviationTagElevationTypeName,
             int coordinatePrecision,
             int visualizationTransparency,
             bool createDeviationArrows,
@@ -38,6 +44,9 @@ namespace RevitSuite.Host.Config
         {
             DefaultFamilyName = defaultFamilyName;
             DefaultTypeName = defaultTypeName;
+            DeviationTagFamilyName = deviationTagFamilyName;
+            DeviationTagHorizontalTypeName = deviationTagHorizontalTypeName;
+            DeviationTagElevationTypeName = deviationTagElevationTypeName;
             CoordinatePrecision = coordinatePrecision;
             VisualizationTransparency = visualizationTransparency;
             CreateDeviationArrows = createDeviationArrows;
@@ -57,6 +66,9 @@ namespace RevitSuite.Host.Config
             // Load global settings
             var defaultFamilyName = SchemaDefaults.GetString(properties, "defaultFamilyName", "Master Control Point");
             var defaultTypeName = SchemaDefaults.GetString(properties, "defaultTypeName", "Model");
+            var deviationTagFamilyName = SchemaDefaults.GetString(properties, "deviationTagFamilyName", "Site - Deviation Tag");
+            var deviationTagHorizontalTypeName = SchemaDefaults.GetString(properties, "deviationTagHorizontalTypeName", "N-E");
+            var deviationTagElevationTypeName = SchemaDefaults.GetString(properties, "deviationTagElevationTypeName", "Elev");
 
             // Load defaults from properties.defaults.properties
             var defaults = GetSectionProperties(properties, "defaults", required: true);
@@ -97,6 +109,9 @@ namespace RevitSuite.Host.Config
             return new QaqcConfig(
                 defaultFamilyName,
                 defaultTypeName,
+                deviationTagFamilyName,
+                deviationTagHorizontalTypeName,
+                deviationTagElevationTypeName,
                 coordinatePrecision,
                 visualizationTransparency,
                 createDeviationArrows,
