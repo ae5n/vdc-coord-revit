@@ -60,17 +60,21 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
-                Directory.CreateDirectory(targetFolder);
+                var runResult = RunCore(data.Application, targetFolder, selectedViews);
+                if (runResult == null)
+                {
+                    TaskDialog.Show("RevitSuite", "No views were exported.");
+                    return Result.Cancelled;
+                }
 
-                var results = ExportViews(document, targetFolder, selectedViews, config, correlationId);
-
-                var summary = BuildSummaryMessage(results, targetFolder);
+                var (resolvedFolder, successCount, failCount, successPaths, failedNames) = runResult.Value;
+                var summary = BuildSummaryMessage(resolvedFolder, successCount, failCount, failedNames);
                 TaskDialog.Show("RevitSuite - NWC Export", summary);
 
                 LogManager.Info(correlationId,
-                    $"NWC batch export finished. Success={results.Successful.Count}, Failed={results.Failed.Count}, Folder='{targetFolder}'");
+                    $"NWC batch export finished. Success={successCount}, Failed={failCount}, Folder='{resolvedFolder}'");
 
-                return results.Failed.Count == 0 ? Result.Succeeded : Result.Succeeded;
+                return Result.Succeeded;
             }
             catch (Exception ex)
             {
@@ -79,6 +83,43 @@ namespace RevitSuite.Host.Commands
                 LogManager.Error(correlationId, "NwcBatchExportCommand failed.", ex);
                 return Result.Failed;
             }
+        }
+
+        /// <summary>
+        /// Executes the core NWC export logic without any UI dialogs.
+        /// Returns null if no views were available; throws on error.
+        /// </summary>
+        internal static (string targetFolder, int successCount, int failCount, IReadOnlyList<string> successPaths, IReadOnlyList<string> failedViewNames)? RunCore(
+            UIApplication app,
+            string? outputDirectory,
+            IReadOnlyList<View> views)
+        {
+            var document = (app.ActiveUIDocument
+                ?? throw new InvalidOperationException("No active document.")).Document;
+
+            if (views.Count == 0)
+                return null;
+
+            var correlationId = Guid.NewGuid().ToString("N");
+            var config = NwcBatchExportConfig.Load();
+
+            var targetFolder = string.IsNullOrWhiteSpace(outputDirectory)
+                ? ResolveDefaultFolder(document)
+                : outputDirectory;
+            Directory.CreateDirectory(targetFolder);
+
+            var results = ExportViews(document, targetFolder, views, config, correlationId);
+
+            LogManager.Info(correlationId,
+                $"NWC batch export finished. Success={results.Successful.Count}, Failed={results.Failed.Count}, Folder='{targetFolder}'");
+
+            return (
+                targetFolder,
+                results.Successful.Count,
+                results.Failed.Count,
+                results.Successful.Select(r => r.Path).ToList(),
+                results.Failed.Select(r => r.View.Name).ToList()
+            );
         }
 
         private static List<NwcBatchExportForm.ViewGroup> BuildViewGroups(Document document, string groupParameterName)
@@ -238,20 +279,17 @@ namespace RevitSuite.Host.Commands
             return options;
         }
 
-        private static string BuildSummaryMessage(ExportResults results, string folder)
+        private static string BuildSummaryMessage(string folder, int successCount, int failCount, IReadOnlyList<string> failedViewNames)
         {
-            var successfulCount = results.Successful.Count;
-            var failedCount = results.Failed.Count;
-
             var summary = $"Export complete.{Environment.NewLine}{Environment.NewLine}" +
-                          $"Successful: {successfulCount}{Environment.NewLine}" +
-                          $"Failed: {failedCount}{Environment.NewLine}{Environment.NewLine}" +
+                          $"Successful: {successCount}{Environment.NewLine}" +
+                          $"Failed: {failCount}{Environment.NewLine}{Environment.NewLine}" +
                           $"Folder: {folder}";
 
-            if (failedCount > 0)
+            if (failCount > 0)
             {
-                var failedNames = string.Join(Environment.NewLine, results.Failed.Select(r => $"• {r.View.Name}"));
-                summary += $"{Environment.NewLine}{Environment.NewLine}Failed Views:{Environment.NewLine}{failedNames}";
+                var failedNamesStr = string.Join(Environment.NewLine, failedViewNames.Select(n => $"• {n}"));
+                summary += $"{Environment.NewLine}{Environment.NewLine}Failed Views:{Environment.NewLine}{failedNamesStr}";
             }
 
             return summary;

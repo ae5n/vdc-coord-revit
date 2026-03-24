@@ -1,17 +1,18 @@
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
-using RevitMCPCommandSet.Services.RevitSuite;
 using RevitMCPSDK.API.Base;
+using RevitSuite.Host.Config;
+using RevitSuite.Host.Mcp.Services;
 using System;
 
-namespace RevitMCPCommandSet.Commands.RevitSuite
+namespace RevitSuite.Host.Mcp.Commands
 {
     public class LevelReportMcpCommand : ExternalEventCommandBase
     {
         private static readonly object _lock = new object();
         private LevelReportMcpEventHandler _handler => (LevelReportMcpEventHandler)Handler;
 
-        public override string CommandName => "run_level_report";
+        public override string CommandName => "export_level_report";
 
         public LevelReportMcpCommand(UIApplication uiApp)
             : base(new LevelReportMcpEventHandler(), uiApp) { }
@@ -20,20 +21,20 @@ namespace RevitMCPCommandSet.Commands.RevitSuite
         {
             lock (_lock)
             {
-                var props = RevitSuiteSchemaLoader.LoadProperties("level_report.schema.json");
+                var config = LevelReportConfig.Load();
 
                 _handler.IncludeLinkedModels = parameters?["includeLinkedModels"]?.Value<bool>()
-                    ?? RevitSuiteSchemaLoader.GetBool(props, "includeLinkedModels", true);
+                    ?? config.IncludeLinkedModels;
                 _handler.Precision = parameters?["precision"]?.Value<int>()
-                    ?? RevitSuiteSchemaLoader.GetInt(props, "precision", 2);
+                    ?? config.Precision;
                 _handler.MaxPreviewRows = parameters?["maxPreviewRows"]?.Value<int>()
-                    ?? RevitSuiteSchemaLoader.GetInt(props, "maxPreviewRows", 5);
+                    ?? config.MaxPreviewRows;
                 _handler.OutputPath = parameters?["outputPath"]?.Value<string>();
 
                 if (RaiseAndWaitForCompletion(30000))
                     return _handler.Result;
                 else
-                    throw new TimeoutException("run_level_report timed out.");
+                    throw new TimeoutException("export_level_report timed out.");
             }
         }
     }

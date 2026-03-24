@@ -2,9 +2,9 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
 
-export function registerRevitSuiteNwcBatchExportTool(server: McpServer) {
+export function registerExportNwcViewsTool(server: McpServer) {
   server.tool(
-    "run_nwc_batch_export",
+    "export_nwc_views",
     "Export 3D views from the active Revit model to Navisworks NWC files. If no view names are specified, all non-template 3D views are exported.",
     {
       coordinates: z.enum(["Shared", "Project", "Internal"]).optional()
@@ -23,11 +23,11 @@ export function registerRevitSuiteNwcBatchExportTool(server: McpServer) {
     async (args) => {
       try {
         const response = await withRevitConnection(async (revitClient) => {
-          return await revitClient.sendCommand("run_nwc_batch_export", args);
+          return await revitClient.sendCommand("export_nwc_views", args);
         });
         return { content: [{ type: "text", text: JSON.stringify(response, null, 2) }] };
       } catch (error) {
-        return { content: [{ type: "text", text: `run_nwc_batch_export failed: ${error instanceof Error ? error.message : String(error)}` }] };
+        return { content: [{ type: "text", text: `export_nwc_views failed: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );

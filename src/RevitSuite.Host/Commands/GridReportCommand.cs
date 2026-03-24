@@ -54,44 +54,32 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var config = GridReportConfig.Load();
-                var targetPath = dialog.FileName;
+                var runResult = RunCore(data.Application, dialog.FileName, config.IncludeLinkedModels, config.Precision);
 
-                var gridRecords = CollectGridRecords(document, config.IncludeLinkedModels);
-                if (gridRecords.Count == 0)
+                if (runResult == null)
                 {
                     TaskDialog.Show("RevitSuite", "No grids found to include in the report.");
                     LogManager.Warn(correlationId, "Grid report found no grids to export.");
                     return Result.Cancelled;
                 }
 
-                var precision = config.Precision;
-                var pivotTable = BuildPivotTable(gridRecords);
-                var discrepancyRecords = BuildDiscrepancyRecords(pivotTable);
-
-                WritePivotCsv(targetPath, pivotTable, precision);
-                var discrepancyPath = BuildDiscrepancyPath(targetPath);
-                WriteDiscrepancyCsv(discrepancyPath, discrepancyRecords, precision);
-                var reportPath = BuildReportPath(targetPath);
-                WriteReportHtml(reportPath, pivotTable, discrepancyRecords, precision);
-
-                var previewCount = Math.Min(config.MaxPreviewRows, pivotTable.Rows.Count);
+                var (targetPath, discrepancyPath, reportPath, rowCount, discrepancyCount) = runResult.Value;
                 LogManager.Info(correlationId,
-                    $"Grid report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Discrepancies: {discrepancyRecords.Count}. Report: {reportPath}. Preview rows: {previewCount}");
+                    $"Grid report exported to '{targetPath}' with {rowCount} row(s). Discrepancies: {discrepancyCount}. Report: {reportPath}.");
 
                 var messageBuilder = new StringBuilder()
                     .AppendLine("Grid report written to:")
                     .AppendLine(targetPath)
-                    .AppendLine($"Rows: {pivotTable.Rows.Count}")
+                    .AppendLine($"Rows: {rowCount}")
                     .AppendLine()
                     .AppendLine("Discrepancy summary written to:")
                     .AppendLine(discrepancyPath)
-                    .AppendLine($"Rows: {discrepancyRecords.Count}")
+                    .AppendLine($"Rows: {discrepancyCount}")
                     .AppendLine()
                     .AppendLine("Alignment report written to:")
                     .AppendLine(reportPath);
 
                 TaskDialog.Show("RevitSuite", messageBuilder.ToString());
-
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -101,6 +89,52 @@ namespace RevitSuite.Host.Commands
                 LogManager.Error(correlationId, "GridReportCommand failed.", ex);
                 return Result.Failed;
             }
+        }
+
+        internal static (string outputPath, string discrepancyPath, string reportPath, int rowCount, int discrepancyCount)? RunCore(
+            UIApplication app,
+            string? outputPath,
+            bool includeLinkedModels,
+            int precision)
+        {
+            var correlationId = Guid.NewGuid().ToString("N");
+            var document = (app.ActiveUIDocument
+                ?? throw new InvalidOperationException("No active document.")).Document;
+
+            var targetPath = string.IsNullOrWhiteSpace(outputPath)
+                ? BuildAutoOutputPath(document, "Grids")
+                : outputPath;
+
+            var gridRecords = CollectGridRecords(document, includeLinkedModels);
+            if (gridRecords.Count == 0)
+                return null;
+
+            var pivotTable = BuildPivotTable(gridRecords);
+            var discrepancyRecords = BuildDiscrepancyRecords(pivotTable);
+
+            WritePivotCsv(targetPath, pivotTable, precision);
+            var discrepancyPath = BuildDiscrepancyPath(targetPath);
+            WriteDiscrepancyCsv(discrepancyPath, discrepancyRecords, precision);
+            var reportPath = BuildReportPath(targetPath);
+            WriteReportHtml(reportPath, pivotTable, discrepancyRecords, precision);
+
+            LogManager.Info(correlationId,
+                $"Grid report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Discrepancies: {discrepancyRecords.Count}.");
+
+            return (targetPath, discrepancyPath, reportPath, pivotTable.Rows.Count, discrepancyRecords.Count);
+        }
+
+        private static string BuildAutoOutputPath(Document document, string suffix)
+        {
+            var baseName = string.IsNullOrWhiteSpace(document.PathName)
+                ? document.Title
+                : Path.GetFileNameWithoutExtension(document.PathName);
+            if (string.IsNullOrWhiteSpace(baseName))
+                baseName = "Model";
+            var sanitized = SanitizeFileName(baseName);
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RevitSuite");
+            return Path.Combine(dir, $"{sanitized}_{suffix}_{timestamp}.csv");
         }
 
         private static List<GridRecord> CollectGridRecords(Document doc, bool includeLinkedModels)
