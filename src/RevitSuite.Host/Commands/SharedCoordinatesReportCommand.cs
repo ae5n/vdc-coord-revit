@@ -53,43 +53,22 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var config = SharedCoordinatesReportConfig.Load();
-                var targetPath = dialog.FileName;
+                var runResult = RunCore(data.Application, dialog.FileName, config.IncludeLinkedModels, config.Precision, config.AnglePrecision);
 
-                var records = CollectRecords(document, config.IncludeLinkedModels);
-                if (records.Count == 0)
+                if (runResult == null)
                 {
                     TaskDialog.Show("RevitSuite", "No shared coordinate data found to include in the report.");
                     LogManager.Warn(correlationId, "Shared coordinate report found no data to export.");
                     return Result.Cancelled;
                 }
 
-                var previewCount = Math.Min(config.MaxPreviewRows, records.Count);
-                var pivotTable = BuildPivotTable(records);
-                WritePivotCsv(targetPath, pivotTable, config.Precision, config.AnglePrecision);
-                var reportPath = WriteHtmlReport(targetPath, pivotTable, config.Precision, config.AnglePrecision);
-
-                var preview = records
-                    .Take(previewCount)
-                    .Select(r =>
-                        $"{r.ModelName}/{r.PointLabel}: EW={FormatFeetInches(r.SharedEastWest, FractionDenominator)}, " +
-                        $"NS={FormatFeetInches(r.SharedNorthSouth, FractionDenominator)}, " +
-                        $"Elev={FormatFeetInches(r.SharedElevation, FractionDenominator)}, " +
-                        $"theta={FormatDouble(r.AngleToTrueNorth, config.AnglePrecision)}")
-                    .ToList();
-
-                var previewSummary = preview.Count == 0 ? "None" : string.Join(" | ", preview);
-                var pointCount = pivotTable.Rows
-                    .Where(row => !row.IsSeparator)
-                    .Select(row => row.PointLabel)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Count();
-                LogManager.Info(
-                    correlationId,
-                    $"Shared coordinate report exported to '{targetPath}' with {records.Count} record(s). HTML view: '{reportPath}'. Preview: {previewSummary}");
+                var (csvPath, htmlPath, rowCount, pointCount) = runResult.Value;
+                LogManager.Info(correlationId,
+                    $"Shared coordinate report exported to '{csvPath}'. HTML: '{htmlPath}'. Records: {rowCount}. Points: {pointCount}.");
 
                 TaskDialog.Show(
                     "RevitSuite",
-                    $"Shared coordinate report written to:\n{targetPath}\nPivot view: {reportPath}\nRecords: {records.Count}\nPoints: {pointCount}");
+                    $"Shared coordinate report written to:\n{csvPath}\nPivot view: {htmlPath}\nRecords: {rowCount}\nPoints: {pointCount}");
 
                 return Result.Succeeded;
             }
@@ -100,6 +79,58 @@ namespace RevitSuite.Host.Commands
                 LogManager.Error(correlationId, "SharedCoordinatesReportCommand failed.", ex);
                 return Result.Failed;
             }
+        }
+
+        /// <summary>
+        /// Executes the core shared-coordinate report logic without any UI dialogs.
+        /// Returns null if no records were found; throws on error.
+        /// </summary>
+        internal static (string csvPath, string htmlPath, int rowCount, int pointCount)? RunCore(
+            UIApplication app,
+            string? outputPath,
+            bool includeLinkedModels,
+            int precision,
+            int anglePrecision)
+        {
+            var correlationId = Guid.NewGuid().ToString("N");
+            var document = (app.ActiveUIDocument
+                ?? throw new InvalidOperationException("No active document.")).Document;
+
+            var targetPath = string.IsNullOrWhiteSpace(outputPath)
+                ? BuildAutoOutputPath(document, "SharedCoordinates")
+                : outputPath;
+
+            var records = CollectRecords(document, includeLinkedModels);
+            if (records.Count == 0)
+                return null;
+
+            var pivotTable = BuildPivotTable(records);
+            WritePivotCsv(targetPath, pivotTable, precision, anglePrecision);
+            var reportPath = WriteHtmlReport(targetPath, pivotTable, precision, anglePrecision);
+
+            var pointCount = pivotTable.Rows
+                .Where(row => !row.IsSeparator)
+                .Select(row => row.PointLabel)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+
+            LogManager.Info(correlationId,
+                $"Shared coordinate report exported to '{targetPath}' with {records.Count} record(s). HTML view: '{reportPath}'. Points: {pointCount}.");
+
+            return (targetPath, reportPath, records.Count, pointCount);
+        }
+
+        private static string BuildAutoOutputPath(Document document, string suffix)
+        {
+            var baseName = string.IsNullOrWhiteSpace(document.PathName)
+                ? document.Title
+                : Path.GetFileNameWithoutExtension(document.PathName);
+            if (string.IsNullOrWhiteSpace(baseName))
+                baseName = "Model";
+            var sanitized = SanitizeFileName(baseName);
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RevitSuite");
+            return Path.Combine(dir, $"{sanitized}_{suffix}_{timestamp}.csv");
         }
 
         private static List<SharedCoordinateRecord> CollectRecords(Document hostDocument, bool includeLinks)

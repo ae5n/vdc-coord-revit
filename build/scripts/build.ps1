@@ -91,6 +91,18 @@ try {
     Write-Host "Building RevitSuite.Host ($Configuration)..." -ForegroundColor Cyan
     dotnet build $projectPath -c $Configuration
     Sync-SchemasToBuildOutput -RepoRoot $repoRoot -BuildConfiguration $Configuration
+
+    $cmdSetProject = Join-Path $repoRoot "src/RevitMCPCommandSet/RevitMCPCommandSet.csproj"
+    Write-Host "Building RevitMCPCommandSet ($Configuration)..." -ForegroundColor Cyan
+    dotnet build $cmdSetProject -c $Configuration
+
+    $serverDir = Join-Path $repoRoot "mcp-server"
+    if (Test-Path (Join-Path $serverDir "package.json")) {
+        Write-Host "Building TypeScript MCP server..." -ForegroundColor Cyan
+        Push-Location $serverDir
+        try { npm run build }
+        finally { Pop-Location }
+    }
 }
 finally {
     if ($resolvedApiDir) {

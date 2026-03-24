@@ -13,6 +13,7 @@ namespace RevitSuite.Host
         private const string ReportsPanelName = "Reports";
         private const string ViewsPanelName = "Views";
         private const string ExportsPanelName = "Exports";
+        private const string McpPanelName = "MCP";
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -23,6 +24,7 @@ namespace RevitSuite.Host
                 var reportsPanel = GetOrCreatePanel(application, ReportsPanelName);
                 var viewsPanel = GetOrCreatePanel(application, ViewsPanelName);
                 var exportsPanel = GetOrCreatePanel(application, ExportsPanelName);
+                var mcpPanel = GetOrCreatePanel(application, McpPanelName);
 
                 var assemblyPath = Assembly.GetExecutingAssembly().Location;
 
@@ -127,6 +129,32 @@ namespace RevitSuite.Host
                     });
                 ApplyIcons(copyLinkedViewsButton, RibbonIconFactory.CopyLinkedViews);
 
+                var mcpButton = AddButton(
+                    mcpPanel,
+                    new PushButtonData(
+                        "RevitSuite_McpToggle",
+                        "MCP Server",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.McpToggleCommand")
+                    {
+                        ToolTip = "Start or stop the MCP socket server on port 8080.",
+                        LongDescription = "Exposes RevitSuite and Revit model tools to Claude via the Model Context Protocol."
+                    });
+                ApplyIcons(mcpButton, RibbonIconFactory.Mcp);
+
+                var mcpSettingsButton = AddButton(
+                    mcpPanel,
+                    new PushButtonData(
+                        "RevitSuite_McpSettings",
+                        "MCP Settings",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.McpSettingsCommand")
+                    {
+                        ToolTip = "Enable or disable individual MCP tools.",
+                        LongDescription = "Opens the MCP tool settings window. Toggle tools on or off, then restart the MCP server for changes to take effect."
+                    });
+                ApplyIcons(mcpSettingsButton, RibbonIconFactory.McpSettings);
+
                 return Result.Succeeded;
             }
             catch (Exception)
@@ -137,6 +165,13 @@ namespace RevitSuite.Host
 
         public Result OnShutdown(UIControlledApplication application)
         {
+            try
+            {
+                if (RevitSuite.Mcp.Core.SocketService.Instance.IsRunning)
+                    RevitSuite.Mcp.Core.SocketService.Instance.Stop();
+            }
+            catch { }
+
             return Result.Succeeded;
         }
 

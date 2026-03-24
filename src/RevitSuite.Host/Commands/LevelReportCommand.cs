@@ -51,31 +51,18 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var config = LevelReportConfig.Load();
-                var targetPath = dialog.FileName;
-                var includeLinked = config.IncludeLinkedModels;
-                var precision = config.Precision;
-                var maxPreview = config.MaxPreviewRows;
+                var runResult = RunCore(data.Application, dialog.FileName, config.IncludeLinkedModels, config.Precision, config.MaxPreviewRows);
 
-                var levelRecords = CollectLevelRecords(document, includeLinked);
-
-                if (levelRecords.Count == 0)
+                if (runResult == null)
                 {
                     TaskDialog.Show("RevitSuite", "No levels found to include in the report.");
                     LogManager.Warn(correlationId, "Level report found no levels to export.");
                     return Result.Cancelled;
                 }
 
-                var pivotTable = BuildPivotTable(levelRecords);
-
-                WritePivotCsv(targetPath, pivotTable, precision);
-
-                var previewCount = Math.Min(maxPreview, pivotTable.Rows.Count);
-                LogManager.Info(correlationId,
-                    $"Level report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Preview rows: {previewCount}");
-
-                TaskDialog.Show("RevitSuite",
-                    $"Level report written to:\n{targetPath}\nRows: {pivotTable.Rows.Count}");
-
+                var (targetPath, rowCount) = runResult.Value;
+                LogManager.Info(correlationId, $"Level report exported to '{targetPath}' with {rowCount} row(s).");
+                TaskDialog.Show("RevitSuite", $"Level report written to:\n{targetPath}\nRows: {rowCount}");
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -85,6 +72,52 @@ namespace RevitSuite.Host.Commands
                 LogManager.Error(correlationId, "LevelReportCommand failed.", ex);
                 return Result.Failed;
             }
+        }
+
+        /// <summary>
+        /// Executes the core level-report logic without any UI dialogs.
+        /// Returns null if no levels were found; throws on error.
+        /// </summary>
+        internal static (string outputPath, int rowCount)? RunCore(
+            UIApplication app,
+            string? outputPath,
+            bool includeLinkedModels,
+            int precision,
+            int maxPreviewRows)
+        {
+            var correlationId = Guid.NewGuid().ToString("N");
+            var document = (app.ActiveUIDocument
+                ?? throw new InvalidOperationException("No active document.")).Document;
+
+            var targetPath = string.IsNullOrWhiteSpace(outputPath)
+                ? BuildAutoOutputPath(document, "Levels")
+                : outputPath;
+
+            var levelRecords = CollectLevelRecords(document, includeLinkedModels);
+            if (levelRecords.Count == 0)
+                return null;
+
+            var pivotTable = BuildPivotTable(levelRecords);
+            WritePivotCsv(targetPath, pivotTable, precision);
+
+            var previewCount = Math.Min(maxPreviewRows, pivotTable.Rows.Count);
+            LogManager.Info(correlationId,
+                $"Level report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Preview rows: {previewCount}");
+
+            return (targetPath, pivotTable.Rows.Count);
+        }
+
+        private static string BuildAutoOutputPath(Document document, string suffix)
+        {
+            var baseName = string.IsNullOrWhiteSpace(document.PathName)
+                ? document.Title
+                : Path.GetFileNameWithoutExtension(document.PathName);
+            if (string.IsNullOrWhiteSpace(baseName))
+                baseName = "Model";
+            var sanitized = SanitizeFileName(baseName);
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RevitSuite");
+            return Path.Combine(dir, $"{sanitized}_{suffix}_{timestamp}.csv");
         }
 
         private static List<LevelRecord> CollectLevelRecords(Document doc, bool includeLinkedModels)
