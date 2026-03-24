@@ -1,0 +1,33 @@
+{
+  "commands": [
+    { "commandName": "say_hello",                       "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "get_available_family_types",      "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "get_current_view_elements",       "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "get_current_view_info",           "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "get_selected_elements",           "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_point_based_element",      "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_line_based_element",       "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_surface_based_element",    "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "color_splash",                    "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "tag_walls",                       "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "delete_element",                  "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "ai_element_filter",               "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "operate_element",                 "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "export_room_data",                "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "get_material_quantities",         "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "analyze_model_statistics",        "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_grid",                     "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_structural_framing_system","assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_room",                     "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "tag_rooms",                       "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_level",                    "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "send_code_to_revit",              "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "create_dimensions",               "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "run_level_report",                "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "run_grid_report",                 "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "run_shared_coordinates_report",   "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "run_footing_zones",               "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "run_nwc_batch_export",            "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "run_qaqc",                        "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true }
+  ]
+}

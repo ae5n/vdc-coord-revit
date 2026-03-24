@@ -24,11 +24,18 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Local QA/QC scratch files
+# Local scratch files
 journal.*.txt
 staged.diff
+diff.txt
 git diff.txt
 *.csv
 Screenshot *.png
 docs/
 .claude/*
+mcp-servers-for-revit_clone/
+
+# MCP server
+mcp-server/node_modules/
+mcp-server/build/
+mcp-server/revit-data.db

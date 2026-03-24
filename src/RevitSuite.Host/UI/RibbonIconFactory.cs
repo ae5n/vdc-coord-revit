@@ -27,6 +27,7 @@ namespace RevitSuite.Host.UI
         public static IconSet SharedCoordinatesReport => _sharedCoordinatesReport ??= CreateSharedCoordinatesReportIconSet();
         public static IconSet NwcBatchExport => _nwcBatchExport ??= CreateNwcBatchExportIconSet();
         public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
+        public static IconSet Mcp => _mcp ??= CreateMcpIconSet();
 
         private static IconSet? _footingZones;
         private static IconSet? _qaqc;
@@ -36,6 +37,7 @@ namespace RevitSuite.Host.UI
         private static IconSet? _sharedCoordinatesReport;
         private static IconSet? _nwcBatchExport;
         private static IconSet? _copyLinkedViews;
+        private static IconSet? _mcp;
 
         private static IconSet CreateFootingZonesIconSet()
         {
@@ -99,6 +101,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0x1E, 0x3C, 0x5A),
                 Color.FromRgb(0x45, 0x8A, 0xD1),
                 DrawCopyLinkedViewsContent);
+        }
+
+        private static IconSet CreateMcpIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x3B, 0x1F, 0x7A),
+                Color.FromRgb(0x7C, 0x4D, 0xE8),
+                DrawMcpContent);
         }
 
         private static IconSet CreateIconSet(
@@ -463,6 +473,45 @@ namespace RevitSuite.Host.UI
             var arrowFill = new SolidColorBrush(Color.FromRgb(255, 213, 94));
             arrowFill.Freeze();
             dc.DrawGeometry(arrowFill, null, arrowHead);
+        }
+
+        private static void DrawMcpContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+            var center = new Point(width * 0.50, height * 0.50);
+
+            // Spoke endpoints: top, bottom-left, bottom-right
+            var nodes = new[]
+            {
+                new Point(width * 0.50, height * 0.20),
+                new Point(width * 0.22, height * 0.72),
+                new Point(width * 0.78, height * 0.72),
+            };
+
+            // Spokes
+            var spokePen = new Pen(new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)), min * 0.07)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            spokePen.Freeze();
+            foreach (var node in nodes)
+                dc.DrawLine(spokePen, center, node);
+
+            // Outer nodes
+            var nodeBrush = new SolidColorBrush(Color.FromArgb(230, 255, 255, 255));
+            nodeBrush.Freeze();
+            var nodeRadius = min * 0.11;
+            foreach (var node in nodes)
+                dc.DrawEllipse(nodeBrush, null, node, nodeRadius, nodeRadius);
+
+            // Centre hub
+            var hubHalo = new SolidColorBrush(Color.FromArgb(80, 255, 255, 255));
+            hubHalo.Freeze();
+            var hubBrush = new SolidColorBrush(Color.FromArgb(245, 255, 255, 255));
+            hubBrush.Freeze();
+            dc.DrawEllipse(hubHalo, null, center, min * 0.22, min * 0.22);
+            dc.DrawEllipse(hubBrush, null, center, min * 0.14, min * 0.14);
         }
 
         private static void DrawQaqcContent(DrawingContext dc, double width, double height)
