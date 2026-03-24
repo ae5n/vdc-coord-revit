@@ -47,28 +47,34 @@ namespace RevitSuite.Host.Mcp.Services
                     return;
                 }
 
-                IReadOnlyList<View> views;
+                // First call (no viewNames): return available views for user to select from
                 if (ViewNames == null || ViewNames.Length == 0)
                 {
-                    views = allViews;
-                }
-                else
-                {
-                    views = allViews
-                        .Where(v => ViewNames.Contains(v.Name, StringComparer.OrdinalIgnoreCase))
-                        .ToList();
-
-                    if (views.Count == 0)
+                    var availableNames = allViews.Select(v => v.Name).OrderBy(n => n).ToArray();
+                    Result = new
                     {
-                        var availableNames = allViews.Select(v => v.Name).OrderBy(n => n).ToArray();
-                        Result = new
-                        {
-                            success = false,
-                            error = "No views matched the specified names.",
-                            availableViews = availableNames
-                        };
-                        return;
-                    }
+                        success = false,
+                        needsSelection = true,
+                        message = "Please select which views to export and confirm the output directory.",
+                        availableViews = availableNames
+                    };
+                    return;
+                }
+
+                var views = allViews
+                    .Where(v => ViewNames.Contains(v.Name, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (views.Count == 0)
+                {
+                    var availableNames = allViews.Select(v => v.Name).OrderBy(n => n).ToArray();
+                    Result = new
+                    {
+                        success = false,
+                        error = "No views matched the specified names.",
+                        availableViews = availableNames
+                    };
+                    return;
                 }
 
                 var runResult = NwcBatchExportCommand.RunCore(app, OutputDirectory, views);

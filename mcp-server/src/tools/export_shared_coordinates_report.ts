@@ -15,8 +15,8 @@ export function registerExportSharedCoordinatesReportTool(server: McpServer) {
         .describe("Decimal precision for angular values in degrees. Default: 4."),
       maxPreviewRows: z.number().int().min(0).max(20).optional()
         .describe("Number of records to include in the response preview. Default: 5."),
-      outputPath: z.string().optional()
-        .describe("Full path for the output CSV file. If omitted, auto-generated in ~/Documents/RevitSuite/."),
+      outputPath: z.string()
+        .describe("Full path for the output CSV file. Always ask the user where to save before calling."),
     },
     async (args) => {
       try {
