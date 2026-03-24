@@ -28,6 +28,7 @@ namespace RevitSuite.Host.UI
         public static IconSet NwcBatchExport => _nwcBatchExport ??= CreateNwcBatchExportIconSet();
         public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
         public static IconSet Mcp => _mcp ??= CreateMcpIconSet();
+        public static IconSet McpSettings => _mcpSettings ??= CreateMcpSettingsIconSet();
 
         private static IconSet? _footingZones;
         private static IconSet? _qaqc;
@@ -38,6 +39,7 @@ namespace RevitSuite.Host.UI
         private static IconSet? _nwcBatchExport;
         private static IconSet? _copyLinkedViews;
         private static IconSet? _mcp;
+        private static IconSet? _mcpSettings;
 
         private static IconSet CreateFootingZonesIconSet()
         {
@@ -109,6 +111,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0x3B, 0x1F, 0x7A),
                 Color.FromRgb(0x7C, 0x4D, 0xE8),
                 DrawMcpContent);
+        }
+
+        private static IconSet CreateMcpSettingsIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x3B, 0x1F, 0x7A),
+                Color.FromRgb(0x7C, 0x4D, 0xE8),
+                DrawMcpSettingsContent);
         }
 
         private static IconSet CreateIconSet(
@@ -558,6 +568,54 @@ namespace RevitSuite.Host.UI
             dc.DrawLine(arrowPen, new Point(width * 0.20, height * 0.24), new Point(width * 0.28, height * 0.26));
             // Bottom-right arrow
             dc.DrawLine(arrowPen, new Point(width * 0.72, height * 0.74), new Point(width * 0.80, height * 0.76));
+        }
+
+        private static void DrawMcpSettingsContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+            var center = new Point(width * 0.50, height * 0.50);
+            var outerR = min * 0.36;
+            var innerR = min * 0.20;
+            var toothHalf = Math.PI / 8.0;   // half-width of each tooth in radians
+            var toothCount = 8;
+
+            // Build gear geometry
+            var gear = new StreamGeometry();
+            using (var ctx = gear.Open())
+            {
+                var angleStep = (2.0 * Math.PI) / toothCount;
+                for (var i = 0; i < toothCount; i++)
+                {
+                    var baseAngle = i * angleStep - Math.PI / 2.0;
+                    var p0 = new Point(center.X + innerR * Math.Cos(baseAngle - toothHalf),
+                                      center.Y + innerR * Math.Sin(baseAngle - toothHalf));
+                    var p1 = new Point(center.X + outerR * Math.Cos(baseAngle - toothHalf * 0.6),
+                                      center.Y + outerR * Math.Sin(baseAngle - toothHalf * 0.6));
+                    var p2 = new Point(center.X + outerR * Math.Cos(baseAngle + toothHalf * 0.6),
+                                      center.Y + outerR * Math.Sin(baseAngle + toothHalf * 0.6));
+                    var p3 = new Point(center.X + innerR * Math.Cos(baseAngle + toothHalf),
+                                      center.Y + innerR * Math.Sin(baseAngle + toothHalf));
+
+                    if (i == 0)
+                        ctx.BeginFigure(p0, true, true);
+                    else
+                        ctx.LineTo(p0, true, false);
+
+                    ctx.LineTo(p1, true, false);
+                    ctx.LineTo(p2, true, false);
+                    ctx.LineTo(p3, true, false);
+                }
+            }
+            gear.Freeze();
+
+            var gearBrush = new SolidColorBrush(Color.FromArgb(220, 255, 255, 255));
+            gearBrush.Freeze();
+            dc.DrawGeometry(gearBrush, null, gear);
+
+            // Centre hole (cut out with white-ish overlay)
+            var holeBrush = new SolidColorBrush(Color.FromArgb(255, 58, 125, 160));
+            holeBrush.Freeze();
+            dc.DrawEllipse(holeBrush, null, center, min * 0.11, min * 0.11);
         }
     }
 }

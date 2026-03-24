@@ -142,6 +142,19 @@ namespace RevitSuite.Host
                     });
                 ApplyIcons(mcpButton, RibbonIconFactory.Mcp);
 
+                var mcpSettingsButton = AddButton(
+                    mcpPanel,
+                    new PushButtonData(
+                        "RevitSuite_McpSettings",
+                        "MCP Settings",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.McpSettingsCommand")
+                    {
+                        ToolTip = "Enable or disable individual MCP tools.",
+                        LongDescription = "Opens the MCP tool settings window. Toggle tools on or off, then restart the MCP server for changes to take effect."
+                    });
+                ApplyIcons(mcpSettingsButton, RibbonIconFactory.McpSettings);
+
                 return Result.Succeeded;
             }
             catch (Exception)
