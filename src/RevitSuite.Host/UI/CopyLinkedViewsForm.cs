@@ -743,7 +743,7 @@ namespace RevitSuite.Host.UI
 
         private static string BuildViewSetKey(LinkedModelOption linkedModel, string viewSetName)
         {
-            return $"{linkedModel.LinkInstance.Id.IntegerValue}:{viewSetName}";
+            return $"{linkedModel.LinkInstance.Id.Value}:{viewSetName}";
         }
 
         private sealed class LinkedModelNodeTag : NodeTag

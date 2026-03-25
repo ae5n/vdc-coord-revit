@@ -93,7 +93,7 @@ namespace RevitSuite.Host.Commands
                     var pointNumber = GetParameterValueString(instance, PointNumberGuid);
                     if (string.IsNullOrWhiteSpace(pointNumber))
                     {
-                        LogManager.Warn(correlationId, $"Control Point {instance.Id.IntegerValue} missing Point Number - skipped.");
+                        LogManager.Warn(correlationId, $"Control Point {instance.Id.Value} missing Point Number - skipped.");
                         continue;
                     }
 
@@ -127,7 +127,7 @@ namespace RevitSuite.Host.Commands
                 }
                 catch (Exception ex)
                 {
-                    LogManager.Warn(correlationId, $"Failed to extract coordinates from Control Point {instance.Id.IntegerValue}: {ex.Message}");
+                    LogManager.Warn(correlationId, $"Failed to extract coordinates from Control Point {instance.Id.Value}: {ex.Message}");
                 }
             }
 

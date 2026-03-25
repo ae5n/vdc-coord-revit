@@ -48,7 +48,7 @@ namespace RevitSuite.Host.Commands
                     slabs = PromptForSlabs(uiDoc, "Select slabs/floors to include (Esc to finish).");
                 }
 
-                var footingMap = new Dictionary<int, FamilyInstance>();
+                var footingMap = new Dictionary<long, FamilyInstance>();
 
                 if (parameters.IncludeFootings)
                 {
@@ -57,7 +57,7 @@ namespace RevitSuite.Host.Commands
                                  .WhereElementIsNotElementType()
                                  .OfType<FamilyInstance>())
                     {
-                        footingMap[footing.Id.IntegerValue] = footing;
+                        footingMap[footing.Id.Value] = footing;
                     }
                 }
 
@@ -67,7 +67,7 @@ namespace RevitSuite.Host.Commands
                     var manualFootings = PromptForFootings(uiDoc, "Select foundations to include (Esc to finish).");
                     foreach (var footing in manualFootings)
                     {
-                        footingMap[footing.Id.IntegerValue] = footing;
+                        footingMap[footing.Id.Value] = footing;
                     }
                 }
 
@@ -269,7 +269,7 @@ namespace RevitSuite.Host.Commands
             }
 
             var comment = $"Zone of Influence for {footing.Name}";
-            SetInstanceParameters(directShape, comment, directShape.Id.IntegerValue, footing.Id.IntegerValue, footing.UniqueId);
+            SetInstanceParameters(directShape, comment, directShape.Id.Value, footing.Id.Value, footing.UniqueId);
             created.Add(directShape.Id);
             return true;
         }
@@ -330,7 +330,7 @@ namespace RevitSuite.Host.Commands
             }
 
             var comment = $"Zone of Influence for {slab.Name}";
-            SetInstanceParameters(directShape, comment, directShape.Id.IntegerValue, slab.Id.IntegerValue, slab.UniqueId);
+            SetInstanceParameters(directShape, comment, directShape.Id.Value, slab.Id.Value, slab.UniqueId);
             created.Add(directShape.Id);
             return true;
         }
@@ -572,7 +572,7 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private static void SetInstanceParameters(Element element, string description, int zoneElementId, int sourceElementId, string sourceUniqueId)
+        private static void SetInstanceParameters(Element element, string description, long zoneElementId, long sourceElementId, string sourceUniqueId)
         {
             var commentsText = $"{description} | Source Element Id {sourceElementId} | Source UniqueId {sourceUniqueId}";
             SetComments(element, commentsText);
@@ -624,14 +624,14 @@ namespace RevitSuite.Host.Commands
         {
             if (elem is FamilyInstance instance &&
                 instance.Category != null &&
-                instance.Category.Id.IntegerValue == (int)BuiltInCategory.OST_StructuralFoundation)
+                instance.Category.Id.Value == (long)BuiltInCategory.OST_StructuralFoundation)
             {
                 return true;
             }
 
             if (elem is Floor floor &&
                 floor.Category != null &&
-                floor.Category.Id.IntegerValue == (int)BuiltInCategory.OST_StructuralFoundation)
+                floor.Category.Id.Value == (long)BuiltInCategory.OST_StructuralFoundation)
             {
                 return true;
             }

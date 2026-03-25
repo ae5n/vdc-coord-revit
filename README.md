@@ -1,16 +1,18 @@
 # RevitSuite
 
-Schema-driven Revit add-in (`net48`) for QA/QC and coordination workflows.
+Schema-driven Revit add-in for QA/QC and coordination workflows.
 
 ## Requirements
-- Windows + Autodesk Revit (2024/2025).
-- .NET Framework 4.8 targeting pack + `dotnet` CLI.
+- Windows + Autodesk Revit (2024/2025/2026).
+- .NET SDK 8+ with Windows desktop workloads.
+- .NET Framework 4.8 targeting pack for Revit 2024 builds.
 - Revit API path (auto-resolved by scripts when Revit is in default install location).
 
 ## Build
 ```powershell
 .\build\scripts\build.ps1
 .\build\scripts\build.ps1 -RevitYear 2024
+.\build\scripts\build.ps1 -RevitYear 2026
 .\build\scripts\build.ps1 -RevitYear 2024 -ApiDir "D:\Apps\Autodesk\Revit 2024"
 ```
 
@@ -18,12 +20,13 @@ Schema-driven Revit add-in (`net48`) for QA/QC and coordination workflows.
 ```powershell
 .\deploy.ps1
 .\deploy.ps1 -RevitYear 2024
+.\deploy.ps1 -RevitYear 2026
 .\deploy.ps1 -RevitYear 2024 -ApiDir "D:\Apps\Autodesk\Revit 2024"
 ```
 
 ## Installer (shareable EXE)
 ```powershell
-# Builds version-specific payloads for 2024 + 2025 and packages one installer.
+# Builds version-specific payloads for 2024 + 2025 + 2026 and packages one installer.
 .\installer\build-installer.ps1
 ```
 
@@ -44,7 +47,7 @@ MCP client  →  MCP server (Node.js, stdio)  →  TCP:8080  →  RevitSuite add
 
 **1. Deploy the add-in** (if not already done):
 ```powershell
-.\deploy.ps1 -RevitYear 2025
+.\deploy.ps1 -RevitYear 2026
 ```
 
 **2. Start the MCP server inside Revit**
@@ -61,9 +64,9 @@ Point your MCP client at the deployed server. Example config:
   "mcpServers": {
     "revit-suite": {
       "command": "node",
-      "args": [
-        "C:\\Users\\<username>\\AppData\\Roaming\\Autodesk\\Revit\\Addins\\2025\\RevitSuite\\mcp-server\\build\\index.js"
-      ]
+        "args": [
+        "C:\\Users\\<username>\\AppData\\Roaming\\Autodesk\\Revit\\Addins\\2026\\RevitSuite\\mcp-server\\build\\index.js"
+        ]
     }
   }
 }
@@ -94,7 +97,7 @@ Click **MCP Server** again in the ribbon to stop it. The server also shuts down 
 
 ## Schemas
 - Command defaults are in `schemas/*.schema.json`.
-- Build/deploy sync schemas into host output under `src/RevitSuite.Host\bin\<Config>\net48\schemas\`.
+- Build/deploy sync schemas into host output under `src/RevitSuite.Host\bin\<Config>\<TargetFramework>\schemas\`.
 
 ## Logs
 - `%LOCALAPPDATA%\RevitSuite\logs\`

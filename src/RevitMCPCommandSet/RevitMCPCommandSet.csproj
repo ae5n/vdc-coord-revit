@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFramework Condition="'$(RevitTargetFramework)' == ''">net48</TargetFramework>
+    <TargetFramework Condition="'$(RevitTargetFramework)' != ''">$(RevitTargetFramework)</TargetFramework>
     <OutputType>Library</OutputType>
     <AssemblyName>RevitMCPCommandSet</AssemblyName>
     <RootNamespace>RevitMCPCommandSet</RootNamespace>
@@ -10,8 +11,24 @@
     <Nullable>enable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
     <UseWPF>true</UseWPF>
-    <RevitVersion>2024</RevitVersion>
-    <DefineConstants>REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER</DefineConstants>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <RevitVersion Condition="'$(RevitVersion)' == ''">2024</RevitVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RevitDefineConstants>REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER</RevitDefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(RevitVersion)' == '2025' Or '$(RevitVersion)' == '2026'">
+    <RevitDefineConstants>$(RevitDefineConstants);REVIT2025_OR_GREATER</RevitDefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(RevitVersion)' == '2026'">
+    <RevitDefineConstants>$(RevitDefineConstants);REVIT2026_OR_GREATER</RevitDefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);$(RevitDefineConstants)</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,7 +41,7 @@
     <PackageReference Include="RevitMCPSDK" Version="$(RevitVersion).*" />
   </ItemGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
     <Reference Include="System.Net.Http" />
   </ItemGroup>
 

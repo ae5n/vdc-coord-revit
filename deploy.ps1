@@ -1,5 +1,6 @@
 param(
-    [string]$RevitYear = "2025",
+    [ValidateSet("2024", "2025", "2026")]
+    [string]$RevitYear = "2026",
     [string]$ApiDir
 )
 

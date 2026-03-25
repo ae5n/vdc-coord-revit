@@ -4,6 +4,8 @@ obj/
 build/out/
 installer/out/
 installer/staging/
+installer/staging-test/
+installer/staging-test-abs/
 
 # Python
 __pycache__/

@@ -143,7 +143,7 @@ namespace RevitSuite.Host.Commands
                             var corners = GetFootingCorners(footingInfo.Footing, footingInfo.Transform);
                             if (corners == null || corners.Count == 0)
                             {
-                                LogManager.Warn(correlationId, $"Could not extract corners from Footing {footingInfo.Footing.Id.IntegerValue} in {footingInfo.SourceModel} - skipped.");
+                                LogManager.Warn(correlationId, $"Could not extract corners from Footing {footingInfo.Footing.Id.Value} in {footingInfo.SourceModel} - skipped.");
                                 continue;
                             }
 
@@ -172,7 +172,7 @@ namespace RevitSuite.Host.Commands
                                 if (isDuplicate)
                                 {
                                     duplicatesSkipped++;
-                                    LogManager.Info(correlationId, $"Skipped duplicate corner at ({corner.X:F3}, {corner.Y:F3}, {corner.Z:F3}) for Footing {footingInfo.Footing.Id.IntegerValue}");
+                                    LogManager.Info(correlationId, $"Skipped duplicate corner at ({corner.X:F3}, {corner.Y:F3}, {corner.Z:F3}) for Footing {footingInfo.Footing.Id.Value}");
                                     cornerIndex++;
                                     continue;
                                 }
@@ -219,7 +219,7 @@ namespace RevitSuite.Host.Commands
 
                                     // Generate Point Number with element ID reference
                                     var cornerLabel = GetCornerLabel(cornerIndex, corners.Count);
-                                    pointNumber = $"{prefix}-{footingInfo.Footing.Id.IntegerValue}-{cornerLabel}";
+                                    pointNumber = $"{prefix}-{footingInfo.Footing.Id.Value}-{cornerLabel}";
                                 }
 
                                 // Set Point Number
@@ -238,8 +238,8 @@ namespace RevitSuite.Host.Commands
                                     }
 
                                     var commentText = ifcGuid != null
-                                        ? $"{typeName}: {footingInfo.Footing.Id.IntegerValue} | IFC: {ifcGuid} | Model: {footingInfo.SourceModel}"
-                                        : $"{typeName}: {footingInfo.Footing.Id.IntegerValue} | Model: {footingInfo.SourceModel}";
+                                        ? $"{typeName}: {footingInfo.Footing.Id.Value} | IFC: {ifcGuid} | Model: {footingInfo.SourceModel}"
+                                        : $"{typeName}: {footingInfo.Footing.Id.Value} | Model: {footingInfo.SourceModel}";
 
                                     commentsParam.Set(commentText);
                                 }
@@ -507,7 +507,7 @@ namespace RevitSuite.Host.Commands
                 }
                 catch (Exception ex)
                 {
-                    LogManager.Warn(correlationId, $"Failed to apply model-point override for {pointId.IntegerValue}: {ex.Message}");
+                    LogManager.Warn(correlationId, $"Failed to apply model-point override for {pointId.Value}: {ex.Message}");
                 }
             }
         }
