@@ -566,7 +566,7 @@ namespace RevitSuite.Host.Commands
                         Elevation = GetParameterValueDouble(cp, CsElevationGuid) ?? double.MinValue
                     })
                     .Where(x => x.Easting > double.MinValue && x.Northing > double.MinValue && x.Elevation > double.MinValue)
-                    .Where(x => selectedPointNumbers == null || selectedPointNumbers.Contains($"ID:{x.Element.Id.IntegerValue}"))
+                    .Where(x => selectedPointNumbers == null || selectedPointNumbers.Contains($"ID:{x.Element.Id.Value}"))
                     .ToList();
 
                 LogManager.Info(correlationId, $"Proximity pairing: {candidateModels.Count} model points, {records.Count} CSV records. Max match distance: {proximityMaxDistanceFt:F2} ft. Using globally-sorted nearest-neighbour matching.");
@@ -640,7 +640,7 @@ namespace RevitSuite.Host.Commands
                     var resolvedPointNumber = nearestCandidate.PointNumber;
                     if (string.IsNullOrWhiteSpace(resolvedPointNumber))
                     {
-                        resolvedPointNumber = $"MODEL-{nearestCandidate.Element.Id.IntegerValue}";
+                        resolvedPointNumber = $"MODEL-{nearestCandidate.Element.Id.Value}";
                     }
 
                     deviations.Add(new DeviationResult
@@ -701,7 +701,7 @@ namespace RevitSuite.Host.Commands
                     if (doc.GetElement(reference) is FamilyInstance instance &&
                         string.Equals(instance.Symbol?.Name, "Model", StringComparison.OrdinalIgnoreCase))
                     {
-                        selectedPointNumbers.Add($"ID:{instance.Id.IntegerValue}");
+                        selectedPointNumbers.Add($"ID:{instance.Id.Value}");
                     }
                 }
 

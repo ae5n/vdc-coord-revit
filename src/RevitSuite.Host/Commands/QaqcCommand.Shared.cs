@@ -495,7 +495,7 @@ namespace RevitSuite.Host.Commands
             }
             catch
             {
-                return reference.ElementId.IntegerValue.ToString(CultureInfo.InvariantCulture);
+                return reference.ElementId.Value.ToString(CultureInfo.InvariantCulture);
             }
         }
 
@@ -804,7 +804,7 @@ namespace RevitSuite.Host.Commands
                 }
 
                 return elem.Category != null &&
-                       elem.Category.Id.IntegerValue == (int)BuiltInCategory.OST_Floors;
+                       elem.Category.Id.Value == (long)BuiltInCategory.OST_Floors;
             }
 
             public bool AllowReference(Reference reference, XYZ position) => false;
