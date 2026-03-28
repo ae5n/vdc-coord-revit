@@ -41,6 +41,19 @@ namespace RevitSuite.Host
                     });
                 ApplyIcons(footingZoneButton, RibbonIconFactory.FootingZones);
 
+                var wallFramingButton = AddButton(
+                    automationPanel,
+                    new PushButtonData(
+                        "RevitSuite_WallFraming",
+                        "Wall Framing",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.WallFramingCommand")
+                    {
+                        ToolTip = "Create OFW wall framing and opening framing on selected walls.",
+                        LongDescription = "Frames full wall runs, hosted doors, hosted windows, or both using the OFW framing families currently loaded in the model."
+                    });
+                ApplyIcons(wallFramingButton, RibbonIconFactory.WallFraming);
+
                 var qaqcButton = AddButton(
                     automationPanel,
                     new PushButtonData(

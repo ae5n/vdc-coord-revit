@@ -20,6 +20,7 @@ namespace RevitSuite.Host.UI
         }
 
         public static IconSet FootingZones => _footingZones ??= CreateFootingZonesIconSet();
+        public static IconSet WallFraming => _wallFraming ??= CreateWallFramingIconSet();
         public static IconSet QAQC => _qaqc ??= CreateQaqcIconSet();
         public static IconSet ReportsHub => _reportsHub ??= CreateReportsHubIconSet();
         public static IconSet LevelReport => _levelReport ??= CreateLevelReportIconSet();
@@ -31,6 +32,7 @@ namespace RevitSuite.Host.UI
         public static IconSet McpSettings => _mcpSettings ??= CreateMcpSettingsIconSet();
 
         private static IconSet? _footingZones;
+        private static IconSet? _wallFraming;
         private static IconSet? _qaqc;
         private static IconSet? _reportsHub;
         private static IconSet? _levelReport;
@@ -55,6 +57,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0x15, 0x80, 0x3D),
                 Color.FromRgb(0x22, 0xC5, 0x5E),
                 DrawQaqcContent);
+        }
+
+        private static IconSet CreateWallFramingIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x1F, 0x4E, 0x5F),
+                Color.FromRgb(0x4F, 0x86, 0x8E),
+                DrawWallFramingContent);
         }
 
         private static IconSet CreateReportsHubIconSet()
@@ -214,6 +224,67 @@ namespace RevitSuite.Host.UI
             };
             dashedPen.Freeze();
             dc.DrawLine(dashedPen, new Point(width * 0.26, height * 0.52), new Point(width * 0.74, height * 0.52));
+        }
+
+        private static void DrawWallFramingContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+
+            var wallPen = new Pen(new SolidColorBrush(Color.FromArgb(70, 18, 54, 66)), min * 0.02)
+            {
+                LineJoin = PenLineJoin.Round
+            };
+            wallPen.Freeze();
+
+            var wallBrush = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255));
+            wallBrush.Freeze();
+            dc.DrawRoundedRectangle(wallBrush, wallPen, new Rect(width * 0.12, height * 0.12, width * 0.76, height * 0.76), min * 0.08, min * 0.08);
+
+            var woodBrush = new SolidColorBrush(Color.FromArgb(245, 214, 170, 92));
+            woodBrush.Freeze();
+
+            var woodPen = new Pen(woodBrush, min * 0.085)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            woodPen.Freeze();
+
+            dc.DrawLine(woodPen, new Point(width * 0.18, height * 0.22), new Point(width * 0.82, height * 0.22));
+            dc.DrawLine(woodPen, new Point(width * 0.18, height * 0.82), new Point(width * 0.82, height * 0.82));
+            dc.DrawLine(woodPen, new Point(width * 0.18, height * 0.22), new Point(width * 0.18, height * 0.82));
+            dc.DrawLine(woodPen, new Point(width * 0.82, height * 0.22), new Point(width * 0.82, height * 0.82));
+
+            var jambPen = new Pen(new SolidColorBrush(Color.FromArgb(248, 232, 194, 118)), min * 0.08)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round,
+                LineJoin = PenLineJoin.Round
+            };
+            jambPen.Freeze();
+            dc.DrawLine(jambPen, new Point(width * 0.34, height * 0.22), new Point(width * 0.34, height * 0.82));
+            dc.DrawLine(jambPen, new Point(width * 0.66, height * 0.22), new Point(width * 0.66, height * 0.82));
+
+            var headerPen = new Pen(new SolidColorBrush(Color.FromArgb(248, 223, 178, 84)), min * 0.09)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            headerPen.Freeze();
+            dc.DrawLine(headerPen, new Point(width * 0.36, height * 0.38), new Point(width * 0.64, height * 0.38));
+
+            var doorBrush = new SolidColorBrush(Color.FromArgb(245, 72, 40, 18));
+            doorBrush.Freeze();
+            var doorPen = new Pen(new SolidColorBrush(Color.FromArgb(90, 255, 244, 230)), min * 0.012)
+            {
+                LineJoin = PenLineJoin.Round
+            };
+            doorPen.Freeze();
+            dc.DrawRoundedRectangle(doorBrush, doorPen, new Rect(width * 0.39, height * 0.42, width * 0.22, height * 0.38), min * 0.035, min * 0.035);
+
+            var handleBrush = new SolidColorBrush(Color.FromArgb(235, 255, 255, 255));
+            handleBrush.Freeze();
+            dc.DrawEllipse(handleBrush, null, new Point(width * 0.565, height * 0.61), min * 0.028, min * 0.028);
         }
 
         private static void DrawReportsHubContent(DrawingContext dc, double width, double height)
