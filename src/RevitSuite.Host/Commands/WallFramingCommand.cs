@@ -141,6 +141,7 @@ namespace RevitSuite.Host.Commands
                                     SetDoubleParameter(wallFrame, "Structural Depth", depthResult.Depth);
                                     SetStringParameter(wallFrame, "Mark", $"{wallMark}-P01");
                                     RotateToWallDirection(doc, wallFrame, panelPoint, hostCurve);
+                                    doc.Regenerate();
                                     createdWallFrames++;
                                 }
                                 else
@@ -376,22 +377,22 @@ namespace RevitSuite.Host.Commands
                 return new DepthResolutionResult(options.ManualDepthFeet, null);
             }
 
-            var structuralDepth = GetStructuralLayerDepth(wall);
+            var framingLayer = ResolvePreferredFramingLayer(wall);
             var overallDepth = wall.Width;
 
             return options.DepthSource switch
             {
-                WallFramingDepthSource.StructuralLayerOnly => structuralDepth.HasValue
-                    ? new DepthResolutionResult(structuralDepth.Value, null)
-                    : new DepthResolutionResult(overallDepth, "no structural layer was found, so overall wall thickness was used"),
+                WallFramingDepthSource.StructuralLayerOnly => framingLayer != null
+                    ? new DepthResolutionResult(framingLayer.Width, null)
+                    : new DepthResolutionResult(overallDepth, "no framing layer was found, so overall wall thickness was used"),
                 WallFramingDepthSource.OverallWallThickness => new DepthResolutionResult(overallDepth, null),
-                _ => structuralDepth.HasValue
-                    ? new DepthResolutionResult(structuralDepth.Value, null)
-                    : new DepthResolutionResult(overallDepth, "no structural layer was found, so overall wall thickness was used")
+                _ => framingLayer != null
+                    ? new DepthResolutionResult(framingLayer.Width, null)
+                    : new DepthResolutionResult(overallDepth, "no framing layer was found, so overall wall thickness was used")
             };
         }
 
-        private static double? GetStructuralLayerDepth(Wall wall)
+        private static FramingLayerResult? ResolvePreferredFramingLayer(Wall wall)
         {
             if (wall.WallType.Kind != WallKind.Basic)
             {
@@ -404,12 +405,82 @@ namespace RevitSuite.Host.Commands
                 return null;
             }
 
-            var structuralLayers = structure.GetLayers()
-                .Where(layer => layer.Function == MaterialFunctionAssignment.Structure && layer.Width > 0)
-                .Select(layer => layer.Width)
+            var layers = structure.GetLayers();
+            if (layers == null || layers.Count == 0)
+            {
+                return null;
+            }
+
+            var totalLayerWidth = layers.Sum(layer => layer.Width);
+            if (totalLayerWidth <= 1e-9)
+            {
+                totalLayerWidth = wall.Width;
+            }
+
+            var layerInfos = layers
+                .Select((layer, index) => new
+                {
+                    Layer = layer,
+                    Index = index,
+                    WidthBefore = layers.Take(index).Sum(item => item.Width),
+                    MaterialName = GetLayerMaterialName(wall.Document, layer.MaterialId)
+                })
+                .Where(item => item.Layer.Width > 1e-6)
                 .ToList();
 
-            return structuralLayers.Count > 0 ? structuralLayers.Max() : null;
+            if (layerInfos.Count == 0)
+            {
+                return null;
+            }
+
+            var woodStudLayer = layerInfos
+                .Where(item => item.MaterialName.IndexOf("wood stud", StringComparison.OrdinalIgnoreCase) >= 0)
+                .OrderByDescending(item => item.Layer.Width)
+                .ThenBy(item => item.Index)
+                .FirstOrDefault();
+
+            if (woodStudLayer != null)
+            {
+                return CreateFramingLayerResult(woodStudLayer.WidthBefore, woodStudLayer.Layer.Width, totalLayerWidth);
+            }
+
+            var structuralLayer = layerInfos
+                .Where(item => item.Layer.Function == MaterialFunctionAssignment.Structure)
+                .OrderByDescending(item => item.Layer.Width)
+                .ThenBy(item => item.Index)
+                .FirstOrDefault();
+
+            if (structuralLayer != null)
+            {
+                return CreateFramingLayerResult(structuralLayer.WidthBefore, structuralLayer.Layer.Width, totalLayerWidth);
+            }
+
+            var thickestLayer = layerInfos
+                .OrderByDescending(item => item.Layer.Width)
+                .ThenBy(item => item.Index)
+                .First();
+
+            return CreateFramingLayerResult(thickestLayer.WidthBefore, thickestLayer.Layer.Width, totalLayerWidth);
+        }
+
+        private static string GetLayerMaterialName(Document document, ElementId materialId)
+        {
+            if (materialId == ElementId.InvalidElementId)
+            {
+                return string.Empty;
+            }
+
+            return (document.GetElement(materialId) as Material)?.Name ?? string.Empty;
+        }
+
+        private static FramingLayerResult CreateFramingLayerResult(double widthBefore, double layerWidth, double totalLayerWidth)
+        {
+            var halfTotalWidth = totalLayerWidth / 2.0;
+            var openingOffset = halfTotalWidth - widthBefore;
+            var wallOffset = halfTotalWidth - widthBefore - layerWidth;
+            var centerOffset = (openingOffset + wallOffset) / 2.0;
+
+            return new FramingLayerResult(layerWidth, centerOffset, openingOffset, wallOffset);
         }
 
         private static List<OpeningSpan> ResolveOpeningSpans(
@@ -827,45 +898,10 @@ namespace RevitSuite.Host.Commands
 
         private static PlacementOffsetResult ResolvePlacementOffsets(Wall wall)
         {
-            var totalWidth = wall.Width;
-            if (wall.WallType.Kind != WallKind.Basic)
-            {
-                return new PlacementOffsetResult(totalWidth / 2.0, -totalWidth / 2.0);
-            }
-
-            var structure = wall.WallType.GetCompoundStructure();
-            var layers = structure?.GetLayers();
-            if (layers == null || layers.Count == 0)
-            {
-                return new PlacementOffsetResult(totalWidth / 2.0, -totalWidth / 2.0);
-            }
-
-            var totalLayerWidth = layers.Sum(layer => layer.Width);
-            if (totalLayerWidth <= 1e-9)
-            {
-                return new PlacementOffsetResult(totalWidth / 2.0, -totalWidth / 2.0);
-            }
-
-            var structuralIndexes = layers
-                .Select((layer, index) => new { layer, index })
-                .Where(item => item.layer.Function == MaterialFunctionAssignment.Structure && item.layer.Width > 0)
-                .Select(item => item.index)
-                .ToList();
-
-            if (structuralIndexes.Count == 0)
-            {
-                return new PlacementOffsetResult(totalLayerWidth / 2.0, -totalLayerWidth / 2.0);
-            }
-
-            var firstStructuralIndex = structuralIndexes.Min();
-            var lastStructuralIndex = structuralIndexes.Max();
-            var widthBeforeStructural = layers.Take(firstStructuralIndex).Sum(layer => layer.Width);
-            var widthThroughStructural = layers.Take(lastStructuralIndex + 1).Sum(layer => layer.Width);
-            var halfTotalWidth = totalLayerWidth / 2.0;
-
-            return new PlacementOffsetResult(
-                widthThroughStructural - halfTotalWidth,
-                widthBeforeStructural - halfTotalWidth);
+            var framingLayer = ResolvePreferredFramingLayer(wall);
+            return framingLayer != null
+                ? new PlacementOffsetResult(framingLayer.OpeningOffset, framingLayer.WallOffset)
+                : new PlacementOffsetResult(0.0, 0.0);
         }
 
         private static double? GetInstanceOrTypeDouble(FamilyInstance instance, string parameterName)
@@ -1103,6 +1139,25 @@ namespace RevitSuite.Host.Commands
                 OpeningOffset = openingOffset;
                 WallOffset = wallOffset;
             }
+
+            public double OpeningOffset { get; }
+
+            public double WallOffset { get; }
+        }
+
+        private sealed class FramingLayerResult
+        {
+            public FramingLayerResult(double width, double centerOffset, double openingOffset, double wallOffset)
+            {
+                Width = width;
+                CenterOffset = centerOffset;
+                OpeningOffset = openingOffset;
+                WallOffset = wallOffset;
+            }
+
+            public double Width { get; }
+
+            public double CenterOffset { get; }
 
             public double OpeningOffset { get; }
 
