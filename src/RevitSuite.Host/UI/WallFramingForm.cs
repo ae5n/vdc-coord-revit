@@ -13,12 +13,21 @@ namespace RevitSuite.Host.UI
         Manual
     }
 
+    internal enum WallFramingManualReference
+    {
+        ExteriorFaceOfWall,
+        InteriorFaceOfWall,
+        WallCenterline
+    }
+
     internal sealed class WallFramingOptions
     {
         public bool FrameWall { get; set; }
         public bool FrameOpenings { get; set; }
         public WallFramingDepthSource DepthSource { get; set; }
         public double ManualDepthFeet { get; set; }
+        public WallFramingManualReference ManualReference { get; set; }
+        public double ManualInsetFeet { get; set; }
     }
 
     internal class WallFramingForm : WinForms.Form
@@ -44,7 +53,13 @@ namespace RevitSuite.Host.UI
             DropDownStyle = WinForms.ComboBoxStyle.DropDownList
         };
 
+        private readonly WinForms.ComboBox _manualReferenceCombo = new()
+        {
+            DropDownStyle = WinForms.ComboBoxStyle.DropDownList
+        };
+
         private readonly WinForms.TextBox _manualDepthBox = new();
+        private readonly WinForms.TextBox _manualInsetBox = new() { Text = "0" };
         private readonly WinForms.Button _okButton = new() { Text = "OK", Width = 90 };
         private readonly WinForms.Button _cancelButton = new() { Text = "Cancel", Width = 90 };
 
@@ -72,6 +87,14 @@ namespace RevitSuite.Host.UI
             });
             _depthSourceCombo.SelectedIndex = 0;
             _depthSourceCombo.SelectedIndexChanged += (_, _) => UpdateManualDepthState();
+
+            _manualReferenceCombo.Items.AddRange(new object[]
+            {
+                "Exterior face of wall",
+                "Interior face of wall",
+                "Wall centerline"
+            });
+            _manualReferenceCombo.SelectedIndex = 0;
 
             _okButton.DialogResult = WinForms.DialogResult.OK;
             _okButton.Click += OnOkClick;
@@ -159,7 +182,7 @@ namespace RevitSuite.Host.UI
             {
                 Dock = WinForms.DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 3,
+                RowCount = 5,
                 AutoSize = true
             };
             layout.ColumnStyles.Add(new WinForms.ColumnStyle(WinForms.SizeType.Percent, 45));
@@ -167,15 +190,17 @@ namespace RevitSuite.Host.UI
 
             AddLabeledRow(layout, "Depth source:", _depthSourceCombo, 0);
             AddLabeledRow(layout, "Manual depth (in):", _manualDepthBox, 1);
+            AddLabeledRow(layout, "Manual reference:", _manualReferenceCombo, 2);
+            AddLabeledRow(layout, "Manual inset (in):", _manualInsetBox, 3);
 
             var note = new WinForms.Label
             {
-                Text = "Auto uses the structural wall layer when present and falls back to overall wall thickness.",
+                Text = "Manual mode reuses the same placement math as auto mode, but treats the entered depth and reference as a virtual framing layer inside the wall.",
                 AutoSize = true,
                 MaximumSize = new Size(420, 0),
                 Margin = new WinForms.Padding(0, 6, 0, 0)
             };
-            layout.Controls.Add(note, 0, 2);
+            layout.Controls.Add(note, 0, 4);
             layout.SetColumnSpan(note, 2);
 
             group.Controls.Add(layout);
@@ -202,7 +227,10 @@ namespace RevitSuite.Host.UI
 
         private void UpdateManualDepthState()
         {
-            _manualDepthBox.Enabled = _depthSourceCombo.SelectedIndex == (int) WallFramingDepthSource.Manual;
+            var enabled = _depthSourceCombo.SelectedIndex == (int) WallFramingDepthSource.Manual;
+            _manualDepthBox.Enabled = enabled;
+            _manualReferenceCombo.Enabled = enabled;
+            _manualInsetBox.Enabled = enabled;
         }
 
         private void OnOkClick(object? sender, EventArgs e)
@@ -216,6 +244,7 @@ namespace RevitSuite.Host.UI
 
             var depthSource = (WallFramingDepthSource) _depthSourceCombo.SelectedIndex;
             var manualDepthFeet = 0.0;
+            var manualInsetFeet = 0.0;
 
             if (depthSource == WallFramingDepthSource.Manual)
             {
@@ -228,6 +257,16 @@ namespace RevitSuite.Host.UI
                 }
 
                 manualDepthFeet = manualDepthInches / 12.0;
+
+                if (!double.TryParse(_manualInsetBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var manualInsetInches) ||
+                    manualInsetInches < 0)
+                {
+                    ShowValidationError("Manual inset must be zero or a positive number in inches.");
+                    DialogResult = WinForms.DialogResult.None;
+                    return;
+                }
+
+                manualInsetFeet = manualInsetInches / 12.0;
             }
 
             Options = new WallFramingOptions
@@ -235,7 +274,9 @@ namespace RevitSuite.Host.UI
                 FrameWall = _frameWallCheck.Checked,
                 FrameOpenings = _frameOpeningsCheck.Checked,
                 DepthSource = depthSource,
-                ManualDepthFeet = manualDepthFeet
+                ManualDepthFeet = manualDepthFeet,
+                ManualReference = (WallFramingManualReference) _manualReferenceCombo.SelectedIndex,
+                ManualInsetFeet = manualInsetFeet
             };
         }
 

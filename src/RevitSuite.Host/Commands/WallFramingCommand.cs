@@ -120,7 +120,7 @@ namespace RevitSuite.Host.Commands
                             warnings.Add($"{wallSource.DisplayName}: {depthResult.Warning}");
                         }
 
-                        var placementOffsets = ResolvePlacementOffsets(wall);
+                        var placementOffsets = ResolvePlacementOffsets(wall, options);
 
                         var resolvedOpenings = ResolveOpeningSpans(wallSource, hostCurve, level.Elevation, warnings);
 
@@ -896,12 +896,36 @@ namespace RevitSuite.Host.Commands
             return current.Sources.Count >= candidate.Sources.Count ? current : candidate;
         }
 
-        private static PlacementOffsetResult ResolvePlacementOffsets(Wall wall)
+        private static PlacementOffsetResult ResolvePlacementOffsets(Wall wall, WallFramingOptions options)
         {
+            if (options.DepthSource == WallFramingDepthSource.Manual)
+            {
+                return ResolveManualPlacementOffsets(wall, options);
+            }
+
             var framingLayer = ResolvePreferredFramingLayer(wall);
             return framingLayer != null
                 ? new PlacementOffsetResult(framingLayer.OpeningOffset, framingLayer.WallOffset)
                 : new PlacementOffsetResult(0.0, 0.0);
+        }
+
+        private static PlacementOffsetResult ResolveManualPlacementOffsets(Wall wall, WallFramingOptions options)
+        {
+            var totalWallWidth = Math.Max(wall.Width, 0.0);
+            var manualDepth = Math.Max(options.ManualDepthFeet, 0.0);
+            var maxWidthBefore = Math.Max(0.0, totalWallWidth - manualDepth);
+
+            double widthBefore = options.ManualReference switch
+            {
+                WallFramingManualReference.ExteriorFaceOfWall => options.ManualInsetFeet,
+                WallFramingManualReference.InteriorFaceOfWall => totalWallWidth - options.ManualInsetFeet - manualDepth,
+                WallFramingManualReference.WallCenterline => (totalWallWidth / 2.0) - (manualDepth / 2.0),
+                _ => options.ManualInsetFeet
+            };
+
+            widthBefore = Math.Max(0.0, Math.Min(maxWidthBefore, widthBefore));
+            var virtualLayer = CreateFramingLayerResult(widthBefore, manualDepth, totalWallWidth);
+            return new PlacementOffsetResult(virtualLayer.OpeningOffset, virtualLayer.WallOffset);
         }
 
         private static double? GetInstanceOrTypeDouble(FamilyInstance instance, string parameterName)
