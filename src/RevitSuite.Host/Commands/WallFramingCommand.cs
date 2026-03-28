@@ -480,6 +480,14 @@ namespace RevitSuite.Host.Commands
 
             if (openingSource.Element is FamilyInstance familyInstance)
             {
+                // Prefer one consistent source of truth for compound/asymmetric openings:
+                // use the projected family geometry extents when available so king studs
+                // land on the true outer opening width instead of a leaf-only width.
+                if (TryGetProjectedSolidSpanDistances(familyInstance, openingSource.WallSource, origin, direction, out start, out end))
+                {
+                    return end > start;
+                }
+
                 var width = GetPreferredOpeningDimension(familyInstance, new[]
                 {
                     "Rough Width",
@@ -564,6 +572,50 @@ namespace RevitSuite.Host.Commands
             }
 
             return direction.DotProduct(centerPoint - origin);
+        }
+
+        private static bool TryGetProjectedSolidSpanDistances(
+            FamilyInstance familyInstance,
+            WallSource wallSource,
+            XYZ origin,
+            XYZ direction,
+            out double start,
+            out double end)
+        {
+            start = 0.0;
+            end = 0.0;
+
+            var options = new Options
+            {
+                IncludeNonVisibleObjects = false,
+                DetailLevel = ViewDetailLevel.Fine
+            };
+
+            GeometryElement symbolGeometry;
+            try
+            {
+                symbolGeometry = familyInstance.Symbol.get_Geometry(options);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (symbolGeometry == null)
+            {
+                return false;
+            }
+
+            var distances = new List<double>();
+            CollectProjectedSolidDistances(symbolGeometry, familyInstance.GetTotalTransform(), wallSource, origin, direction, distances);
+            if (distances.Count == 0)
+            {
+                return false;
+            }
+
+            start = distances.Min();
+            end = distances.Max();
+            return end > start;
         }
 
         private static double? TryGetProjectedSolidCenterDistance(
