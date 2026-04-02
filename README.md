@@ -11,6 +11,7 @@ Schema-driven Revit add-in for QA/QC and coordination workflows.
 ## Build
 ```powershell
 .\build\scripts\build.ps1
+.\build\scripts\build.ps1 -Version 0.1.0-beta.1
 .\build\scripts\build.ps1 -RevitYear 2024
 .\build\scripts\build.ps1 -RevitYear 2026
 .\build\scripts\build.ps1 -RevitYear 2024 -ApiDir "D:\Apps\Autodesk\Revit 2024"
@@ -19,6 +20,7 @@ Schema-driven Revit add-in for QA/QC and coordination workflows.
 ## Deploy (local)
 ```powershell
 .\deploy.ps1
+.\deploy.ps1 -Version 0.1.0-beta.1
 .\deploy.ps1 -RevitYear 2024
 .\deploy.ps1 -RevitYear 2026
 .\deploy.ps1 -RevitYear 2024 -ApiDir "D:\Apps\Autodesk\Revit 2024"
@@ -28,10 +30,28 @@ Schema-driven Revit add-in for QA/QC and coordination workflows.
 ```powershell
 # Builds version-specific payloads for 2024 + 2025 + 2026 and packages one installer.
 .\installer\build-installer.ps1
+.\installer\build-installer.ps1 -Version 0.1.0-beta.1
 ```
 
 Output:
-- `installer\out\RevitSuite-Setup.exe`
+- `installer\out\RevitSuite-Setup-<version>.exe`
+
+## Versioning
+- Use semantic versions: `0.1.0-beta.1`, `0.1.0-beta.2`, `0.1.0`, `0.2.0`.
+- Keep preview builds below `1.0.0` while the add-in is still internal/beta.
+- Pass the version through the scripts so the assemblies and installer stay aligned.
+- Use the release helper to bump the repo version without editing XML manually:
+```powershell
+.\build\scripts\release.ps1 -Beta
+.\build\scripts\release.ps1 -Patch
+.\build\scripts\release.ps1 -Stable
+.\build\scripts\release.ps1 -SetVersion 0.2.0-beta.1
+```
+- Recommended internal release flow:
+  - `main` stays releasable.
+  - Build preview installers for testers with `-Version 0.x.y-beta.n`.
+  - Collect feedback/fixes.
+  - Promote the same change set to a stable `0.x.y` or `1.0.0` when ready.
 
 ## MCP Server
 

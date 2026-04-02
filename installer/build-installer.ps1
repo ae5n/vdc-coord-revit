@@ -4,10 +4,13 @@ param(
     [Alias("RevitYear")]
     [ValidateSet("2024", "2025", "2026")]
     [string[]]$RevitYears = @("2024", "2025", "2026"),
-    [string]$ApiDir
+    [string]$ApiDir,
+    [string]$Version = "0.1.0-beta.1"
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path $PSScriptRoot "..\build\scripts\versioning.ps1")
 
 function Resolve-Iscc {
     $iscc = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
@@ -53,12 +56,12 @@ New-Item -ItemType Directory -Path $stagingRoot | Out-Null
 New-Item -ItemType Directory -Path $stagingAddinsRoot | Out-Null
 
 foreach ($year in ($RevitYears | Select-Object -Unique)) {
-    Write-Host "Building payload for Revit $year ($Configuration)..." -ForegroundColor Cyan
+    Write-Host "Building payload for Revit $year ($Configuration, version $Version)..." -ForegroundColor Cyan
     if ($ApiDir) {
-        & $buildScript -RevitYear $year -Configuration $Configuration -ApiDir $ApiDir
+        & $buildScript -RevitYear $year -Configuration $Configuration -ApiDir $ApiDir -Version $Version
     }
     else {
-        & $buildScript -RevitYear $year -Configuration $Configuration
+        & $buildScript -RevitYear $year -Configuration $Configuration -Version $Version
     }
 
     & $installScript -RevitYear $year -Configuration $Configuration -TargetRoot $stagingAddinsRoot
@@ -69,6 +72,8 @@ Write-Host "Compiling installer with $isccPath..." -ForegroundColor Cyan
 Push-Location (Join-Path $repoRoot "installer")
 try {
     & $isccPath `
+        ("/DAppVersion=" + $Version) `
+        ("/DSetupBaseName=RevitSuite-Setup-" + $Version) `
         ("/DSource2024=" + (Join-Path $stagingAddinsRoot "2024\RevitSuite")) `
         ("/DSource2025=" + (Join-Path $stagingAddinsRoot "2025\RevitSuite")) `
         ("/DSource2026=" + (Join-Path $stagingAddinsRoot "2026\RevitSuite")) `
@@ -78,7 +83,7 @@ finally {
     Pop-Location
 }
 
-$outPath = Join-Path $repoRoot "installer\out\RevitSuite-Setup.exe"
+$outPath = Join-Path $repoRoot ("installer\out\RevitSuite-Setup-{0}.exe" -f $Version)
 if (Test-Path $outPath) {
     Write-Host "Installer created: $outPath" -ForegroundColor Green
 }

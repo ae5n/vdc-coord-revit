@@ -30,6 +30,7 @@ namespace RevitSuite.Host.UI
         public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
         public static IconSet Mcp => _mcp ??= CreateMcpIconSet();
         public static IconSet McpSettings => _mcpSettings ??= CreateMcpSettingsIconSet();
+        public static IconSet About => _about ??= CreateAboutIconSet();
 
         private static IconSet? _footingZones;
         private static IconSet? _wallFraming;
@@ -42,6 +43,7 @@ namespace RevitSuite.Host.UI
         private static IconSet? _copyLinkedViews;
         private static IconSet? _mcp;
         private static IconSet? _mcpSettings;
+        private static IconSet? _about;
 
         private static IconSet CreateFootingZonesIconSet()
         {
@@ -129,6 +131,14 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0x3B, 0x1F, 0x7A),
                 Color.FromRgb(0x7C, 0x4D, 0xE8),
                 DrawMcpSettingsContent);
+        }
+
+        private static IconSet CreateAboutIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x3E, 0x4A, 0x1F),
+                Color.FromRgb(0x8E, 0xB7, 0x3D),
+                DrawAboutContent);
         }
 
         private static IconSet CreateIconSet(
@@ -687,6 +697,30 @@ namespace RevitSuite.Host.UI
             var holeBrush = new SolidColorBrush(Color.FromArgb(255, 58, 125, 160));
             holeBrush.Freeze();
             dc.DrawEllipse(holeBrush, null, center, min * 0.11, min * 0.11);
+        }
+
+        private static void DrawAboutContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+            var ringBrush = new SolidColorBrush(Color.FromArgb(215, 255, 255, 255));
+            ringBrush.Freeze();
+            var ringPen = new Pen(new SolidColorBrush(Color.FromArgb(235, 255, 255, 255)), min * 0.06);
+            ringPen.Freeze();
+
+            var center = new Point(width * 0.50, height * 0.50);
+            dc.DrawEllipse(ringBrush, ringPen, center, min * 0.28, min * 0.28);
+
+            var dotBrush = new SolidColorBrush(Color.FromArgb(245, 79, 96, 20));
+            dotBrush.Freeze();
+            dc.DrawEllipse(dotBrush, null, new Point(width * 0.50, height * 0.30), min * 0.05, min * 0.05);
+
+            var stemPen = new Pen(new SolidColorBrush(Color.FromArgb(245, 79, 96, 20)), min * 0.10)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            stemPen.Freeze();
+            dc.DrawLine(stemPen, new Point(width * 0.50, height * 0.42), new Point(width * 0.50, height * 0.66));
         }
     }
 }

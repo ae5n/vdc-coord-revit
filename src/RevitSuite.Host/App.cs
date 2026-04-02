@@ -14,6 +14,7 @@ namespace RevitSuite.Host
         private const string ViewsPanelName = "Views";
         private const string ExportsPanelName = "Exports";
         private const string McpPanelName = "MCP";
+        private const string HelpPanelName = "Help";
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -25,6 +26,7 @@ namespace RevitSuite.Host
                 var viewsPanel = GetOrCreatePanel(application, ViewsPanelName);
                 var exportsPanel = GetOrCreatePanel(application, ExportsPanelName);
                 var mcpPanel = GetOrCreatePanel(application, McpPanelName);
+                var helpPanel = GetOrCreatePanel(application, HelpPanelName);
 
                 var assemblyPath = Assembly.GetExecutingAssembly().Location;
 
@@ -167,6 +169,19 @@ namespace RevitSuite.Host
                         LongDescription = "Opens the MCP tool settings window. Toggle tools on or off, then restart the MCP server for changes to take effect."
                     });
                 ApplyIcons(mcpSettingsButton, RibbonIconFactory.McpSettings);
+
+                var aboutButton = AddButton(
+                    helpPanel,
+                    new PushButtonData(
+                        "RevitSuite_About",
+                        "About",
+                        assemblyPath,
+                        "RevitSuite.Host.Commands.AboutRevitSuiteCommand")
+                    {
+                        ToolTip = "Show the installed RevitSuite version.",
+                        LongDescription = "Displays the installed RevitSuite product version and assembly path for support and tester verification."
+                    });
+                ApplyIcons(aboutButton, RibbonIconFactory.About);
 
                 return Result.Succeeded;
             }
