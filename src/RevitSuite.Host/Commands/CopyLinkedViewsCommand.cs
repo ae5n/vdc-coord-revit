@@ -89,6 +89,7 @@ namespace RevitSuite.Host.Commands
                                 viewSelection.ViewId,
                                 resourceResolver,
                                 templateCache,
+                                selection.CopyCategoryVisibility,
                                 summary))
                         {
                             continue;
@@ -132,7 +133,7 @@ namespace RevitSuite.Host.Commands
                     continue;
                 }
 
-                var displayName = $"{linkDocument.Title} ({instance.Name})";
+                var displayName = linkDocument.Title;
                 var views = CollectViews(linkDocument, displayName);
                 var viewSets = CollectViewSets(linkDocument, views);
 
@@ -160,6 +161,7 @@ namespace RevitSuite.Host.Commands
             foreach (var view in orderedViews)
             {
                 var syntheticKey = GetSyntheticViewSetKey(view);
+                var browserFolderPath = GetBrowserFolderPath(linkDocument, view);
                 result.Add(new ViewOption(
                     linkDisplayName,
                     linkDocument,
@@ -167,7 +169,8 @@ namespace RevitSuite.Host.Commands
                     view.UniqueId,
                     view.Name,
                     view.ViewType,
-                    syntheticKey));
+                    syntheticKey,
+                    browserFolderPath));
             }
 
             return result;
@@ -199,6 +202,34 @@ namespace RevitSuite.Host.Commands
             }
 
             return null;
+        }
+
+        private static IReadOnlyList<string> GetBrowserFolderPath(Document linkDocument, View view)
+        {
+            var segments = new List<string>();
+
+            try
+            {
+                var browserOrganization = BrowserOrganization.GetCurrentBrowserOrganizationForViews(linkDocument);
+                if (browserOrganization == null)
+                {
+                    return segments;
+                }
+
+                foreach (FolderItemInfo folder in browserOrganization.GetFolderItems(view.Id))
+                {
+                    if (!string.IsNullOrWhiteSpace(folder?.Name))
+                    {
+                        segments.Add(folder.Name.Trim());
+                    }
+                }
+            }
+            catch
+            {
+                // Browser organization can fail for some documents/configurations; fall back to flat grouping.
+            }
+
+            return segments;
         }
 
         private static List<ViewSetOption> CollectViewSets(Document linkDocument, IReadOnlyCollection<ViewOption> availableViews)
@@ -343,6 +374,7 @@ namespace RevitSuite.Host.Commands
             ElementId viewId,
             HostResourceResolver resourceResolver,
             Dictionary<string, ElementId> templateCache,
+            bool copyCategoryVisibility,
             CopySummary summary)
         {
             var linkDocument = linkedModel.LinkDocument;
@@ -360,15 +392,22 @@ namespace RevitSuite.Host.Commands
             }
 
             var usedNames = summary.GetNameSet(hostDocument);
-            var baseName = $"{sourceView.Name} ({linkedModel.DisplayName})";
+            var baseName = sourceView.Name;
             var targetName = BuildUniqueName(baseName, usedNames);
+
+            var copiedViewId = TryNativeCopyView(hostDocument, sourceView, targetName, summary);
+            if (copiedViewId != null && copiedViewId != ElementId.InvalidElementId)
+            {
+                summary.RegisterCopiedView(sourceView, hostDocument.GetElement(copiedViewId) as View);
+                return true;
+            }
 
             var newViewId = sourceView.ViewType switch
             {
-                ViewType.FloorPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, summary),
-                ViewType.CeilingPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, summary),
-                ViewType.EngineeringPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, summary),
-                ViewType.ThreeD => CopyThreeDView(hostDocument, sourceView as View3D, targetName, resourceResolver, templateCache, summary),
+                ViewType.FloorPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
+                ViewType.CeilingPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
+                ViewType.EngineeringPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
+                ViewType.ThreeD => CopyThreeDView(hostDocument, sourceView as View3D, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
                 _ => null
             };
 
@@ -381,6 +420,47 @@ namespace RevitSuite.Host.Commands
             return false;
         }
 
+        private static ElementId? TryNativeCopyView(
+            Document hostDocument,
+            View sourceView,
+            string targetName,
+            CopySummary summary)
+        {
+            try
+            {
+                var options = new CopyPasteOptions();
+                options.SetDuplicateTypeNamesHandler(new UseDestinationTypesHandler());
+
+                var copiedIds = ElementTransformUtils.CopyElements(
+                    sourceView.Document,
+                    new[] { sourceView.Id },
+                    hostDocument,
+                    Transform.Identity,
+                    options);
+
+                var copiedView = copiedIds
+                    .Select(id => hostDocument.GetElement(id) as View)
+                    .FirstOrDefault(view => view != null && !view.IsTemplate);
+
+                if (copiedView == null)
+                {
+                    return null;
+                }
+
+                if (!string.Equals(copiedView.Name, targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    copiedView.Name = targetName;
+                }
+
+                return copiedView.Id;
+            }
+            catch (Exception ex)
+            {
+                summary.AddWarning($"INFO: Native copy for view '{sourceView.Name}' fell back to manual copy: {ex.Message}");
+                return null;
+            }
+        }
+
         private static ElementId? CopyPlanLikeView(
             Document hostDocument,
             ViewPlan? sourcePlan,
@@ -388,6 +468,7 @@ namespace RevitSuite.Host.Commands
             string targetName,
             HostResourceResolver resourceResolver,
             Dictionary<string, ElementId> templateCache,
+            bool copyCategoryVisibility,
             CopySummary summary)
         {
             if (sourcePlan == null)
@@ -403,7 +484,7 @@ namespace RevitSuite.Host.Commands
                 return null;
             }
 
-            var hostViewFamilyType = resourceResolver.ResolveViewFamilyType(sourceType.ViewFamily);
+            var hostViewFamilyType = resourceResolver.ResolveOrCreateViewFamilyType(sourceType, summary);
             if (hostViewFamilyType == null)
             {
                 summary.AddWarning($"View '{sourcePlan.Name}' skipped: host document lacks a '{sourceType.ViewFamily}' view family type.");
@@ -425,9 +506,13 @@ namespace RevitSuite.Host.Commands
             }
 
             var newView = ViewPlan.Create(hostDocument, hostViewFamilyType.Id, hostLevel.Id);
-            ApplyTemplate(templateCache, newView, sourcePlan, hostDocument, linkDocument, summary);
             ApplyCommonViewSettings(newView, sourcePlan, targetName);
             CopyPlanViewSpecifics(newView, sourcePlan);
+            if (copyCategoryVisibility)
+            {
+                CopyCategoryHiddenStates(newView, sourcePlan);
+            }
+            ApplyTemplate(templateCache, newView, sourcePlan, hostDocument, linkDocument, summary);
             return newView.Id;
         }
 
@@ -437,6 +522,7 @@ namespace RevitSuite.Host.Commands
             string targetName,
             HostResourceResolver resourceResolver,
             Dictionary<string, ElementId> templateCache,
+            bool copyCategoryHiddenStates,
             CopySummary summary)
         {
             if (sourceView == null)
@@ -445,7 +531,14 @@ namespace RevitSuite.Host.Commands
                 return null;
             }
 
-            var hostViewFamilyType = resourceResolver.ResolveViewFamilyType(ViewFamily.ThreeDimensional);
+            var sourceType = sourceView.Document.GetElement(sourceView.GetTypeId()) as ViewFamilyType;
+            if (sourceType == null)
+            {
+                summary.AddWarning($"3D View '{sourceView.Name}' skipped: missing source view family type.");
+                return null;
+            }
+
+            var hostViewFamilyType = resourceResolver.ResolveOrCreateViewFamilyType(sourceType, summary);
             if (hostViewFamilyType == null)
             {
                 summary.AddWarning($"3D View '{sourceView.Name}' skipped: host document has no 3D view family type.");
@@ -465,9 +558,13 @@ namespace RevitSuite.Host.Commands
                 return null;
             }
 
-            ApplyTemplate(templateCache, newView, sourceView, hostDocument, sourceView.Document, summary);
             ApplyCommonViewSettings(newView, sourceView, targetName);
             CopyThreeDViewSpecifics(newView, sourceView);
+            if (copyCategoryHiddenStates)
+            {
+                CopyCategoryHiddenStates(newView, sourceView);
+            }
+            ApplyTemplate(templateCache, newView, sourceView, hostDocument, sourceView.Document, summary);
             return newView.Id;
         }
 
@@ -596,18 +693,93 @@ namespace RevitSuite.Host.Commands
         {
             try
             {
-                targetView.IsSectionBoxActive = sourceView.IsSectionBoxActive;
                 targetView.DetailLevel = sourceView.DetailLevel;
                 targetView.SetOrientation(sourceView.GetOrientation());
                 if (sourceView.GetSectionBox() is BoundingBoxXYZ sectionBox)
                 {
                     targetView.SetSectionBox(CloneBoundingBox(sectionBox));
                 }
+
+                // Apply the active state last because SetSectionBox can reactivate it.
+                targetView.IsSectionBoxActive = sourceView.IsSectionBoxActive;
             }
             catch
             {
                 // Orientation or section box copy can fail for perspective views with locked conditions.
             }
+        }
+
+        private static void CopyCategoryHiddenStates(View targetView, View sourceView)
+        {
+            foreach (Category category in sourceView.Document.Settings.Categories)
+            {
+                try
+                {
+                    if (category?.Id == null)
+                    {
+                        continue;
+                    }
+
+                    if (!sourceView.CanCategoryBeHidden(category.Id) ||
+                        !targetView.CanCategoryBeHidden(category.Id))
+                    {
+                        continue;
+                    }
+
+                    targetView.SetCategoryHidden(category.Id, sourceView.GetCategoryHidden(category.Id));
+                }
+                catch
+                {
+                    // Category visibility can fail for unsupported or document-specific categories.
+                }
+            }
+        }
+
+        private static Parameter? FindMatchingParameter(View targetView, Parameter? sourceParameter)
+        {
+            if (sourceParameter == null)
+            {
+                return null;
+            }
+
+            var targetParameters = targetView.Parameters.Cast<Parameter>().ToList();
+
+            var sourceDefinition = sourceParameter.Definition;
+            if (sourceDefinition == null)
+            {
+                return null;
+            }
+
+            if (sourceParameter.IsShared &&
+                sourceParameter.GUID != Guid.Empty)
+            {
+                var byGuid = targetParameters.FirstOrDefault(parameter =>
+                    parameter.IsShared &&
+                    parameter.GUID == sourceParameter.GUID);
+                if (byGuid != null)
+                {
+                    return byGuid;
+                }
+            }
+
+            if (sourceParameter.Id.Value < 0)
+            {
+                var byBuiltInId = targetParameters.FirstOrDefault(parameter => parameter.Id == sourceParameter.Id);
+                if (byBuiltInId != null)
+                {
+                    return byBuiltInId;
+                }
+            }
+
+            var sourceDefinitionName = sourceDefinition.Name;
+            if (!string.IsNullOrWhiteSpace(sourceDefinitionName))
+            {
+                return targetParameters.FirstOrDefault(parameter =>
+                    parameter.StorageType == sourceParameter.StorageType &&
+                    string.Equals(parameter.Definition?.Name, sourceDefinitionName, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return null;
         }
 
         private static void CreateViewSets(Document hostDocument, IReadOnlyCollection<ViewSetSelection> selectedSets, CopySummary summary)
@@ -644,7 +816,7 @@ namespace RevitSuite.Host.Commands
                             }
                         }
 
-                        var matchingView = FindHostViewByName(hostDocument, $"{sourceView.Name} ({set.LinkedModel.DisplayName})");
+                        var matchingView = FindHostViewByName(hostDocument, sourceView.Name);
                         if (matchingView != null)
                         {
                             views.Insert(matchingView);
@@ -809,7 +981,8 @@ namespace RevitSuite.Host.Commands
             string viewUniqueId,
             string viewName,
             ViewType viewType,
-            string? syntheticGroup)
+            string? syntheticGroup,
+            IReadOnlyList<string> browserFolderPath)
         {
             LinkDisplayName = linkDisplayName;
             LinkDocument = linkDocument;
@@ -818,6 +991,7 @@ namespace RevitSuite.Host.Commands
             ViewName = viewName;
             ViewType = viewType;
             SyntheticGroup = syntheticGroup;
+            BrowserFolderPath = browserFolderPath;
         }
 
         public string LinkDisplayName { get; }
@@ -827,6 +1001,7 @@ namespace RevitSuite.Host.Commands
         public string ViewName { get; }
         public ViewType ViewType { get; }
         public string? SyntheticGroup { get; }
+        public IReadOnlyList<string> BrowserFolderPath { get; }
     }
 
     internal sealed class ViewSetOption
@@ -854,6 +1029,7 @@ namespace RevitSuite.Host.Commands
 
     internal sealed class CopyLinkedViewsSelection
     {
+        public bool CopyCategoryVisibility { get; set; }
         public List<ViewSelectionEntry> SelectedViews { get; } = new List<ViewSelectionEntry>();
         public List<ViewSetSelection> SelectedViewSets { get; } = new List<ViewSetSelection>();
     }
@@ -929,6 +1105,7 @@ namespace RevitSuite.Host.Commands
         private readonly Document _hostDocument;
         private readonly Dictionary<string, Level> _levelsByName = new Dictionary<string, Level>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<ViewFamily, ViewFamilyType> _viewFamilyTypes = new Dictionary<ViewFamily, ViewFamilyType>();
+        private readonly Dictionary<string, ViewFamilyType> _viewFamilyTypesByKey = new Dictionary<string, ViewFamilyType>(StringComparer.OrdinalIgnoreCase);
 
         public HostResourceResolver(Document hostDocument)
         {
@@ -960,6 +1137,12 @@ namespace RevitSuite.Host.Commands
                 {
                     _viewFamilyTypes[type.ViewFamily] = type;
                 }
+
+                var key = BuildViewFamilyTypeKey(type.ViewFamily, type.Name);
+                if (!_viewFamilyTypesByKey.ContainsKey(key))
+                {
+                    _viewFamilyTypesByKey[key] = type;
+                }
             }
         }
 
@@ -968,9 +1151,156 @@ namespace RevitSuite.Host.Commands
             return _levelsByName.TryGetValue(levelName, out var level) ? level : null;
         }
 
-        public ViewFamilyType? ResolveViewFamilyType(ViewFamily viewFamily)
+        public ViewFamilyType? ResolveViewFamilyType(ViewFamily viewFamily, string? preferredTypeName = null)
         {
+            if (!string.IsNullOrWhiteSpace(preferredTypeName))
+            {
+                var key = BuildViewFamilyTypeKey(viewFamily, preferredTypeName);
+                if (_viewFamilyTypesByKey.TryGetValue(key, out var preferredType))
+                {
+                    return preferredType;
+                }
+            }
+
             return _viewFamilyTypes.TryGetValue(viewFamily, out var type) ? type : null;
+        }
+
+        public ViewFamilyType? ResolveOrCreateViewFamilyType(ViewFamilyType sourceType, CopySummary summary)
+        {
+            var existingType = ResolveViewFamilyType(sourceType.ViewFamily, sourceType.Name);
+            if (existingType != null)
+            {
+                return existingType;
+            }
+
+            var baseType = ResolveViewFamilyType(sourceType.ViewFamily);
+            if (baseType == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                var duplicatedType = baseType.Duplicate(sourceType.Name) as ViewFamilyType;
+                if (duplicatedType == null)
+                {
+                    summary.AddWarning($"Could not duplicate host view type '{baseType.Name}' as '{sourceType.Name}'.");
+                    return baseType;
+                }
+
+                CopyElementTypeParameters(duplicatedType, sourceType);
+
+                var key = BuildViewFamilyTypeKey(duplicatedType.ViewFamily, duplicatedType.Name);
+                _viewFamilyTypesByKey[key] = duplicatedType;
+                if (!_viewFamilyTypes.ContainsKey(duplicatedType.ViewFamily))
+                {
+                    _viewFamilyTypes[duplicatedType.ViewFamily] = duplicatedType;
+                }
+
+                summary.AddWarning($"INFO: Created missing host view type '{duplicatedType.Name}' for '{duplicatedType.ViewFamily}'.");
+                return duplicatedType;
+            }
+            catch (Exception ex)
+            {
+                summary.AddWarning($"Could not create host view type '{sourceType.Name}' from source: {ex.Message}");
+                return baseType;
+            }
+        }
+
+        private static void CopyElementTypeParameters(ElementType targetType, ElementType sourceType)
+        {
+            foreach (Parameter sourceParameter in sourceType.Parameters)
+            {
+                if (!sourceParameter.HasValue ||
+                    sourceParameter.StorageType == StorageType.None)
+                {
+                    continue;
+                }
+
+                var targetParameter = FindMatchingTypeParameter(targetType, sourceParameter);
+                if (targetParameter == null ||
+                    targetParameter.IsReadOnly ||
+                    targetParameter.StorageType != sourceParameter.StorageType)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    switch (sourceParameter.StorageType)
+                    {
+                        case StorageType.String:
+                            targetParameter.Set(sourceParameter.AsString());
+                            break;
+                        case StorageType.Integer:
+                            targetParameter.Set(sourceParameter.AsInteger());
+                            break;
+                        case StorageType.Double:
+                            targetParameter.Set(sourceParameter.AsDouble());
+                            break;
+                        case StorageType.ElementId:
+                            var sourceElementId = sourceParameter.AsElementId();
+                            if (sourceElementId != ElementId.InvalidElementId)
+                            {
+                                targetParameter.Set(sourceElementId);
+                            }
+                            break;
+                    }
+                }
+                catch
+                {
+                    // Ignore per-parameter copy failures; some type parameters may be constrained.
+                }
+            }
+        }
+
+        private static Parameter? FindMatchingTypeParameter(ElementType targetType, Parameter sourceParameter)
+        {
+            var targetParameters = targetType.Parameters.Cast<Parameter>().ToList();
+
+            if (sourceParameter.IsShared &&
+                sourceParameter.GUID != Guid.Empty)
+            {
+                var byGuid = targetParameters.FirstOrDefault(parameter =>
+                    parameter.IsShared &&
+                    parameter.GUID == sourceParameter.GUID);
+                if (byGuid != null)
+                {
+                    return byGuid;
+                }
+            }
+
+            if (sourceParameter.Id.Value < 0)
+            {
+                var byBuiltInId = targetParameters.FirstOrDefault(parameter => parameter.Id == sourceParameter.Id);
+                if (byBuiltInId != null)
+                {
+                    return byBuiltInId;
+                }
+            }
+
+            var sourceDefinitionName = sourceParameter.Definition?.Name;
+            if (!string.IsNullOrWhiteSpace(sourceDefinitionName))
+            {
+                return targetParameters.FirstOrDefault(parameter =>
+                    parameter.StorageType == sourceParameter.StorageType &&
+                    string.Equals(parameter.Definition?.Name, sourceDefinitionName, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return null;
+        }
+
+        private static string BuildViewFamilyTypeKey(ViewFamily viewFamily, string? typeName)
+        {
+            return string.Format("{0}|{1}", viewFamily, typeName ?? string.Empty);
+        }
+    }
+
+    internal sealed class UseDestinationTypesHandler : IDuplicateTypeNamesHandler
+    {
+        public DuplicateTypeAction OnDuplicateTypeNamesFound(DuplicateTypeNamesHandlerArgs args)
+        {
+            return DuplicateTypeAction.UseDestinationTypes;
         }
     }
 

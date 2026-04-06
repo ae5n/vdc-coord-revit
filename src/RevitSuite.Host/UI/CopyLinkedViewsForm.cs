@@ -25,6 +25,7 @@ namespace RevitSuite.Host.UI
         private readonly WinForms.Button _collapseAllButton = new WinForms.Button();
         private readonly WinForms.Button _okButton = new WinForms.Button();
         private readonly WinForms.Button _cancelButton = new WinForms.Button();
+        private readonly WinForms.CheckBox _copyCategoryVisibilityCheckBox = new WinForms.CheckBox();
 
         private bool _suppressTreeEvents;
 
@@ -132,6 +133,7 @@ namespace RevitSuite.Host.UI
 
             _viewTypeFilterList.Dock = WinForms.DockStyle.Fill;
             _viewTypeFilterList.CheckOnClick = true;
+            _viewTypeFilterList.FormattingEnabled = true;
             filterLayout.Controls.Add(_viewTypeFilterList, 0, 0);
 
             var filterButtons = new WinForms.FlowLayoutPanel
@@ -157,10 +159,11 @@ namespace RevitSuite.Host.UI
             var rightLayout = new WinForms.TableLayoutPanel
             {
                 Dock = WinForms.DockStyle.Fill,
-                RowCount = 3
+                RowCount = 4
             };
             rightLayout.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 36));
             rightLayout.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 100));
+            rightLayout.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32));
             rightLayout.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 46));
             rootLayout.Controls.Add(rightLayout, 1, 0);
 
@@ -203,6 +206,16 @@ namespace RevitSuite.Host.UI
             _treeView.AfterCheck += TreeViewOnAfterCheck;
             rightLayout.Controls.Add(_treeView, 0, 1);
 
+            var optionsPanel = new WinForms.Panel
+            {
+                Dock = WinForms.DockStyle.Fill
+            };
+            _copyCategoryVisibilityCheckBox.Text = "Copy Visibility/Graphics category visibility";
+            _copyCategoryVisibilityCheckBox.AutoSize = true;
+            _copyCategoryVisibilityCheckBox.Location = new System.Drawing.Point(0, 7);
+            optionsPanel.Controls.Add(_copyCategoryVisibilityCheckBox);
+            rightLayout.Controls.Add(optionsPanel, 0, 2);
+
             var buttonPanel = new WinForms.FlowLayoutPanel
             {
                 Dock = WinForms.DockStyle.Fill,
@@ -221,7 +234,7 @@ namespace RevitSuite.Host.UI
 
             buttonPanel.Controls.Add(_okButton);
             buttonPanel.Controls.Add(_cancelButton);
-            rightLayout.Controls.Add(buttonPanel, 0, 2);
+            rightLayout.Controls.Add(buttonPanel, 0, 3);
 
             AcceptButton = _okButton;
             CancelButton = _cancelButton;
@@ -383,7 +396,8 @@ namespace RevitSuite.Host.UI
 
                 var individualViews = linkedModel.Views
                     .Where(v => !usedInSets.Contains(v.ViewId) && _activeViewTypes.Contains(v.ViewType))
-                    .OrderBy(v => v.ViewName, StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(v => string.Join("|", v.BrowserFolderPath), StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(v => v.ViewName, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 if (individualViews.Count > 0)
@@ -395,12 +409,7 @@ namespace RevitSuite.Host.UI
 
                     foreach (var view in individualViews)
                     {
-                        var viewNode = new WinForms.TreeNode($"{view.ViewName} [{GetViewTypeDisplay(view.ViewType)}]")
-                        {
-                            Tag = new ViewNodeTag(linkedModel, view),
-                            ToolTipText = $"{GetViewTypeDisplay(view.ViewType)}"
-                        };
-                        groupNode.Nodes.Add(viewNode);
+                        AddViewNode(groupNode, linkedModel, view);
                     }
 
                     rootNode.Nodes.Add(groupNode);
@@ -648,7 +657,10 @@ namespace RevitSuite.Host.UI
 
         private CopyLinkedViewsSelection CollectSelectionFromTree()
         {
-            var result = new CopyLinkedViewsSelection();
+            var result = new CopyLinkedViewsSelection
+            {
+                CopyCategoryVisibility = _copyCategoryVisibilityCheckBox.Checked
+            };
 
             foreach (WinForms.TreeNode root in _treeView.Nodes)
             {
@@ -736,9 +748,40 @@ namespace RevitSuite.Host.UI
                 ViewType.FloorPlan => "Plan – Floor",
                 ViewType.CeilingPlan => "Plan – Ceiling",
                 ViewType.EngineeringPlan => "Plan – Structural",
-                ViewType.ThreeD => "3D View",
+                ViewType.ThreeD => "3D",
                 _ => viewType.ToString()
             };
+        }
+
+        private static void AddViewNode(WinForms.TreeNode rootNode, LinkedModelOption linkedModel, ViewOption view)
+        {
+            var parentNode = rootNode;
+            foreach (var segment in view.BrowserFolderPath)
+            {
+                var existingNode = parentNode.Nodes
+                    .Cast<WinForms.TreeNode>()
+                    .FirstOrDefault(node =>
+                        node.Tag is GroupNodeTag &&
+                        node.Text.Equals(segment, StringComparison.OrdinalIgnoreCase));
+
+                if (existingNode == null)
+                {
+                    existingNode = new WinForms.TreeNode(segment)
+                    {
+                        Tag = new GroupNodeTag(linkedModel)
+                    };
+                    parentNode.Nodes.Add(existingNode);
+                }
+
+                parentNode = existingNode;
+            }
+
+            var viewNode = new WinForms.TreeNode($"{view.ViewName} [{GetViewTypeDisplay(view.ViewType)}]")
+            {
+                Tag = new ViewNodeTag(linkedModel, view),
+                ToolTipText = $"{GetViewTypeDisplay(view.ViewType)}"
+            };
+            parentNode.Nodes.Add(viewNode);
         }
 
         private static string BuildViewSetKey(LinkedModelOption linkedModel, string viewSetName)
