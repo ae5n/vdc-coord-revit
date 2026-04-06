@@ -3,121 +3,135 @@
 Schema-driven Revit add-in for QA/QC and coordination workflows.
 
 ## Requirements
-- Windows + Autodesk Revit (2024/2025/2026).
-- .NET SDK 8+ with Windows desktop workloads.
-- .NET Framework 4.8 targeting pack for Revit 2024 builds.
-- Revit API path (auto-resolved by scripts when Revit is in default install location).
+- Windows + Autodesk Revit (2024/2025/2026)
+- .NET SDK 8+ with Windows desktop workloads
+- .NET Framework 4.8 targeting pack for Revit 2024 builds
+- Revit API path for Revit 2024 if Revit is not installed in the default location
 
-## Build
+## Essential Commands
+
+### Dev build for Add-In Manager
+Use this during development when Revit is already open and you want to reload the DLL through Add-In Manager. Works for Revit `2024`, `2025`, and `2026`.
+
 ```powershell
-.\build\scripts\build.ps1
-.\build\scripts\build.ps1 -Version 0.1.0-beta.1
-.\build\scripts\build.ps1 -RevitYear 2024
-.\build\scripts\build.ps1 -RevitYear 2026
-.\build\scripts\build.ps1 -RevitYear 2024 -ApiDir "D:\Apps\Autodesk\Revit 2024"
+.\build\scripts\dev-build.ps1 -RevitYear 2025
 ```
 
-## Deploy (local)
+Examples:
+- `.\build\scripts\dev-build.ps1 -RevitYear 2024`
+- `.\build\scripts\dev-build.ps1 -RevitYear 2025`
+- `.\build\scripts\dev-build.ps1 -RevitYear 2026`
+
+Load this DLL in Add-In Manager:
+- Revit `2024`: `C:\Dev\revit-suite\src\RevitSuite.Host\bin\Release\net48\RevitSuite.Host.dll`
+- Revit `2025` or `2026`: `C:\Dev\revit-suite\src\RevitSuite.Host\bin\Release\net8.0-windows10.0.19041\RevitSuite.Host.dll`
+
+### Local deploy to Revit
+Use this when you want the add-in copied into Revit's add-ins folder. Works for Revit `2024`, `2025`, and `2026`.
+
 ```powershell
-.\deploy.ps1
-.\deploy.ps1 -Version 0.1.0-beta.1
-.\deploy.ps1 -RevitYear 2024
-.\deploy.ps1 -RevitYear 2026
-.\deploy.ps1 -RevitYear 2024 -ApiDir "D:\Apps\Autodesk\Revit 2024"
+.\deploy.ps1 -RevitYear 2025
 ```
 
-## Installer (shareable EXE)
-```powershell
-# Builds version-specific payloads for 2024 + 2025 + 2026 and packages one installer.
-.\installer\build-installer.ps1
-.\installer\build-installer.ps1 -Version 0.1.0-beta.1
-```
+Examples:
+- `.\deploy.ps1 -RevitYear 2024`
+- `.\deploy.ps1 -RevitYear 2025`
+- `.\deploy.ps1 -RevitYear 2026`
 
-Output:
-- `installer\out\RevitSuite-Setup-<version>.exe`
+### Bump release version
+Use this when preparing an internal beta or stable release. This updates the stored version in `Directory.Build.props`.
 
-## Versioning
-- Use semantic versions: `0.1.0-beta.1`, `0.1.0-beta.2`, `0.1.0`, `0.2.0`.
-- Keep preview builds below `1.0.0` while the add-in is still internal/beta.
-- Pass the version through the scripts so the assemblies and installer stay aligned.
-- Use the release helper to bump the repo version without editing XML manually:
 ```powershell
 .\build\scripts\release.ps1 -Beta
 .\build\scripts\release.ps1 -Patch
 .\build\scripts\release.ps1 -Stable
 .\build\scripts\release.ps1 -SetVersion 0.2.0-beta.1
 ```
-- Recommended internal release flow:
-  - `main` stays releasable.
-  - Build preview installers for testers with `-Version 0.x.y-beta.n`.
-  - Collect feedback/fixes.
-  - Promote the same change set to a stable `0.x.y` or `1.0.0` when ready.
+
+What each command does:
+- `-Beta`: if current version is `0.1.0-beta.1`, it becomes `0.1.0-beta.2`
+- `-Patch`: if current version is `0.1.0-beta.1`, it becomes `0.1.1`
+- `-Stable`: if current version is `0.1.0-beta.1`, it becomes `0.1.0`
+- `-SetVersion 0.2.0-beta.1`: sets the version exactly to `0.2.0-beta.1`
+
+### Build shareable installer
+Use this when you want a shareable `.exe` for teammates.
+
+```powershell
+.\installer\build-installer.ps1
+```
+
+Output:
+- `installer\out\RevitSuite-Setup-<version>.exe`
+
+## Versioning
+- Use semantic versions such as `0.1.0-beta.1`, `0.1.0-beta.2`, and `0.1.0`
+- Keep preview builds below `1.0.0` while the add-in is still internal/beta
+- `release.ps1` updates the repo's default version in `Directory.Build.props`
+- `dev-build.ps1` is for development only and does not change the stored release version
+
+Simple rules:
+- Use `dev-build.ps1` while developing and testing through Add-In Manager
+- Use `deploy.ps1` when you want the add-in installed into Revit locally
+- Use `release.ps1` only when you want to change the stored release version
+- Use `build-installer.ps1` when you want a shareable installer for teammates
+
+Typical internal beta flow:
+1. Check the current version in `Directory.Build.props`
+2. Run `.\build\scripts\release.ps1 -Beta`
+3. Run `.\installer\build-installer.ps1`
+4. Share `installer\out\RevitSuite-Setup-<version>.exe`
+
+Typical stable release flow:
+1. Check the current version in `Directory.Build.props`
+2. Run `.\build\scripts\release.ps1 -Stable`
+3. Run `.\installer\build-installer.ps1`
 
 ## MCP Server
 
-RevitSuite includes an MCP server that exposes Revit model tools to any MCP-compatible AI client.
-
-### How it works
-
-```
-MCP client  →  MCP server (Node.js, stdio)  →  TCP:8080  →  RevitSuite add-in  →  Revit
-```
+RevitSuite includes an MCP server that exposes Revit model tools to MCP-compatible AI clients.
 
 ### Setup
 
-**1. Deploy the add-in** (if not already done):
+1. Deploy the add-in:
+
 ```powershell
 .\deploy.ps1 -RevitYear 2026
 ```
 
-**2. Start the MCP server inside Revit**
+2. Start the MCP server inside Revit:
 
-Open Revit → **Lewis VDC** tab → **MCP** panel → click **MCP Server**.
-A dialog confirms the server is running on port 8080.
+Open Revit -> `Lewis VDC` tab -> `MCP` panel -> click `MCP Server`
 
-**3. Configure your MCP client**
-
-Point your MCP client at the deployed server. Example config:
+3. Configure your MCP client:
 
 ```json
 {
   "mcpServers": {
     "revit-suite": {
       "command": "node",
-        "args": [
+      "args": [
         "C:\\Users\\<username>\\AppData\\Roaming\\Autodesk\\Revit\\Addins\\2026\\RevitSuite\\mcp-server\\build\\index.js"
-        ]
+      ]
     }
   }
 }
 ```
 
-Replace `<username>` with your Windows username. The path can point to any deployed Revit year — the MCP server is version-agnostic and connects to whichever Revit is running on port 8080.
+Notes:
+- Replace `<username>` with your Windows username
+- You only need one deployed `mcp-server\build\index.js` path, even if RevitSuite is installed for multiple Revit years
+- MCP clients on Windows may not expand `%APPDATA%` in `args`, so use the full literal path
 
-> **Note:** MCP clients on Windows may not expand `%APPDATA%` in `args` — use the full literal path.
-
-**4. Restart your MCP client**
-
-### Available tools
-
-| Tool | Description |
-|---|---|
-| `run_qaqc` | Export control points or import field survey CSV and place deviation tags |
-| `run_level_report` | Export a CSV of levels across host and linked models |
-| `run_grid_report` | Export a CSV of grid lines with coordinates and angles |
-| `run_shared_coordinates_report` | Export shared coordinate data for host and links |
-| `run_footing_zones` | Create 3D influence zones around structural foundations |
-| `run_nwc_batch_export` | Export 3D views to Navisworks NWC files |
-| `say_hello` | Verify the connection is working |
-| *(+ 22 more Revit model tools)* | Element creation, filtering, tagging, data extraction, etc. |
+4. Restart your MCP client
 
 ### Stopping the server
 
-Click **MCP Server** again in the ribbon to stop it. The server also shuts down automatically when Revit closes.
+Click `MCP Server` again in the ribbon to stop it. The server also shuts down automatically when Revit closes.
 
 ## Schemas
-- Command defaults are in `schemas/*.schema.json`.
-- Build/deploy sync schemas into host output under `src/RevitSuite.Host\bin\<Config>\<TargetFramework>\schemas\`.
+- Command defaults are in `schemas\*.schema.json`
+- Build and deploy sync schemas into the host output folder
 
 ## Logs
 - `%LOCALAPPDATA%\RevitSuite\logs\`
