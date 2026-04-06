@@ -2,9 +2,13 @@
 ; Requires Inno Setup 6 (ISCC.exe).
 
 #define AppName "RevitSuite"
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  #define AppVersion "0.1.0-beta.1"
+#endif
 #define Publisher "Revit Suite"
-#define ExeName "RevitSuite-Setup"
+#ifndef SetupBaseName
+  #define SetupBaseName "RevitSuite-Setup-" + AppVersion
+#endif
 #ifndef Source2024
   #define Source2024 "..\src\RevitSuite.Host\bin\Release\net48"
 #endif
@@ -28,7 +32,7 @@ PrivilegesRequired=lowest
 CloseApplications=yes
 RestartApplications=no
 OutputDir=.\out
-OutputBaseFilename={#ExeName}
+OutputBaseFilename={#SetupBaseName}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

@@ -2,11 +2,14 @@ param(
     [ValidateSet("2024", "2025", "2026")]
     [string]$RevitYear = "2026",
     [string]$ApiDir,
+    [string]$Version = "0.1.0-beta.1",
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release"
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path $PSScriptRoot "versioning.ps1")
 
 function Resolve-RevitApiDir {
     param(
@@ -108,9 +111,10 @@ try {
 
     $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
     $projectPath = Join-Path $repoRoot "src/RevitSuite.Host/RevitSuite.Host.csproj"
+    $assemblyVersion = Get-AssemblyVersionFromSemVer -Version $Version
 
-    Write-Host "Building RevitSuite.Host for Revit $RevitYear ($Configuration, $targetFramework)..." -ForegroundColor Cyan
-    dotnet build $projectPath -c $Configuration -p:RevitVersion=$RevitYear -p:RevitTargetFramework=$targetFramework
+    Write-Host "Building RevitSuite.Host for Revit $RevitYear ($Configuration, $targetFramework, version $Version)..." -ForegroundColor Cyan
+    dotnet build $projectPath -c $Configuration -p:RevitVersion=$RevitYear -p:RevitTargetFramework=$targetFramework -p:Version=$Version -p:AssemblyVersion=$assemblyVersion -p:FileVersion=$assemblyVersion -p:InformationalVersion=$Version
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet build failed for RevitSuite.Host."
     }
@@ -118,8 +122,8 @@ try {
     Sync-SchemasToBuildOutput -RepoRoot $repoRoot -BuildConfiguration $Configuration -TargetFramework $targetFramework
 
     $cmdSetProject = Join-Path $repoRoot "src/RevitMCPCommandSet/RevitMCPCommandSet.csproj"
-    Write-Host "Building RevitMCPCommandSet for Revit $RevitYear ($Configuration, $targetFramework)..." -ForegroundColor Cyan
-    dotnet build $cmdSetProject -c $Configuration -p:RevitVersion=$RevitYear -p:RevitTargetFramework=$targetFramework
+    Write-Host "Building RevitMCPCommandSet for Revit $RevitYear ($Configuration, $targetFramework, version $Version)..." -ForegroundColor Cyan
+    dotnet build $cmdSetProject -c $Configuration -p:RevitVersion=$RevitYear -p:RevitTargetFramework=$targetFramework -p:Version=$Version -p:AssemblyVersion=$assemblyVersion -p:FileVersion=$assemblyVersion -p:InformationalVersion=$Version
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet build failed for RevitMCPCommandSet."
     }

@@ -36,6 +36,7 @@ namespace RevitSuite.Host.UI
         {
             var root = new Grid { Margin = new Thickness(16) };
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -57,6 +58,10 @@ namespace RevitSuite.Host.UI
             });
             Grid.SetRow(header, 0);
             root.Children.Add(header);
+
+            var setupSection = BuildSetupSection();
+            Grid.SetRow(setupSection, 1);
+            root.Children.Add(setupSection);
 
             // ListView
             _listView = new ListView { BorderThickness = new Thickness(1) };
@@ -104,7 +109,7 @@ namespace RevitSuite.Host.UI
                 HeaderTemplate = CreateGroupHeaderTemplate()
             });
 
-            Grid.SetRow(_listView, 1);
+            Grid.SetRow(_listView, 2);
             root.Children.Add(_listView);
 
             // Button bar
@@ -135,10 +140,70 @@ namespace RevitSuite.Host.UI
             buttonBar.Children.Add(deselectAllBtn);
             buttonBar.Children.Add(saveBtn);
 
-            Grid.SetRow(buttonBar, 2);
+            Grid.SetRow(buttonBar, 3);
             root.Children.Add(buttonBar);
 
             Content = root;
+        }
+
+        private static Border BuildSetupSection()
+        {
+            var section = new StackPanel();
+
+            section.Children.Add(new TextBlock
+            {
+                Text = "Setup",
+                FontSize = 14,
+                FontWeight = FontWeights.SemiBold
+            });
+
+            section.Children.Add(new TextBlock
+            {
+                Text =
+                    "1. In Revit, click MCP Server to start the local socket server." + Environment.NewLine +
+                    "2. In Codex or Claude Code, point the MCP config to one deployed RevitSuite mcp-server path." + Environment.NewLine +
+                    "3. Restart the MCP client after saving the config." + Environment.NewLine + Environment.NewLine +
+                    "RevitSuite can be installed for multiple Revit years, but MCP only needs one configured path. " +
+                    "The deployed mcp-server is version-agnostic and connects to the running Revit instance hosting the socket server.",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                Margin = new Thickness(0, 6, 0, 10)
+            });
+
+            section.Children.Add(CreateCodeBlock(
+@"Codex / Claude Code example
+command: node
+args:
+  C:\Users\<you>\AppData\Roaming\Autodesk\Revit\Addins\2026\RevitSuite\mcp-server\build\index.js"));
+
+            return new Border
+            {
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0xD9, 0xE1, 0xE8)),
+                BorderThickness = new Thickness(1),
+                Background = new SolidColorBrush(Color.FromRgb(0xF8, 0xFA, 0xFC)),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12),
+                Margin = new Thickness(0, 0, 0, 12),
+                Child = section
+            };
+        }
+
+        private static Border CreateCodeBlock(string text)
+        {
+            return new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x29, 0x33)),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10),
+                Child = new TextBlock
+                {
+                    Text = text,
+                    FontFamily = new FontFamily("Consolas"),
+                    FontSize = 12,
+                    Foreground = Brushes.White,
+                    TextWrapping = TextWrapping.Wrap
+                }
+            };
         }
 
         private static DataTemplate CreateGroupHeaderTemplate()
