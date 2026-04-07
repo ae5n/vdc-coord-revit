@@ -398,16 +398,22 @@ namespace RevitSuite.Host.Commands
             var copiedViewId = TryNativeCopyView(hostDocument, sourceView, targetName, summary);
             if (copiedViewId != null && copiedViewId != ElementId.InvalidElementId)
             {
-                summary.RegisterCopiedView(sourceView, hostDocument.GetElement(copiedViewId) as View);
+                var copiedView = hostDocument.GetElement(copiedViewId) as View;
+                if (copiedView != null)
+                {
+                    PostProcessNativeCopiedView(copiedView, sourceView, linkedModel.LinkInstance, copyCategoryVisibility);
+                }
+
+                summary.RegisterCopiedView(sourceView, copiedView);
                 return true;
             }
 
             var newViewId = sourceView.ViewType switch
             {
-                ViewType.FloorPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
-                ViewType.CeilingPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
-                ViewType.EngineeringPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
-                ViewType.ThreeD => CopyThreeDView(hostDocument, sourceView as View3D, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
+                ViewType.FloorPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, linkedModel.LinkInstance, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
+                ViewType.CeilingPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, linkedModel.LinkInstance, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
+                ViewType.EngineeringPlan => CopyPlanLikeView(hostDocument, sourceView as ViewPlan, linkDocument, linkedModel.LinkInstance, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
+                ViewType.ThreeD => CopyThreeDView(hostDocument, sourceView as View3D, linkedModel.LinkInstance, targetName, resourceResolver, templateCache, copyCategoryVisibility, summary),
                 _ => null
             };
 
@@ -465,6 +471,7 @@ namespace RevitSuite.Host.Commands
             Document hostDocument,
             ViewPlan? sourcePlan,
             Document linkDocument,
+            RevitLinkInstance linkInstance,
             string targetName,
             HostResourceResolver resourceResolver,
             Dictionary<string, ElementId> templateCache,
@@ -507,7 +514,7 @@ namespace RevitSuite.Host.Commands
 
             var newView = ViewPlan.Create(hostDocument, hostViewFamilyType.Id, hostLevel.Id);
             ApplyCommonViewSettings(newView, sourcePlan, targetName);
-            CopyPlanViewSpecifics(newView, sourcePlan);
+            CopyPlanViewSpecifics(newView, sourcePlan, linkInstance);
             if (copyCategoryVisibility)
             {
                 CopyCategoryHiddenStates(newView, sourcePlan);
@@ -519,6 +526,7 @@ namespace RevitSuite.Host.Commands
         private static ElementId? CopyThreeDView(
             Document hostDocument,
             View3D? sourceView,
+            RevitLinkInstance linkInstance,
             string targetName,
             HostResourceResolver resourceResolver,
             Dictionary<string, ElementId> templateCache,
@@ -559,13 +567,37 @@ namespace RevitSuite.Host.Commands
             }
 
             ApplyCommonViewSettings(newView, sourceView, targetName);
-            CopyThreeDViewSpecifics(newView, sourceView);
+            CopyThreeDViewSpecifics(newView, sourceView, linkInstance);
             if (copyCategoryHiddenStates)
             {
                 CopyCategoryHiddenStates(newView, sourceView);
             }
             ApplyTemplate(templateCache, newView, sourceView, hostDocument, sourceView.Document, summary);
             return newView.Id;
+        }
+
+        private static void PostProcessNativeCopiedView(
+            View copiedView,
+            View sourceView,
+            RevitLinkInstance linkInstance,
+            bool copyCategoryVisibility)
+        {
+            copiedView.Name = SanitizeName(copiedView.Name);
+
+            switch (copiedView)
+            {
+                case ViewPlan copiedPlan when sourceView is ViewPlan sourcePlan:
+                    CopyPlanViewSpecifics(copiedPlan, sourcePlan, linkInstance);
+                    break;
+                case View3D copiedThreeD when sourceView is View3D sourceThreeD:
+                    CopyThreeDViewSpecifics(copiedThreeD, sourceThreeD, linkInstance);
+                    break;
+            }
+
+            if (copyCategoryVisibility)
+            {
+                CopyCategoryHiddenStates(copiedView, sourceView);
+            }
         }
 
         private static void ApplyTemplate(
@@ -655,23 +687,9 @@ namespace RevitSuite.Host.Commands
                 // Some plan types lock display style (e.g., ceiling plans with templates). Ignore if read-only.
             }
             targetView.PartsVisibility = sourceView.PartsVisibility;
-
-            try
-            {
-                targetView.CropBoxActive = sourceView.CropBoxActive;
-                targetView.CropBoxVisible = sourceView.CropBoxVisible;
-                if (sourceView.CropBox != null)
-                {
-                    targetView.CropBox = CloneBoundingBox(sourceView.CropBox);
-                }
-            }
-            catch
-            {
-                // Crop box operations may fail for certain view configurations; ignore gracefully.
-            }
         }
 
-        private static void CopyPlanViewSpecifics(ViewPlan targetView, ViewPlan sourceView)
+        private static void CopyPlanViewSpecifics(ViewPlan targetView, ViewPlan sourceView, RevitLinkInstance linkInstance)
         {
             try
             {
@@ -680,7 +698,7 @@ namespace RevitSuite.Host.Commands
                 targetView.CropBoxVisible = sourceView.CropBoxVisible;
                 if (sourceView.CropBox != null)
                 {
-                    targetView.CropBox = CloneBoundingBox(sourceView.CropBox);
+                    targetView.CropBox = TransformBoundingBox(sourceView.CropBox, linkInstance?.GetTotalTransform());
                 }
             }
             catch
@@ -689,15 +707,15 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private static void CopyThreeDViewSpecifics(View3D targetView, View3D sourceView)
+        private static void CopyThreeDViewSpecifics(View3D targetView, View3D sourceView, RevitLinkInstance linkInstance)
         {
             try
             {
                 targetView.DetailLevel = sourceView.DetailLevel;
-                targetView.SetOrientation(sourceView.GetOrientation());
+                targetView.SetOrientation(TransformOrientation(sourceView.GetOrientation(), linkInstance?.GetTotalTransform()));
                 if (sourceView.GetSectionBox() is BoundingBoxXYZ sectionBox)
                 {
-                    targetView.SetSectionBox(CloneBoundingBox(sectionBox));
+                    targetView.SetSectionBox(TransformBoundingBox(sectionBox, linkInstance?.GetTotalTransform()));
                 }
 
                 // Apply the active state last because SetSectionBox can reactivate it.
@@ -906,6 +924,39 @@ namespace RevitSuite.Host.Commands
                 Max = source.Max,
                 Transform = source.Transform
             };
+        }
+
+        private static BoundingBoxXYZ TransformBoundingBox(BoundingBoxXYZ source, Transform linkTransform)
+        {
+            if (linkTransform == null || linkTransform.IsIdentity)
+            {
+                return CloneBoundingBox(source);
+            }
+
+            return new BoundingBoxXYZ
+            {
+                Min = source.Min,
+                Max = source.Max,
+                Transform = linkTransform.Multiply(source.Transform)
+            };
+        }
+
+        private static ViewOrientation3D TransformOrientation(ViewOrientation3D source, Transform linkTransform)
+        {
+            if (linkTransform == null || linkTransform.IsIdentity)
+            {
+                return source;
+            }
+
+            return new ViewOrientation3D(
+                linkTransform.OfPoint(source.EyePosition),
+                Normalize(linkTransform.OfVector(source.UpDirection)),
+                Normalize(linkTransform.OfVector(source.ForwardDirection)));
+        }
+
+        private static XYZ Normalize(XYZ vector)
+        {
+            return vector == null || vector.IsZeroLength() ? vector : vector.Normalize();
         }
 
         private sealed class ElementIdComparer : IEqualityComparer<ElementId>
