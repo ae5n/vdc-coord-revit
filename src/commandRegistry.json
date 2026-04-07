@@ -23,9 +23,9 @@
     { "commandName": "create_level",                    "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
     { "commandName": "send_code_to_revit",              "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
     { "commandName": "create_dimensions",               "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
-    { "commandName": "export_level_report",               "assemblyPath": "../RevitSuite.Host.dll", "enabled": true },
-    { "commandName": "export_grid_report",               "assemblyPath": "../RevitSuite.Host.dll", "enabled": true },
-    { "commandName": "export_shared_coordinates_report", "assemblyPath": "../RevitSuite.Host.dll", "enabled": true },
+    { "commandName": "get_level_report",               "assemblyPath": "../RevitSuite.Host.dll", "enabled": true },
+    { "commandName": "get_grid_report",               "assemblyPath": "../RevitSuite.Host.dll", "enabled": true },
+    { "commandName": "get_shared_coordinates_report", "assemblyPath": "../RevitSuite.Host.dll", "enabled": true },
     { "commandName": "export_nwc_views",                 "assemblyPath": "../RevitSuite.Host.dll", "enabled": true }
   ]
 }

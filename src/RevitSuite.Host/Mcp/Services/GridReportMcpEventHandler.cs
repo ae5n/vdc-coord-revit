@@ -3,7 +3,6 @@ using RevitMCPSDK.API.Interfaces;
 using RevitSuite.Host.Commands;
 using System;
 using System.IO;
-using System.Linq;
 using System.Threading;
 
 namespace RevitSuite.Host.Mcp.Services
@@ -34,16 +33,46 @@ namespace RevitSuite.Host.Mcp.Services
                     return;
                 }
 
-                var runResult = GridReportCommand.RunCore(app, OutputPath, IncludeLinkedModels, Precision);
-                if (runResult == null)
+                if (!string.IsNullOrWhiteSpace(OutputPath))
+                {
+                    var exportResult = GridReportCommand.RunCore(
+                        app,
+                        OutputPath,
+                        IncludeLinkedModels,
+                        Precision);
+
+                    if (exportResult == null)
+                    {
+                        Result = new { success = false, error = "No grids found." };
+                        return;
+                    }
+
+                    var (csvPath, htmlPath, rowCount, discrepancyCount) = exportResult.Value;
+                    Result = new
+                    {
+                        success = true,
+                        rowCount,
+                        discrepancyCount,
+                        csvPath,
+                        htmlPath
+                    };
+                    return;
+                }
+
+                var reportData = GridReportCommand.BuildMcpReportData(app, IncludeLinkedModels, Precision);
+                if (reportData == null)
                 {
                     Result = new { success = false, error = "No grids found." };
                     return;
                 }
 
-                var (outputPath, discrepancyPath, reportPath, rowCount, discrepancyCount) = runResult.Value;
-                var preview = ReadCsvPreview(outputPath, MaxPreviewRows);
-                Result = new { success = true, outputPath, discrepancyPath, reportPath, rowCount, discrepancyCount, preview };
+                Result = new
+                {
+                    success = true,
+                    rowCount = reportData.RowCount,
+                    discrepancyCount = reportData.DiscrepancyCount,
+                    htmlContent = reportData.HtmlContent
+                };
             }
             catch (Exception ex)
             {
@@ -57,16 +86,5 @@ namespace RevitSuite.Host.Mcp.Services
 
         public string GetName() => "Grid Report MCP";
 
-        private static string[] ReadCsvPreview(string csvPath, int maxRows)
-        {
-            try
-            {
-                return File.ReadAllLines(csvPath).Skip(1).Take(maxRows).ToArray();
-            }
-            catch
-            {
-                return Array.Empty<string>();
-            }
-        }
     }
 }

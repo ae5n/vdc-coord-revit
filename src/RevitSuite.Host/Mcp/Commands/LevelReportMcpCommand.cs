@@ -12,7 +12,7 @@ namespace RevitSuite.Host.Mcp.Commands
         private static readonly object _lock = new object();
         private LevelReportMcpEventHandler _handler => (LevelReportMcpEventHandler)Handler;
 
-        public override string CommandName => "export_level_report";
+        public override string CommandName => "get_level_report";
 
         public LevelReportMcpCommand(UIApplication uiApp)
             : base(new LevelReportMcpEventHandler(), uiApp) { }
@@ -34,7 +34,7 @@ namespace RevitSuite.Host.Mcp.Commands
                 if (RaiseAndWaitForCompletion(30000))
                     return _handler.Result;
                 else
-                    throw new TimeoutException("export_level_report timed out.");
+                    throw new TimeoutException("get_level_report timed out.");
             }
         }
     }

@@ -7,15 +7,22 @@ using System.Text;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using Microsoft.Win32;
 using RevitSuite.Host.Config;
 using RevitSuite.Host.Logging;
+using RevitSuite.Host.UI;
 
 namespace RevitSuite.Host.Commands
 {
     [Transaction(TransactionMode.Manual)]
     public class LevelReportCommand : IExternalCommand
     {
+        internal sealed class LevelReportData
+        {
+            public string CsvContent { get; set; } = string.Empty;
+            public string HtmlContent { get; set; } = string.Empty;
+            public int RowCount { get; set; }
+        }
+
         public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
         {
             var correlationId = Guid.NewGuid().ToString("N");
@@ -32,26 +39,9 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var document = uiDoc.Document;
-                var defaultFileName = BuildDefaultFileName(document);
-
-                var dialog = new SaveFileDialog
-                {
-                    Title = "Export Level Report",
-                    Filter = "CSV Files (*.csv)|*.csv",
-                    FileName = defaultFileName,
-                    AddExtension = true,
-                    DefaultExt = "csv",
-                    OverwritePrompt = true
-                };
-
-                if (dialog.ShowDialog() != true)
-                {
-                    LogManager.Info(correlationId, "Level report cancelled by user.");
-                    return Result.Cancelled;
-                }
-
                 var config = LevelReportConfig.Load();
-                var runResult = RunCore(data.Application, dialog.FileName, config.IncludeLinkedModels, config.Precision, config.MaxPreviewRows);
+                var previewPath = BuildPreviewOutputPath(document);
+                var runResult = RunCore(data.Application, previewPath, config.IncludeLinkedModels, config.Precision, config.MaxPreviewRows);
 
                 if (runResult == null)
                 {
@@ -60,9 +50,20 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
-                var (targetPath, rowCount) = runResult.Value;
-                LogManager.Info(correlationId, $"Level report exported to '{targetPath}' with {rowCount} row(s).");
-                TaskDialog.Show("RevitSuite", $"Level report written to:\n{targetPath}\nRows: {rowCount}");
+                var (targetPath, reportPath, rowCount) = runResult.Value;
+                LogManager.Info(correlationId, $"Level report preview generated at '{targetPath}' with {rowCount} row(s).");
+
+                ReportPreviewHost.Show(data.Application, new ReportPreviewModel
+                {
+                    Title = "Level Report",
+                    Summary = $"Previewing {rowCount} level row(s). Export only if you want to keep the files.",
+                    CsvPreviewPath = targetPath,
+                    HtmlPreviewPath = reportPath,
+                    SaveDialogTitle = "Export Level Report",
+                    DefaultExportFileName = BuildDefaultFileName(document),
+                    ExportAction = exportPath => ExportReportBundle(exportPath, targetPath, reportPath)
+                });
+
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -78,7 +79,7 @@ namespace RevitSuite.Host.Commands
         /// Executes the core level-report logic without any UI dialogs.
         /// Returns null if no levels were found; throws on error.
         /// </summary>
-        internal static (string outputPath, int rowCount)? RunCore(
+        internal static (string outputPath, string reportPath, int rowCount)? RunCore(
             UIApplication app,
             string? outputPath,
             bool includeLinkedModels,
@@ -98,13 +99,34 @@ namespace RevitSuite.Host.Commands
                 return null;
 
             var pivotTable = BuildPivotTable(levelRecords);
-            WritePivotCsv(targetPath, pivotTable, precision);
+            var reportData = BuildReportData(pivotTable, precision);
+            WriteCsvFile(targetPath, reportData.CsvContent);
+            var reportPath = Path.ChangeExtension(targetPath, ".html");
+            WriteTextFile(reportPath, reportData.HtmlContent);
 
             var previewCount = Math.Min(maxPreviewRows, pivotTable.Rows.Count);
             LogManager.Info(correlationId,
-                $"Level report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Preview rows: {previewCount}");
+                $"Level report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Preview rows: {previewCount}. HTML view: '{reportPath}'.");
 
-            return (targetPath, pivotTable.Rows.Count);
+            return (targetPath, reportPath, pivotTable.Rows.Count);
+        }
+
+        internal static LevelReportData? BuildMcpReportData(
+            UIApplication app,
+            bool includeLinkedModels,
+            int precision)
+        {
+            var document = (app.ActiveUIDocument
+                ?? throw new InvalidOperationException("No active document.")).Document;
+
+            var levelRecords = CollectLevelRecords(document, includeLinkedModels);
+            if (levelRecords.Count == 0)
+            {
+                return null;
+            }
+
+            var pivotTable = BuildPivotTable(levelRecords);
+            return BuildReportData(pivotTable, precision);
         }
 
         private static string BuildAutoOutputPath(Document document, string suffix)
@@ -118,6 +140,13 @@ namespace RevitSuite.Host.Commands
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RevitSuite");
             return Path.Combine(dir, $"{sanitized}_{suffix}_{timestamp}.csv");
+        }
+
+        private static string BuildPreviewOutputPath(Document document)
+        {
+            var previewDirectory = Path.Combine(Path.GetTempPath(), "RevitSuite", "Reports");
+            Directory.CreateDirectory(previewDirectory);
+            return Path.Combine(previewDirectory, $"{Guid.NewGuid():N}_{BuildDefaultFileName(document)}");
         }
 
         private static List<LevelRecord> CollectLevelRecords(Document doc, bool includeLinkedModels)
@@ -225,15 +254,19 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        private static void WritePivotCsv(string path, PivotTable table, int precision)
+        private static LevelReportData BuildReportData(PivotTable table, int precision)
         {
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory))
+            return new LevelReportData
             {
-                Directory.CreateDirectory(directory);
-            }
+                CsvContent = BuildPivotCsvContent(table, precision),
+                HtmlContent = BuildHtmlReportContent(table, precision),
+                RowCount = table.Rows.Count
+            };
+        }
 
-            using var writer = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        private static string BuildPivotCsvContent(PivotTable table, int precision)
+        {
+            using var writer = new StringWriter(CultureInfo.InvariantCulture);
             var header = new List<string> { "Level" };
             header.AddRange(table.Models.Select(model => model.Model));
             WriteCsvLine(writer, header.ToArray());
@@ -256,6 +289,115 @@ namespace RevitSuite.Host.Commands
 
                 WriteCsvLine(writer, values.ToArray());
             }
+
+            return writer.ToString();
+        }
+
+        private static void WritePivotCsv(string path, PivotTable table, int precision)
+        {
+            WriteCsvFile(path, BuildPivotCsvContent(table, precision));
+        }
+
+        private static string BuildHtmlReportContent(PivotTable table, int precision)
+        {
+            var hostModel = table.Models.FirstOrDefault(model =>
+                string.Equals(model.Type, "Host", StringComparison.OrdinalIgnoreCase)) ?? table.Models.FirstOrDefault();
+
+            var builder = new StringBuilder();
+            builder.AppendLine("<!DOCTYPE html>");
+            builder.AppendLine("<html lang=\"en\">");
+            builder.AppendLine("<head>");
+            builder.AppendLine("<meta charset=\"utf-8\" />");
+            builder.AppendLine("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />");
+            builder.AppendLine("<title>Level Report</title>");
+            builder.AppendLine("<style>");
+            builder.AppendLine("body { font-family: \"Segoe UI\", Arial, sans-serif; margin: 32px; color: #1f2933; background-color: #f5f7fa; }");
+            builder.AppendLine("h1 { font-size: 1.75rem; margin-bottom: 0.75rem; }");
+            builder.AppendLine("p { margin: 0 0 1.25rem 0; color: #52606d; }");
+            builder.AppendLine("table { border-collapse: collapse; width: 100%; background: #ffffff; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); border-radius: 12px; overflow: hidden; }");
+            builder.AppendLine("thead th { background: #0f172a; color: #f8fafc; font-weight: 600; padding: 14px 16px; text-align: left; font-size: 0.95rem; }");
+            builder.AppendLine("tbody th { background: #e2e8f0; font-weight: 600; padding: 12px 16px; text-align: left; color: #111827; width: 220px; }");
+            builder.AppendLine("tbody td { padding: 12px 16px; border-bottom: 1px solid #e2e8f0; font-size: 0.95rem; }");
+            builder.AppendLine("tbody tr:nth-child(even) td { background: #f8fafc; }");
+            builder.AppendLine("td.host { background: #dbeafe; font-weight: 600; }");
+            builder.AppendLine("td.match { background: #ecfdf5; }");
+            builder.AppendLine("td.warn { background: #fef3c7; }");
+            builder.AppendLine("td.alert { background: #fee2e2; }");
+            builder.AppendLine("td.na { color: #94a3b8; font-style: italic; }");
+            builder.AppendLine("td .delta { display: block; font-size: 0.78rem; color: #475569; margin-top: 4px; }");
+            builder.AppendLine("</style>");
+            builder.AppendLine("</head>");
+            builder.AppendLine("<body>");
+            builder.AppendLine("<h1>Level Comparison</h1>");
+            builder.AppendLine("<p>Elevations are shown in feet and inches. Delta highlights the difference from the host model.</p>");
+            builder.AppendLine("<table>");
+            builder.AppendLine("<thead>");
+            builder.Append("<tr><th>Level</th>");
+            foreach (var model in table.Models)
+            {
+                builder.Append("<th>")
+                    .Append(HtmlEncode(model.Model))
+                    .Append("</th>");
+            }
+
+            builder.AppendLine("</tr>");
+            builder.AppendLine("</thead>");
+            builder.AppendLine("<tbody>");
+
+            foreach (var row in table.Rows)
+            {
+                builder.Append("<tr><th>")
+                    .Append(HtmlEncode(row.LevelName))
+                    .Append("</th>");
+
+                LevelRecord hostRecord = null;
+                var hostHasValue = hostModel != null && row.Records.TryGetValue(hostModel.ModelId, out hostRecord);
+                var hostElevation = hostHasValue && hostRecord != null ? hostRecord.ElevationFt : double.NaN;
+
+                foreach (var model in table.Models)
+                {
+                    var hasValue = row.Records.TryGetValue(model.ModelId, out var record);
+                    var isHost = hostModel != null && string.Equals(model.ModelId, hostModel.ModelId, StringComparison.OrdinalIgnoreCase);
+                    var cellClass = DetermineCellClass(isHost, hasValue, hostElevation, hasValue ? record.ElevationFt : double.NaN);
+                    var formattedValue = hasValue ? FormatFeetInches(record.ElevationFt, precision) : string.Empty;
+                    var encodedValue = string.IsNullOrEmpty(formattedValue) ? "--" : HtmlEncode(formattedValue).Replace(" ", "&nbsp;");
+
+                    builder.Append("<td");
+                    if (!string.IsNullOrEmpty(cellClass))
+                    {
+                        builder.Append(" class=\"").Append(cellClass).Append("\"");
+                    }
+
+                    builder.Append(">").Append(encodedValue);
+
+                    if (!isHost && hasValue && hostHasValue)
+                    {
+                        var deltaText = FormatDelta(record.ElevationFt - hostElevation, precision);
+                        if (!string.IsNullOrEmpty(deltaText))
+                        {
+                            builder.Append("<span class=\"delta\">").Append(deltaText).Append("</span>");
+                        }
+                    }
+
+                    builder.Append("</td>");
+                }
+
+                builder.AppendLine("</tr>");
+            }
+
+            builder.AppendLine("</tbody>");
+            builder.AppendLine("</table>");
+            builder.AppendLine("</body>");
+            builder.AppendLine("</html>");
+
+            return builder.ToString();
+        }
+
+        private static string WriteHtmlReport(string csvPath, PivotTable table, int precision)
+        {
+            var reportPath = Path.ChangeExtension(csvPath, ".html");
+            WriteTextFile(reportPath, BuildHtmlReportContent(table, precision));
+            return reportPath;
         }
 
         private static string FormatFeetInches(double feetValue, int precision)
@@ -322,6 +464,94 @@ namespace RevitSuite.Host.Commands
             }
 
             return builder.Length == 0 ? "Model" : builder.ToString();
+        }
+
+        private static string ExportReportBundle(string exportPath, string csvPath, string reportPath)
+        {
+            var directory = Path.GetDirectoryName(exportPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.Copy(csvPath, exportPath, overwrite: true);
+            var exportReportPath = Path.ChangeExtension(exportPath, ".html");
+            if (File.Exists(reportPath))
+            {
+                File.Copy(reportPath, exportReportPath, overwrite: true);
+            }
+
+            return $"Level report exported to:\n{exportPath}\n\nHTML report exported to:\n{exportReportPath}";
+        }
+
+        private static void WriteTextFile(string path, string content)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+
+        private static void WriteCsvFile(string path, string content)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        }
+
+        private static string DetermineCellClass(bool isHost, bool hasValue, double hostElevation, double value)
+        {
+            if (!hasValue)
+            {
+                return "na";
+            }
+
+            if (isHost || double.IsNaN(hostElevation))
+            {
+                return isHost ? "host" : string.Empty;
+            }
+
+            var difference = Math.Abs(value - hostElevation);
+            if (difference <= 1e-4)
+            {
+                return "match";
+            }
+
+            return difference <= 0.25 ? "warn" : "alert";
+        }
+
+        private static string FormatDelta(double delta, int precision)
+        {
+            if (Math.Abs(delta) <= 1e-4)
+            {
+                return string.Empty;
+            }
+
+            var sign = delta >= 0 ? "+" : "-";
+            var formatted = HtmlEncode(FormatFeetInches(Math.Abs(delta), precision)).Replace(" ", "&nbsp;");
+            return $"&#916; {sign}{formatted}";
+        }
+
+        private static string HtmlEncode(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            return value
+                .Replace("&", "&amp;")
+                .Replace("<", "&lt;")
+                .Replace(">", "&gt;")
+                .Replace("\"", "&quot;")
+                .Replace("'", "&#39;");
         }
 
         private sealed class PivotTable

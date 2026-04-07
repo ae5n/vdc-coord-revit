@@ -7,9 +7,9 @@ using System.Text;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using Microsoft.Win32;
 using RevitSuite.Host.Config;
 using RevitSuite.Host.Logging;
+using RevitSuite.Host.UI;
 
 namespace RevitSuite.Host.Commands
 {
@@ -17,6 +17,14 @@ namespace RevitSuite.Host.Commands
     public class SharedCoordinatesReportCommand : IExternalCommand
     {
         private const int FractionDenominator = 256;
+
+        internal sealed class SharedCoordinatesReportData
+        {
+            public string CsvContent { get; set; } = string.Empty;
+            public string HtmlContent { get; set; } = string.Empty;
+            public int RowCount { get; set; }
+            public int PointCount { get; set; }
+        }
 
         public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
         {
@@ -34,26 +42,9 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var document = uiDocument.Document;
-                var defaultFileName = BuildDefaultFileName(document);
-
-                var dialog = new SaveFileDialog
-                {
-                    Title = "Export Shared Coordinate Report",
-                    Filter = "CSV Files (*.csv)|*.csv",
-                    FileName = defaultFileName,
-                    AddExtension = true,
-                    DefaultExt = "csv",
-                    OverwritePrompt = true
-                };
-
-                if (dialog.ShowDialog() != true)
-                {
-                    LogManager.Info(correlationId, "Shared coordinate report cancelled by user.");
-                    return Result.Cancelled;
-                }
-
                 var config = SharedCoordinatesReportConfig.Load();
-                var runResult = RunCore(data.Application, dialog.FileName, config.IncludeLinkedModels, config.Precision, config.AnglePrecision);
+                var previewPath = BuildPreviewOutputPath(document);
+                var runResult = RunCore(data.Application, previewPath, config.IncludeLinkedModels, config.Precision, config.AnglePrecision);
 
                 if (runResult == null)
                 {
@@ -64,11 +55,18 @@ namespace RevitSuite.Host.Commands
 
                 var (csvPath, htmlPath, rowCount, pointCount) = runResult.Value;
                 LogManager.Info(correlationId,
-                    $"Shared coordinate report exported to '{csvPath}'. HTML: '{htmlPath}'. Records: {rowCount}. Points: {pointCount}.");
+                    $"Shared coordinate report preview generated at '{csvPath}'. HTML: '{htmlPath}'. Records: {rowCount}. Points: {pointCount}.");
 
-                TaskDialog.Show(
-                    "RevitSuite",
-                    $"Shared coordinate report written to:\n{csvPath}\nPivot view: {htmlPath}\nRecords: {rowCount}\nPoints: {pointCount}");
+                ReportPreviewHost.Show(data.Application, new ReportPreviewModel
+                {
+                    Title = "Shared Coordinate Report",
+                    Summary = $"Previewing {rowCount} record(s) across {pointCount} point group(s). Export only if you want to keep the files.",
+                    CsvPreviewPath = csvPath,
+                    HtmlPreviewPath = htmlPath,
+                    SaveDialogTitle = "Export Shared Coordinate Report",
+                    DefaultExportFileName = BuildDefaultFileName(document),
+                    ExportAction = exportPath => ExportReportBundle(exportPath, csvPath, htmlPath)
+                });
 
                 return Result.Succeeded;
             }
@@ -105,19 +103,34 @@ namespace RevitSuite.Host.Commands
                 return null;
 
             var pivotTable = BuildPivotTable(records);
-            WritePivotCsv(targetPath, pivotTable, precision, anglePrecision);
-            var reportPath = WriteHtmlReport(targetPath, pivotTable, precision, anglePrecision);
-
-            var pointCount = pivotTable.Rows
-                .Where(row => !row.IsSeparator)
-                .Select(row => row.PointLabel)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Count();
+            var reportData = BuildReportData(pivotTable, precision, anglePrecision);
+            WriteTextFile(targetPath, reportData.CsvContent);
+            var reportPath = Path.ChangeExtension(targetPath, ".html");
+            WriteTextFile(reportPath, reportData.HtmlContent);
 
             LogManager.Info(correlationId,
-                $"Shared coordinate report exported to '{targetPath}' with {records.Count} record(s). HTML view: '{reportPath}'. Points: {pointCount}.");
+                $"Shared coordinate report exported to '{targetPath}' with {records.Count} record(s). HTML view: '{reportPath}'. Points: {reportData.PointCount}.");
 
-            return (targetPath, reportPath, records.Count, pointCount);
+            return (targetPath, reportPath, records.Count, reportData.PointCount);
+        }
+
+        internal static SharedCoordinatesReportData? BuildMcpReportData(
+            UIApplication app,
+            bool includeLinkedModels,
+            int precision,
+            int anglePrecision)
+        {
+            var document = (app.ActiveUIDocument
+                ?? throw new InvalidOperationException("No active document.")).Document;
+
+            var records = CollectRecords(document, includeLinkedModels);
+            if (records.Count == 0)
+            {
+                return null;
+            }
+
+            var pivotTable = BuildPivotTable(records);
+            return BuildReportData(pivotTable, precision, anglePrecision);
         }
 
         private static string BuildAutoOutputPath(Document document, string suffix)
@@ -131,6 +144,13 @@ namespace RevitSuite.Host.Commands
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RevitSuite");
             return Path.Combine(dir, $"{sanitized}_{suffix}_{timestamp}.csv");
+        }
+
+        private static string BuildPreviewOutputPath(Document document)
+        {
+            var previewDirectory = Path.Combine(Path.GetTempPath(), "RevitSuite", "Reports");
+            Directory.CreateDirectory(previewDirectory);
+            return Path.Combine(previewDirectory, $"{Guid.NewGuid():N}_{BuildDefaultFileName(document)}");
         }
 
         private static List<SharedCoordinateRecord> CollectRecords(Document hostDocument, bool includeLinks)
@@ -483,18 +503,31 @@ namespace RevitSuite.Host.Commands
             return formatted;
         }
 
-        private static void WritePivotCsv(
-            string path,
+        private static SharedCoordinatesReportData BuildReportData(
             PivotTable table,
             int precision,
             int anglePrecision)
         {
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
+            var pointCount = table.Rows
+                .Where(row => !row.IsSeparator)
+                .Select(row => row.PointLabel)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
 
+            return new SharedCoordinatesReportData
+            {
+                CsvContent = BuildPivotCsvContent(table, precision, anglePrecision),
+                HtmlContent = BuildHtmlReportContent(table, precision, anglePrecision),
+                RowCount = table.Rows.Count,
+                PointCount = pointCount
+            };
+        }
+
+        private static string BuildPivotCsvContent(
+            PivotTable table,
+            int precision,
+            int anglePrecision)
+        {
             var builder = new StringBuilder();
             builder.Append("Point Metric");
             foreach (var model in table.Models)
@@ -528,16 +561,23 @@ namespace RevitSuite.Host.Commands
                 builder.AppendLine();
             }
 
-            File.WriteAllText(path, builder.ToString(), Encoding.UTF8);
+            return builder.ToString();
         }
 
-        private static string WriteHtmlReport(
-            string csvPath,
+        private static void WritePivotCsv(
+            string path,
             PivotTable table,
             int precision,
             int anglePrecision)
         {
-            var reportPath = Path.ChangeExtension(csvPath, ".html");
+            WriteTextFile(path, BuildPivotCsvContent(table, precision, anglePrecision));
+        }
+
+        private static string BuildHtmlReportContent(
+            PivotTable table,
+            int precision,
+            int anglePrecision)
+        {
             var hostModel = table.Models.FirstOrDefault(m =>
                 string.Equals(m.ModelType, "Host", StringComparison.OrdinalIgnoreCase)) ?? table.Models.FirstOrDefault();
 
@@ -653,7 +693,17 @@ namespace RevitSuite.Host.Commands
             builder.AppendLine("</body>");
             builder.AppendLine("</html>");
 
-            File.WriteAllText(reportPath, builder.ToString(), Encoding.UTF8);
+            return builder.ToString();
+        }
+
+        private static string WriteHtmlReport(
+            string csvPath,
+            PivotTable table,
+            int precision,
+            int anglePrecision)
+        {
+            var reportPath = Path.ChangeExtension(csvPath, ".html");
+            WriteTextFile(reportPath, BuildHtmlReportContent(table, precision, anglePrecision));
             return reportPath;
         }
 
@@ -971,6 +1021,47 @@ namespace RevitSuite.Host.Commands
             }
 
             return builder.Length == 0 ? "Model" : builder.ToString();
+        }
+
+        private static void WriteTextFile(string path, string content)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(path, content, Encoding.UTF8);
+        }
+
+        private static string ExportReportBundle(string exportPath, string csvPath, string htmlPath)
+        {
+            CopyReportFile(csvPath, exportPath);
+
+            var exportHtmlPath = Path.ChangeExtension(exportPath, ".html");
+            if (File.Exists(htmlPath))
+            {
+                CopyReportFile(htmlPath, exportHtmlPath);
+            }
+
+            return new StringBuilder()
+                .AppendLine("Shared coordinate report exported to:")
+                .AppendLine(exportPath)
+                .AppendLine()
+                .AppendLine("HTML report exported to:")
+                .AppendLine(exportHtmlPath)
+                .ToString();
+        }
+
+        private static void CopyReportFile(string sourcePath, string destinationPath)
+        {
+            var directory = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.Copy(sourcePath, destinationPath, overwrite: true);
         }
 
         private sealed class SharedCoordinateRecord

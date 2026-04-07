@@ -7,9 +7,9 @@ using System.Text;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using Microsoft.Win32;
 using RevitSuite.Host.Config;
 using RevitSuite.Host.Logging;
+using RevitSuite.Host.UI;
 
 namespace RevitSuite.Host.Commands
 {
@@ -18,6 +18,14 @@ namespace RevitSuite.Host.Commands
     {
         private const double DifferenceTolerance = 1e-4;
         private const double AngleDifferenceTolerance = 1e-3;
+
+        internal sealed class GridReportData
+        {
+            public string CsvContent { get; set; } = string.Empty;
+            public string HtmlContent { get; set; } = string.Empty;
+            public int RowCount { get; set; }
+            public int DiscrepancyCount { get; set; }
+        }
 
         public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
         {
@@ -35,26 +43,9 @@ namespace RevitSuite.Host.Commands
                 }
 
                 var document = uiDoc.Document;
-                var defaultFileName = BuildDefaultFileName(document);
-
-                var dialog = new SaveFileDialog
-                {
-                    Title = "Export Grid Report",
-                    Filter = "CSV Files (*.csv)|*.csv",
-                    FileName = defaultFileName,
-                    AddExtension = true,
-                    DefaultExt = "csv",
-                    OverwritePrompt = true
-                };
-
-                if (dialog.ShowDialog() != true)
-                {
-                    LogManager.Info(correlationId, "Grid report cancelled by user.");
-                    return Result.Cancelled;
-                }
-
                 var config = GridReportConfig.Load();
-                var runResult = RunCore(data.Application, dialog.FileName, config.IncludeLinkedModels, config.Precision);
+                var previewPath = BuildPreviewOutputPath(document);
+                var runResult = RunCore(data.Application, previewPath, config.IncludeLinkedModels, config.Precision);
 
                 if (runResult == null)
                 {
@@ -63,23 +54,21 @@ namespace RevitSuite.Host.Commands
                     return Result.Cancelled;
                 }
 
-                var (targetPath, discrepancyPath, reportPath, rowCount, discrepancyCount) = runResult.Value;
+                var (targetPath, reportPath, rowCount, discrepancyCount) = runResult.Value;
                 LogManager.Info(correlationId,
-                    $"Grid report exported to '{targetPath}' with {rowCount} row(s). Discrepancies: {discrepancyCount}. Report: {reportPath}.");
+                    $"Grid report preview generated at '{targetPath}' with {rowCount} row(s). Discrepancies: {discrepancyCount}. Report: {reportPath}.");
 
-                var messageBuilder = new StringBuilder()
-                    .AppendLine("Grid report written to:")
-                    .AppendLine(targetPath)
-                    .AppendLine($"Rows: {rowCount}")
-                    .AppendLine()
-                    .AppendLine("Discrepancy summary written to:")
-                    .AppendLine(discrepancyPath)
-                    .AppendLine($"Rows: {discrepancyCount}")
-                    .AppendLine()
-                    .AppendLine("Alignment report written to:")
-                    .AppendLine(reportPath);
+                ReportPreviewHost.Show(data.Application, new ReportPreviewModel
+                {
+                    Title = "Grid Report",
+                    Summary = $"Previewing {rowCount} grid row(s) with {discrepancyCount} discrepancy row(s). Export only if you want to keep the files.",
+                    CsvPreviewPath = targetPath,
+                    HtmlPreviewPath = reportPath,
+                    SaveDialogTitle = "Export Grid Report",
+                    DefaultExportFileName = BuildDefaultFileName(document),
+                    ExportAction = exportPath => ExportReportBundle(exportPath, targetPath, reportPath)
+                });
 
-                TaskDialog.Show("RevitSuite", messageBuilder.ToString());
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -91,7 +80,7 @@ namespace RevitSuite.Host.Commands
             }
         }
 
-        internal static (string outputPath, string discrepancyPath, string reportPath, int rowCount, int discrepancyCount)? RunCore(
+        internal static (string outputPath, string reportPath, int rowCount, int discrepancyCount)? RunCore(
             UIApplication app,
             string? outputPath,
             bool includeLinkedModels,
@@ -111,17 +100,35 @@ namespace RevitSuite.Host.Commands
 
             var pivotTable = BuildPivotTable(gridRecords);
             var discrepancyRecords = BuildDiscrepancyRecords(pivotTable);
+            var reportData = BuildReportData(pivotTable, discrepancyRecords, precision);
 
-            WritePivotCsv(targetPath, pivotTable, precision);
-            var discrepancyPath = BuildDiscrepancyPath(targetPath);
-            WriteDiscrepancyCsv(discrepancyPath, discrepancyRecords, precision);
+            WriteCsvFile(targetPath, reportData.CsvContent);
             var reportPath = BuildReportPath(targetPath);
-            WriteReportHtml(reportPath, pivotTable, discrepancyRecords, precision);
+            WriteTextFile(reportPath, reportData.HtmlContent);
 
             LogManager.Info(correlationId,
                 $"Grid report exported to '{targetPath}' with {pivotTable.Rows.Count} row(s) across {pivotTable.Models.Count} model column(s). Discrepancies: {discrepancyRecords.Count}.");
 
-            return (targetPath, discrepancyPath, reportPath, pivotTable.Rows.Count, discrepancyRecords.Count);
+            return (targetPath, reportPath, reportData.RowCount, reportData.DiscrepancyCount);
+        }
+
+        internal static GridReportData? BuildMcpReportData(
+            UIApplication app,
+            bool includeLinkedModels,
+            int precision)
+        {
+            var document = (app.ActiveUIDocument
+                ?? throw new InvalidOperationException("No active document.")).Document;
+
+            var gridRecords = CollectGridRecords(document, includeLinkedModels);
+            if (gridRecords.Count == 0)
+            {
+                return null;
+            }
+
+            var pivotTable = BuildPivotTable(gridRecords);
+            var discrepancyRecords = BuildDiscrepancyRecords(pivotTable);
+            return BuildReportData(pivotTable, discrepancyRecords, precision);
         }
 
         private static string BuildAutoOutputPath(Document document, string suffix)
@@ -135,6 +142,13 @@ namespace RevitSuite.Host.Commands
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "RevitSuite");
             return Path.Combine(dir, $"{sanitized}_{suffix}_{timestamp}.csv");
+        }
+
+        private static string BuildPreviewOutputPath(Document document)
+        {
+            var previewDirectory = Path.Combine(Path.GetTempPath(), "RevitSuite", "Reports");
+            Directory.CreateDirectory(previewDirectory);
+            return Path.Combine(previewDirectory, $"{Guid.NewGuid():N}_{BuildDefaultFileName(document)}");
         }
 
         private static List<GridRecord> CollectGridRecords(Document doc, bool includeLinkedModels)
@@ -447,27 +461,41 @@ namespace RevitSuite.Host.Commands
             return Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
 
-        private static void WritePivotCsv(string path, PivotTable table, int precision)
+        private static GridReportData BuildReportData(PivotTable table, IReadOnlyList<GridDiscrepancyRecord> discrepancies, int precision)
         {
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
+            var analytics = InitializeAnalytics(table);
+            ApplyDiscrepancies(analytics, discrepancies);
 
-            using var writer = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            var header = new List<string> { "Grid", "CurveTypes" };
+            return new GridReportData
+            {
+                CsvContent = BuildSpacingCsvContent(table, analytics),
+                HtmlContent = BuildReportHtmlContent(table, discrepancies, precision),
+                RowCount = table.Rows.Count,
+                DiscrepancyCount = discrepancies.Count
+            };
+        }
+
+        private static string BuildSpacingCsvContent(PivotTable table, Dictionary<string, GridAnalyticsRow> analytics)
+        {
+            using var writer = new StringWriter(CultureInfo.InvariantCulture);
+            var header = new List<string> { "Grid Pair", "Consensus (ft-in)" };
             header.AddRange(table.Models.Select(model => model.Model));
             WriteCsvLine(writer, header.ToArray());
 
-            foreach (var row in table.Rows)
+            var spacingData = BuildGridSpacingData(table, analytics);
+            foreach (var spacing in spacingData.OrderBy(s => s.GridA, StringComparer.OrdinalIgnoreCase).ThenBy(s => s.GridB, StringComparer.OrdinalIgnoreCase))
             {
-                var values = new List<string> { row.GridName, row.CurveTypes };
+                var values = new List<string>
+                {
+                    $"{spacing.GridA} ↔ {spacing.GridB}",
+                    FormatFeetInches(spacing.ConsensusSpacing)
+                };
+
                 foreach (var model in table.Models)
                 {
-                    if (row.Records.TryGetValue(model.ModelId, out var record))
+                    if (spacing.ModelSpacings.TryGetValue(model.Model, out var modelSpacing))
                     {
-                        values.Add(BuildModelSummary(record, precision));
+                        values.Add(FormatFeetInches(modelSpacing));
                     }
                     else
                     {
@@ -477,6 +505,14 @@ namespace RevitSuite.Host.Commands
 
                 WriteCsvLine(writer, values.ToArray());
             }
+
+            return writer.ToString();
+        }
+
+        private static void WritePivotCsv(string path, PivotTable table, int precision)
+        {
+            var analytics = InitializeAnalytics(table);
+            WriteCsvFile(path, BuildSpacingCsvContent(table, analytics));
         }
 
         private static void WriteDiscrepancyCsv(string path, IReadOnlyList<GridDiscrepancyRecord> records, int precision)
@@ -487,7 +523,7 @@ namespace RevitSuite.Host.Commands
                 Directory.CreateDirectory(directory);
             }
 
-            using var writer = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            using var writer = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
             writer.WriteLine("Grid,ReferenceModel,ReferenceType,ComparedModel,ComparedType,LengthDelta_ft,AngleDelta_deg,RadiusDelta_ft,StartOffset_ft,EndOffset_ft,CurveTypeMismatch,Notes");
 
             foreach (var record in records)
@@ -833,41 +869,53 @@ namespace RevitSuite.Host.Commands
             writer.WriteLine("</table>");
         }
 
-        private static void WriteReportHtml(string path, PivotTable table, IReadOnlyList<GridDiscrepancyRecord> discrepancies, int precision)
+        private static string BuildReportHtmlContent(PivotTable table, IReadOnlyList<GridDiscrepancyRecord> discrepancies, int precision)
         {
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
             var analytics = InitializeAnalytics(table);
             ApplyDiscrepancies(analytics, discrepancies);
             var modelQuality = CalculateModelQuality(table, analytics);
             var spacingIssues = AnalyzeGridSpacing(table, analytics);
 
-            using var writer = new StreamWriter(path, false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            using var writer = new StringWriter(CultureInfo.InvariantCulture);
             writer.WriteLine("<!DOCTYPE html>");
-            writer.WriteLine("<html>");
+            writer.WriteLine("<html lang=\"en\">");
             writer.WriteLine("<head>");
             writer.WriteLine("<meta charset=\"utf-8\">");
+            writer.WriteLine("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
             writer.WriteLine("<title>Grid Report</title>");
             writer.WriteLine("<style>");
-            writer.WriteLine("body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; font-size: 14px; }");
-            writer.WriteLine("h1 { font-size: 20px; margin-bottom: 5px; }");
-            writer.WriteLine("h2 { font-size: 16px; margin-top: 30px; margin-bottom: 10px; color: #c00; }");
-            writer.WriteLine("table { border-collapse: collapse; width: 100%; margin-top: 10px; }");
-            writer.WriteLine("th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }");
-            writer.WriteLine("th { background: #f5f5f5; font-weight: 600; font-size: 13px; }");
-            writer.WriteLine(".bad { background: #ffe6e6; }");
+            writer.WriteLine("body { font-family: \"Segoe UI\", Arial, sans-serif; margin: 32px; color: #1f2933; background-color: #f5f7fa; }");
+            writer.WriteLine("h1 { font-size: 1.75rem; margin-bottom: 0.75rem; }");
+            writer.WriteLine("h2 { font-size: 1.1rem; margin-top: 32px; margin-bottom: 10px; color: #0f172a; }");
+            writer.WriteLine("p { margin: 0 0 1.25rem 0; color: #52606d; }");
+            writer.WriteLine("table { border-collapse: collapse; width: 100%; margin-top: 10px; background: #ffffff; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); border-radius: 12px; overflow: hidden; }");
+            writer.WriteLine("th, td { border-bottom: 1px solid #e2e8f0; padding: 12px 16px; text-align: left; font-size: 0.95rem; }");
+            writer.WriteLine("thead th { background: #0f172a; color: #f8fafc; font-weight: 600; }");
+            writer.WriteLine("tbody tr:nth-child(even) td { background: #f8fafc; }");
+            writer.WriteLine(".bad { background: #fee2e2; }");
             writer.WriteLine(".num { text-align: right; font-family: 'Consolas', monospace; }");
-            writer.WriteLine(".info { color: #666; font-size: 11px; margin-top: 5px; }");
+            writer.WriteLine(".info { color: #52606d; font-size: 0.85rem; margin-top: 5px; }");
+            writer.WriteLine(".pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }");
+            writer.WriteLine(".pill-host { background: #dbeafe; color: #1d4ed8; }");
+            writer.WriteLine(".pill-link { background: #e2e8f0; color: #334155; }");
+            writer.WriteLine(".sev-aligned { background: #ecfdf5; }");
+            writer.WriteLine(".sev-minor { background: #fef3c7; }");
+            writer.WriteLine(".sev-major, .sev-critical { background: #fee2e2; }");
+            writer.WriteLine(".legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 16px; color: #52606d; }");
+            writer.WriteLine(".legend-item { display: flex; align-items: center; gap: 8px; }");
+            writer.WriteLine(".legend-box { width: 14px; height: 14px; border-radius: 4px; border: 1px solid #cbd5e1; }");
+            writer.WriteLine(".heat-perfect { background: #dcfce7; }");
+            writer.WriteLine(".heat-good { background: #bbf7d0; }");
+            writer.WriteLine(".heat-fair { background: #fef3c7; }");
+            writer.WriteLine(".heat-poor { background: #fed7aa; }");
+            writer.WriteLine(".heat-critical { background: #fecaca; }");
+            writer.WriteLine(".heat-missing { background: #e2e8f0; }");
             writer.WriteLine("</style>");
             writer.WriteLine("</head>");
             writer.WriteLine("<body>");
 
             writer.WriteLine("<h1>Grid Discrepancy Analysis</h1>");
-            writer.WriteLine("<p class=\"info\">Generated: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " | Distance between parallel grid lines</p>");
+            writer.WriteLine("<p>Generated: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " | Distance between parallel grid lines</p>");
 
             // Build comprehensive spacing data
             var spacingData = BuildGridSpacingData(table, analytics);
@@ -914,6 +962,12 @@ namespace RevitSuite.Host.Commands
 
             writer.WriteLine("</body>");
             writer.WriteLine("</html>");
+            return writer.ToString();
+        }
+
+        private static void WriteReportHtml(string path, PivotTable table, IReadOnlyList<GridDiscrepancyRecord> discrepancies, int precision)
+        {
+            WriteTextFile(path, BuildReportHtmlContent(table, discrepancies, precision));
         }
 
         private static Dictionary<string, GridAnalyticsRow> InitializeAnalytics(PivotTable table)
@@ -1402,6 +1456,13 @@ namespace RevitSuite.Host.Commands
             var wholeInches = sixteenths / 16;
             var fraction = sixteenths % 16;
 
+            // Carry 12" into the next foot so 35'-12" displays as 36'
+            if (wholeInches >= 12)
+            {
+                wholeFeet += wholeInches / 12;
+                wholeInches %= 12;
+            }
+
             // Build the inches part
             string inchPart;
             if (fraction == 0)
@@ -1593,6 +1654,58 @@ namespace RevitSuite.Host.Commands
             return string.IsNullOrEmpty(directory)
                 ? reportName
                 : Path.Combine(directory, reportName);
+        }
+
+        private static string ExportReportBundle(string exportPath, string csvPath, string reportPath)
+        {
+            CopyReportFile(csvPath, exportPath);
+
+            var exportReportPath = BuildReportPath(exportPath);
+            if (File.Exists(reportPath))
+            {
+                CopyReportFile(reportPath, exportReportPath);
+            }
+
+            return new StringBuilder()
+                .AppendLine("Grid report exported to:")
+                .AppendLine(exportPath)
+                .AppendLine()
+                .AppendLine("HTML report exported to:")
+                .AppendLine(exportReportPath)
+                .ToString();
+        }
+
+        private static void CopyReportFile(string sourcePath, string destinationPath)
+        {
+            var directory = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.Copy(sourcePath, destinationPath, overwrite: true);
+        }
+
+        private static void WriteTextFile(string path, string content)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+
+        private static void WriteCsvFile(string path, string content)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
         }
 
         private static string FormatNullable(double? value, int precision)

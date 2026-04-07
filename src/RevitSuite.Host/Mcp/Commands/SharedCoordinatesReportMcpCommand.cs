@@ -12,7 +12,7 @@ namespace RevitSuite.Host.Mcp.Commands
         private static readonly object _lock = new object();
         private SharedCoordinatesReportMcpEventHandler _handler => (SharedCoordinatesReportMcpEventHandler)Handler;
 
-        public override string CommandName => "export_shared_coordinates_report";
+        public override string CommandName => "get_shared_coordinates_report";
 
         public SharedCoordinatesReportMcpCommand(UIApplication uiApp)
             : base(new SharedCoordinatesReportMcpEventHandler(), uiApp) { }
@@ -36,7 +36,7 @@ namespace RevitSuite.Host.Mcp.Commands
                 if (RaiseAndWaitForCompletion(30000))
                     return _handler.Result;
                 else
-                    throw new TimeoutException("export_shared_coordinates_report timed out.");
+                    throw new TimeoutException("get_shared_coordinates_report timed out.");
             }
         }
     }

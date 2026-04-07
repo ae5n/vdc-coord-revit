@@ -2,10 +2,10 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
 
-export function registerExportSharedCoordinatesReportTool(server: McpServer) {
+function registerSharedCoordinatesReportTool(server: McpServer, toolName: string, description: string) {
   server.tool(
-    "export_shared_coordinates_report",
-    "Export a CSV report of shared coordinate data (project base point and survey point) for the host model and loaded linked models.",
+    toolName,
+    description,
     {
       includeLinkedModels: z.boolean().optional()
         .describe("Whether to include coordinate data from loaded Revit link instances. Default: true."),
@@ -14,19 +14,27 @@ export function registerExportSharedCoordinatesReportTool(server: McpServer) {
       anglePrecision: z.number().int().min(0).max(6).optional()
         .describe("Decimal precision for angular values in degrees. Default: 4."),
       maxPreviewRows: z.number().int().min(0).max(20).optional()
-        .describe("Number of records to include in the response preview. Default: 5."),
-      outputPath: z.string()
-        .describe("Full path for the output CSV file. Always ask the user where to save before calling."),
+        .describe("Legacy preview option. Ignored by the in-memory report response."),
+      outputPath: z.string().optional()
+        .describe("Optional full path for exporting the CSV/HTML report. Omit to return HTML report data only."),
     },
     async (args) => {
       try {
         const response = await withRevitConnection(async (revitClient) => {
-          return await revitClient.sendCommand("export_shared_coordinates_report", args);
+          return await revitClient.sendCommand("get_shared_coordinates_report", args);
         });
         return { content: [{ type: "text", text: JSON.stringify(response, null, 2) }] };
       } catch (error) {
-        return { content: [{ type: "text", text: `export_shared_coordinates_report failed: ${error instanceof Error ? error.message : String(error)}` }] };
+        return { content: [{ type: "text", text: `${toolName} failed: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
+  );
+}
+
+export function registerGetSharedCoordinatesReportTool(server: McpServer) {
+  registerSharedCoordinatesReportTool(
+    server,
+    "get_shared_coordinates_report",
+    "Get shared coordinates report data from the active Revit project and linked models. Returns HTML report content directly; exports files only when an output path is provided."
   );
 }

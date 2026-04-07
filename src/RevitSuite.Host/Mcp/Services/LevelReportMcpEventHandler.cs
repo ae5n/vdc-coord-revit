@@ -2,8 +2,6 @@ using Autodesk.Revit.UI;
 using RevitMCPSDK.API.Interfaces;
 using RevitSuite.Host.Commands;
 using System;
-using System.IO;
-using System.Linq;
 using System.Threading;
 
 namespace RevitSuite.Host.Mcp.Services
@@ -34,16 +32,45 @@ namespace RevitSuite.Host.Mcp.Services
                     return;
                 }
 
-                var runResult = LevelReportCommand.RunCore(app, OutputPath, IncludeLinkedModels, Precision, MaxPreviewRows);
-                if (runResult == null)
+                if (!string.IsNullOrWhiteSpace(OutputPath))
+                {
+                    var exportResult = LevelReportCommand.RunCore(
+                        app,
+                        OutputPath,
+                        IncludeLinkedModels,
+                        Precision,
+                        MaxPreviewRows);
+
+                    if (exportResult == null)
+                    {
+                        Result = new { success = false, error = "No levels found." };
+                        return;
+                    }
+
+                    var (csvPath, htmlPath, rowCount) = exportResult.Value;
+                    Result = new
+                    {
+                        success = true,
+                        rowCount,
+                        csvPath,
+                        htmlPath
+                    };
+                    return;
+                }
+
+                var reportData = LevelReportCommand.BuildMcpReportData(app, IncludeLinkedModels, Precision);
+                if (reportData == null)
                 {
                     Result = new { success = false, error = "No levels found." };
                     return;
                 }
 
-                var (outputPath, rowCount) = runResult.Value;
-                var preview = ReadCsvPreview(outputPath, MaxPreviewRows);
-                Result = new { success = true, outputPath, rowCount, preview };
+                Result = new
+                {
+                    success = true,
+                    rowCount = reportData.RowCount,
+                    htmlContent = reportData.HtmlContent
+                };
             }
             catch (Exception ex)
             {
@@ -57,16 +84,5 @@ namespace RevitSuite.Host.Mcp.Services
 
         public string GetName() => "Level Report MCP";
 
-        private static string[] ReadCsvPreview(string csvPath, int maxRows)
-        {
-            try
-            {
-                return File.ReadAllLines(csvPath).Skip(1).Take(maxRows).ToArray();
-            }
-            catch
-            {
-                return Array.Empty<string>();
-            }
-        }
     }
 }

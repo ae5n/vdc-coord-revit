@@ -2,8 +2,6 @@ using Autodesk.Revit.UI;
 using RevitMCPSDK.API.Interfaces;
 using RevitSuite.Host.Commands;
 using System;
-using System.IO;
-using System.Linq;
 using System.Threading;
 
 namespace RevitSuite.Host.Mcp.Services
@@ -35,16 +33,47 @@ namespace RevitSuite.Host.Mcp.Services
                     return;
                 }
 
-                var runResult = SharedCoordinatesReportCommand.RunCore(app, OutputPath, IncludeLinkedModels, Precision, AnglePrecision);
-                if (runResult == null)
+                if (!string.IsNullOrWhiteSpace(OutputPath))
+                {
+                    var exportResult = SharedCoordinatesReportCommand.RunCore(
+                        app,
+                        OutputPath,
+                        IncludeLinkedModels,
+                        Precision,
+                        AnglePrecision);
+
+                    if (exportResult == null)
+                    {
+                        Result = new { success = false, error = "No shared coordinate data found." };
+                        return;
+                    }
+
+                    var (csvPath, htmlPath, rowCount, pointCount) = exportResult.Value;
+                    Result = new
+                    {
+                        success = true,
+                        rowCount,
+                        pointCount,
+                        csvPath,
+                        htmlPath
+                    };
+                    return;
+                }
+
+                var reportData = SharedCoordinatesReportCommand.BuildMcpReportData(app, IncludeLinkedModels, Precision, AnglePrecision);
+                if (reportData == null)
                 {
                     Result = new { success = false, error = "No shared coordinate data found." };
                     return;
                 }
 
-                var (csvPath, htmlPath, rowCount, pointCount) = runResult.Value;
-                var preview = ReadCsvPreview(csvPath, MaxPreviewRows);
-                Result = new { success = true, csvPath, htmlPath, rowCount, pointCount, preview };
+                Result = new
+                {
+                    success = true,
+                    rowCount = reportData.RowCount,
+                    pointCount = reportData.PointCount,
+                    htmlContent = reportData.HtmlContent
+                };
             }
             catch (Exception ex)
             {
@@ -58,16 +87,5 @@ namespace RevitSuite.Host.Mcp.Services
 
         public string GetName() => "Shared Coordinates Report MCP";
 
-        private static string[] ReadCsvPreview(string csvPath, int maxRows)
-        {
-            try
-            {
-                return File.ReadAllLines(csvPath).Skip(1).Take(maxRows).ToArray();
-            }
-            catch
-            {
-                return Array.Empty<string>();
-            }
-        }
     }
 }
