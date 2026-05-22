@@ -5,6 +5,7 @@
     { "commandName": "get_current_view_elements",       "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
     { "commandName": "get_current_view_info",           "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
     { "commandName": "get_selected_elements",           "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
+    { "commandName": "pick_linked_revit_elements",      "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
     { "commandName": "create_point_based_element",      "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
     { "commandName": "create_line_based_element",       "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
     { "commandName": "create_surface_based_element",    "assemblyPath": "RevitMCPCommandSet.dll", "enabled": true },
