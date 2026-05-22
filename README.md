@@ -129,12 +129,23 @@ Notes:
 
 Click `MCP Server` again in the ribbon to stop it. The server also shuts down automatically when Revit closes.
 
+### Attribution and Upstream
+
+RevitSuite's MCP layer is based in part on [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-servers-for-revit) by sparx-fire, used under the MIT License. Upstream MCP changes are reviewed selectively:
+
+```powershell
+.\build\scripts\review-upstream-mcp.ps1
+```
+
+Port only the changes that fit RevitSuite, then record the adapted upstream baseline:
+
+```powershell
+.\build\scripts\review-upstream-mcp.ps1 -Commit <commit> -Record
+```
+
 ## Schemas
 - Command defaults are in `schemas\*.schema.json`
 - Build and deploy sync schemas into the host output folder
 
 ## Logs
 - `%LOCALAPPDATA%\RevitSuite\logs\`
-
-## Credits
-MCP infrastructure and 23 base Revit tools adapted from [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-servers-for-revit) by sparx-fire, used under the MIT License.

@@ -33,9 +33,12 @@ diff.txt
 git diff.txt
 *.csv
 Screenshot *.png
-docs/
 .claude/*
 mcp-servers-for-revit_clone/
+
+# Planning docs
+docs/planning/
+docs/*.planning.md
 
 # MCP server
 mcp-server/node_modules/

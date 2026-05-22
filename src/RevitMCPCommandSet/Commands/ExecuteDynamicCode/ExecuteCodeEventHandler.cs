@@ -3,6 +3,7 @@
 
 using System.IO;
 using System.Reflection;
+using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -16,9 +17,13 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
     /// </summary>
     public class ExecuteCodeEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {
+        public const string TransactionModeAuto = "auto";
+        public const string TransactionModeNone = "none";
+
         // 代码执行参数
         private string _generatedCode;
         private object[] _executionParameters;
+        private string _transactionMode = TransactionModeAuto;
 
         // 执行结果信息
         public ExecutionResultInfo ResultInfo { get; private set; }
@@ -28,10 +33,11 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
 
         // 设置要执行的代码和参数
-        public void SetExecutionParameters(string code, object[] parameters = null)
+        public void SetExecutionParameters(string code, object[] parameters = null, string transactionMode = TransactionModeAuto)
         {
             _generatedCode = code;
             _executionParameters = parameters ?? Array.Empty<object>();
+            _transactionMode = transactionMode == TransactionModeNone ? TransactionModeNone : TransactionModeAuto;
             TaskCompleted = false;
             _resetEvent.Reset();
         }
@@ -50,22 +56,34 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 var doc = app.ActiveUIDocument.Document;
                 ResultInfo = new ExecutionResultInfo();
 
-                using (var transaction = new Transaction(doc, "执行AI代码"))
+                object result;
+                if (_transactionMode == TransactionModeNone)
                 {
-                    transaction.Start();
-
-                    // 动态编译执行代码
-                    var result = CompileAndExecuteCode(
+                    result = CompileAndExecuteCode(
                         code: _generatedCode,
                         doc: doc,
                         parameters: _executionParameters
                     );
-
-                    transaction.Commit();
-
-                    ResultInfo.Success = true;
-                    ResultInfo.Result = JsonConvert.SerializeObject(result);
                 }
+                else
+                {
+                    using (var transaction = new Transaction(doc, "执行AI代码"))
+                    {
+                        transaction.Start();
+
+                        // 动态编译执行代码
+                        result = CompileAndExecuteCode(
+                            code: _generatedCode,
+                            doc: doc,
+                            parameters: _executionParameters
+                        );
+
+                        transaction.Commit();
+                    }
+                }
+
+                ResultInfo.Success = true;
+                ResultInfo.Result = JsonConvert.SerializeObject(result);
             }
             catch (Exception ex)
             {
