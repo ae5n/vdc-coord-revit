@@ -16,19 +16,48 @@ namespace RevitSuite.Host.Explorer
             Converters = { new StringEnumConverter() }
         };
 
-        public sealed record LoadedFilter(QueryDefinition? Query, string FilePath, string? Error);
+        public sealed record LoadedFilter(QueryDefinition? Query, string FilePath, string? Error, string Source = "User");
 
         public static IReadOnlyList<LoadedFilter> LoadAll()
         {
-            var results = new List<LoadedFilter>();
+            var company = new List<LoadedFilter>();
+            var user = new List<LoadedFilter>();
+
+            // Company standards (ProgramData, deployed by IT) are read-only from the UI.
+            // A user filter with the same id shadows the company one.
+            var companyDirectory = ExplorerPaths.CompanyFiltersDirectory;
+            if (companyDirectory != null)
+            {
+                try
+                {
+                    foreach (var path in Directory.GetFiles(companyDirectory, "*.json")
+                                 .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+                    {
+                        company.Add(LoadFrom(path) with { Source = "Company" });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // An unreadable company share is a warning entry, never a crash.
+                    company.Add(new LoadedFilter(null, companyDirectory,
+                        $"Could not read company filters: {ex.Message}", "Company"));
+                }
+            }
 
             foreach (var path in Directory.GetFiles(ExplorerPaths.FiltersDirectory, "*.json")
                          .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
             {
-                results.Add(LoadFrom(path));
+                user.Add(LoadFrom(path));
             }
 
-            return results;
+            var userIds = new HashSet<string>(
+                user.Where(f => f.Query != null).Select(f => f.Query!.Id),
+                StringComparer.OrdinalIgnoreCase);
+
+            return company
+                .Where(f => f.Query == null || !userIds.Contains(f.Query.Id))
+                .Concat(user)
+                .ToList();
         }
 
         public static LoadedFilter LoadFrom(string path)
@@ -166,6 +195,7 @@ namespace RevitSuite.Host.Explorer
                 QueryOperator.NotContains => $"{name} does not contain '{condition.Value}'",
                 QueryOperator.StartsWith => $"{name} starts with '{condition.Value}'",
                 QueryOperator.EndsWith => $"{name} ends with '{condition.Value}'",
+                QueryOperator.Regex => $"{name} matches pattern '{condition.Value}'",
                 QueryOperator.IsEmpty => $"{name} is empty",
                 QueryOperator.IsNotEmpty => $"{name} is not empty",
                 QueryOperator.GreaterThan => $"{name} is greater than {condition.Value}",

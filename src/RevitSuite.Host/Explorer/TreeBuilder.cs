@@ -49,6 +49,10 @@ namespace RevitSuite.Host.Explorer
                     r => r.OwnerViewName ?? "(Model / Not View-Specific)",
                     r => r.Category ?? "(No Category)",
                     r => r.TypeName ?? "(No Type)"),
+                GroupingMode.DesignOption => Group(filtered,
+                    r => r.DesignOptionName ?? "(Main Model)",
+                    r => r.Category ?? "(No Category)",
+                    r => r.TypeName ?? "(No Type)"),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
             };
         }

@@ -156,7 +156,73 @@ namespace RevitSuite.Host.Explorer
                 }
             }
 
-            return new DeletePreflight(total, categoryCounts, viewSpecific, pinned, ownedByOthers, isWorkshared);
+            var (dependentCount, dependentCategories) = AnalyzeDependents(doc, idValues);
+            return new DeletePreflight(
+                total, categoryCounts, viewSpecific, pinned, ownedByOthers, isWorkshared,
+                dependentCount, dependentCategories);
+        }
+
+        /// <summary>
+        /// Trial-deletes inside a transaction that is always rolled back, so Revit reports the
+        /// full cascade (tags, dimensions, hosted elements) without changing the model. After
+        /// rollback the dependents exist again, so their categories can be enumerated for the
+        /// confirmation dialog. Count is -1 when the preview itself fails.
+        /// </summary>
+        private static (int Count, IReadOnlyDictionary<string, int> Categories) AnalyzeDependents(
+            Document doc,
+            IReadOnlyCollection<long> idValues)
+        {
+            var empty = new Dictionary<string, int>();
+            var requested = FilterToLiveElements(doc, idValues);
+            if (requested.Count == 0)
+            {
+                return (0, empty);
+            }
+
+            var requestedSet = new HashSet<long>(requested.Select(id => id.Value));
+            List<long> dependentIds;
+
+            using (var tx = new Transaction(doc, "Model Explorer - Delete Preview"))
+            {
+                try
+                {
+                    tx.Start();
+                    var deleted = doc.Delete(requested);
+                    dependentIds = (deleted ?? (ICollection<ElementId>)Array.Empty<ElementId>())
+                        .Select(id => id.Value)
+                        .Where(value => !requestedSet.Contains(value))
+                        .ToList();
+                }
+                catch
+                {
+                    return (-1, empty);
+                }
+                finally
+                {
+                    if (tx.HasStarted() && !tx.HasEnded())
+                    {
+                        tx.RollBack();
+                    }
+                }
+            }
+
+            var categories = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var idValue in dependentIds)
+            {
+                string name;
+                try
+                {
+                    name = doc.GetElement(new ElementId(idValue))?.Category?.Name ?? "(No Category)";
+                }
+                catch
+                {
+                    name = "(No Category)";
+                }
+
+                categories[name] = categories.TryGetValue(name, out var count) ? count + 1 : 1;
+            }
+
+            return (dependentIds.Count, categories);
         }
 
         /// <summary>Deletes elements inside a transaction. Returns (deletedCount, error message or null).</summary>
@@ -184,6 +250,85 @@ namespace RevitSuite.Host.Explorer
                 }
 
                 return (0, $"Delete failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Temporarily isolates elements in the active view. Temporary view modes are still
+        /// model changes as far as the API is concerned, so this must run inside a Transaction.
+        /// </summary>
+        public static (int Isolated, string? Error) IsolateElements(UIDocument uidoc, IReadOnlyCollection<long> idValues)
+        {
+            var view = uidoc.ActiveView;
+            if (!SupportsTemporaryModes(view))
+            {
+                return (0, $"View '{view.Name}' does not support temporary hide/isolate (sheets, schedules, and locked view templates don't).");
+            }
+
+            var valid = FilterToLiveElements(uidoc.Document, idValues);
+            if (valid.Count == 0)
+            {
+                return (0, "None of the elements exist in the host model anymore.");
+            }
+
+            using var tx = new Transaction(uidoc.Document, "Model Explorer - Isolate Elements");
+            try
+            {
+                tx.Start();
+                view.IsolateElementsTemporary(valid);
+                tx.Commit();
+                return (valid.Count, null);
+            }
+            catch (Exception ex)
+            {
+                if (tx.HasStarted() && !tx.HasEnded())
+                {
+                    tx.RollBack();
+                }
+
+                LogManager.Error("explorer", $"Isolate failed in view '{view.Name}'.", ex);
+                return (0, $"Could not isolate in the active view: {ex.Message}");
+            }
+        }
+
+        /// <summary>Ends temporary hide/isolate in the active view (transaction required, as above).</summary>
+        public static string? ResetIsolate(UIDocument uidoc)
+        {
+            var view = uidoc.ActiveView;
+            if (!SupportsTemporaryModes(view))
+            {
+                return $"View '{view.Name}' does not support temporary view modes.";
+            }
+
+            using var tx = new Transaction(uidoc.Document, "Model Explorer - Reset Isolate");
+            try
+            {
+                tx.Start();
+                view.DisableTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate);
+                tx.Commit();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                if (tx.HasStarted() && !tx.HasEnded())
+                {
+                    tx.RollBack();
+                }
+
+                LogManager.Error("explorer", $"Reset isolate failed in view '{view.Name}'.", ex);
+                return $"Could not reset isolate: {ex.Message}";
+            }
+        }
+
+        private static bool SupportsTemporaryModes(View view)
+        {
+            try
+            {
+                return view.CanUseTemporaryVisibilityModes();
+            }
+            catch
+            {
+                return false;
             }
         }
 

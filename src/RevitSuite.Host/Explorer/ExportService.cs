@@ -273,7 +273,7 @@ namespace RevitSuite.Host.Explorer
             var headers = new[]
             {
                 "ElementId", "UniqueId", "Category", "Family", "Type", "Name",
-                "Level", "Workset", "OwnerView", "Origin", "ViewSpecific", "Pinned", "InGroup"
+                "Level", "Workset", "OwnerView", "DesignOption", "Origin", "ViewSpecific", "Pinned", "InGroup"
             };
 
             var rows = records.Select(r => (IReadOnlyList<string>)new[]
@@ -287,6 +287,7 @@ namespace RevitSuite.Host.Explorer
                 r.LevelName ?? string.Empty,
                 r.WorksetName ?? string.Empty,
                 r.OwnerViewName ?? string.Empty,
+                r.DesignOptionName ?? string.Empty,
                 r.Origin,
                 r.IsViewSpecific ? "Yes" : "No",
                 r.IsPinned ? "Yes" : "No",
@@ -296,46 +297,55 @@ namespace RevitSuite.Host.Explorer
             return new Table("Elements", headers, rows);
         }
 
-        /// <summary>One normalized row per warning-element relationship, for pivot/Power BI workflows.</summary>
-        public static Table BuildWarningsTable(IEnumerable<WarningRecord> warnings)
+        /// <summary>
+        /// One normalized row per warning-element relationship, for pivot/Power BI workflows.
+        /// Optional triage lookup (by WarningKey) adds Status/AssignedTo columns.
+        /// </summary>
+        public static Table BuildWarningsTable(
+            IEnumerable<WarningRecord> warnings,
+            IReadOnlyDictionary<string, (string Status, string? AssignedTo)>? triage = null)
         {
             var headers = new[]
             {
-                "WarningKey", "Rank", "Description", "Role", "ElementId", "ElementName", "Categories"
+                "ElementId", "Role", "Rank", "Status", "AssignedTo", "Description", "ElementName", "Categories", "WarningKey"
             };
 
             var rows = new List<IReadOnlyList<string>>();
             foreach (var warning in warnings)
             {
                 var categories = string.Join("; ", warning.Categories);
-                var nameById = warning.ElementNames
-                    .Select(n => n)
-                    .ToList();
+                var names = warning.ElementNames;
+                var status = string.Empty;
+                var assignedTo = string.Empty;
+                if (triage != null && triage.TryGetValue(warning.WarningKey, out var meta))
+                {
+                    status = meta.Status;
+                    assignedTo = meta.AssignedTo ?? string.Empty;
+                }
+
+                IReadOnlyList<string> MakeRow(string id, string role, string name) => new[]
+                {
+                    id, role, warning.Rank.ToString(), status, assignedTo,
+                    warning.Description, name, categories, warning.WarningKey
+                };
 
                 if (warning.FailingElementIds.Count == 0 && warning.AdditionalElementIds.Count == 0)
                 {
-                    rows.Add(new[] { warning.WarningKey, warning.Rank.ToString(), warning.Description, "None", string.Empty, string.Empty, categories });
+                    rows.Add(MakeRow(string.Empty, "None", string.Empty));
                     continue;
                 }
 
                 for (var i = 0; i < warning.FailingElementIds.Count; i++)
                 {
-                    rows.Add(new[]
-                    {
-                        warning.WarningKey, warning.Rank.ToString(), warning.Description, "Failing",
+                    rows.Add(MakeRow(
                         warning.FailingElementIds[i].ToString(CultureInfo.InvariantCulture),
-                        i < nameById.Count ? nameById[i] : string.Empty,
-                        categories
-                    });
+                        "Failing",
+                        i < names.Count ? names[i] : string.Empty));
                 }
 
                 foreach (var id in warning.AdditionalElementIds)
                 {
-                    rows.Add(new[]
-                    {
-                        warning.WarningKey, warning.Rank.ToString(), warning.Description, "Additional",
-                        id.ToString(CultureInfo.InvariantCulture), string.Empty, categories
-                    });
+                    rows.Add(MakeRow(id.ToString(CultureInfo.InvariantCulture), "Additional", string.Empty));
                 }
             }
 

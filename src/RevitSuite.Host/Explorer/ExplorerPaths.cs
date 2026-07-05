@@ -15,6 +15,19 @@ namespace RevitSuite.Host.Explorer
 
         public static string FiltersDirectory => EnsureDirectory(Path.Combine(Root, "filters"));
         public static string RulesDirectory => EnsureDirectory(Path.Combine(Root, "rules"));
+
+        private static string CompanyRoot => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "RevitSuite",
+            "Explorer");
+
+        /// <summary>Read-only team-standards folder (deploy via IT); null when not present.</summary>
+        public static string? CompanyFiltersDirectory => ExistingOrNull(Path.Combine(CompanyRoot, "filters"));
+
+        /// <summary>Read-only team-standards folder (deploy via IT); null when not present.</summary>
+        public static string? CompanyRulesDirectory => ExistingOrNull(Path.Combine(CompanyRoot, "rules"));
+
+        private static string? ExistingOrNull(string path) => Directory.Exists(path) ? path : null;
         public static string WarningRankingsFile => Path.Combine(EnsureDirectory(Root), "warning-rankings.json");
 
         public static string WarningSnapshotsDirectory(string modelIdentity) =>

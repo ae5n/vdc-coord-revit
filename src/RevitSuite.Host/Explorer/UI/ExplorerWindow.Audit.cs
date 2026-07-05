@@ -16,6 +16,7 @@ namespace RevitSuite.Host.Explorer.UI
             string Rule,
             int Count,
             string Summary,
+            string ElementIds,
             AuditFinding Finding);
 
         public sealed record HealthRow(string Component, string Severity, int Count, double Deduction);
@@ -29,6 +30,7 @@ namespace RevitSuite.Host.Explorer.UI
         private TextBlock _healthScoreText = null!;
         private TextBlock _packSummaryText = null!;
         private TextBlock _guidanceText = null!;
+        private TextBlock _trendText = null!;
         private DataGrid _findingsGrid = null!;
 
         private UIElement BuildAuditTab()
@@ -70,6 +72,17 @@ namespace RevitSuite.Host.Explorer.UI
             Grid.SetRow(headerPanel, 1);
             layout.Children.Add(headerPanel);
 
+            _trendText = new TextBlock
+            {
+                Margin = new Thickness(0, 0, 0, 6),
+                Foreground = SystemColors.GrayTextBrush,
+                TextWrapping = TextWrapping.Wrap,
+                Text = "Run an audit to compute the health score; saved snapshots build the score history."
+            };
+            layout.RowDefinitions.Insert(2, new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(_trendText, 2);
+            layout.Children.Add(_trendText);
+
             var body = new Grid();
             body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3, GridUnitType.Star) });
             body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
@@ -97,7 +110,8 @@ namespace RevitSuite.Host.Explorer.UI
             AddFindingColumn("Severity", nameof(FindingRow.Severity), 0.7);
             AddFindingColumn("Rule", nameof(FindingRow.Rule), 1.5);
             AddFindingColumn("Count", nameof(FindingRow.Count), 0.5);
-            AddFindingColumn("Summary", nameof(FindingRow.Summary), 2);
+            AddFindingColumn("Summary", nameof(FindingRow.Summary), 1.6);
+            AddFindingColumn("Element Ids", nameof(FindingRow.ElementIds), 1.2);
             _findingsGrid.SelectionChanged += (_, _) => ShowFindingGuidance();
             Grid.SetColumn(_findingsGrid, 0);
             body.Children.Add(_findingsGrid);
@@ -153,14 +167,14 @@ namespace RevitSuite.Host.Explorer.UI
             Grid.SetColumn(rightPanel, 2);
             body.Children.Add(rightPanel);
 
-            Grid.SetRow(body, 2);
+            Grid.SetRow(body, 3);
             layout.Children.Add(body);
 
             var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
             actions.Children.Add(MakeButton("Select Elements", (_, _) => ActOnFindings(selectOnly: true)));
             actions.Children.Add(MakeButton("Show Elements", (_, _) => ActOnFindings(selectOnly: false)));
             actions.Children.Add(MakeButton("Export Findings CSV", (_, _) => ExportFindingsCsv()));
-            Grid.SetRow(actions, 3);
+            Grid.SetRow(actions, 4);
             layout.Children.Add(actions);
 
             return layout;
@@ -176,23 +190,27 @@ namespace RevitSuite.Host.Explorer.UI
                     .Select(p => $"{System.IO.Path.GetFileName(p.FilePath)}: {p.Error}")
                     .ToList();
 
-                var findings = AuditService.Run(uidoc, validPacks);
+                var run = AuditService.Run(uidoc, validPacks);
                 var warnings = WarningService.Extract(uidoc.Document, WarningService.LoadRankings());
-                var health = AuditService.ComputeHealth(findings, warnings);
+                var health = AuditService.ComputeHealth(run.Findings, warnings);
+                var history = AuditService.LoadSnapshots(uidoc.Document);
 
                 OnUi(() =>
                 {
-                    _currentFindings = findings;
+                    _currentFindings = run.Findings;
                     _currentHealth = health;
+                    // Keep the warnings used for scoring so the audit package export matches the score.
+                    _currentWarnings = warnings;
 
                     _findingRows.Clear();
-                    foreach (var finding in findings)
+                    foreach (var finding in run.Findings)
                     {
                         _findingRows.Add(new FindingRow(
                             finding.Severity.ToString(),
                             finding.RuleName,
                             finding.ElementIds.Count,
                             finding.Summary,
+                            FormatIds(finding.ElementIds),
                             finding));
                     }
 
@@ -201,6 +219,11 @@ namespace RevitSuite.Host.Explorer.UI
                     {
                         _healthRows.Add(new HealthRow(
                             component.Label, component.Severity.ToString(), component.Count, component.Deduction));
+                    }
+
+                    if (_healthRows.Count == 0)
+                    {
+                        _healthRows.Add(new HealthRow("No deductions — clean model", string.Empty, 0, 0));
                     }
 
                     _healthScoreText.Text = $"Health Score: {health.Score:0.#} / 100";
@@ -212,17 +235,43 @@ namespace RevitSuite.Host.Explorer.UI
                     };
 
                     var packSummary =
-                        $"{validPacks.Count} rule pack(s), {validPacks.Sum(p => p.Rules.Count(r => r.Enabled))} active rule(s). " +
-                        $"{findings.Count} rule(s) produced findings.";
+                        $"{validPacks.Count} rule pack(s); {run.RulesRun} rule(s) ran, {run.RulesPassed} passed clean, " +
+                        $"{run.Findings.Count} produced findings; {warnings.Count} warning(s) included in score.";
+                    if (run.RuleErrors.Count > 0)
+                    {
+                        packSummary += $" FAILED RULES: {string.Join(" | ", run.RuleErrors)}.";
+                    }
+
                     if (packErrors.Count > 0)
                     {
-                        packSummary += $" Pack errors: {string.Join(" | ", packErrors)}";
+                        packSummary += $" Pack errors: {string.Join(" | ", packErrors)}.";
                     }
 
                     _packSummaryText.Text = packSummary;
+                    _trendText.Text = BuildTrendText(history);
                     SetStatus($"Audit complete — health score {health.Score:0.#}.");
                 });
             });
+        }
+
+        private static string FormatIds(IReadOnlyList<long> ids)
+        {
+            const int max = 25;
+            var shown = string.Join(",", ids.Take(max));
+            return ids.Count > max ? $"{shown}… (+{ids.Count - max})" : shown;
+        }
+
+        private static string BuildTrendText(IReadOnlyList<AuditSnapshot> history)
+        {
+            if (history.Count == 0)
+            {
+                return "No audit history yet — Save Snapshot after a run to start tracking the score over time.";
+            }
+
+            var entries = history
+                .Take(6)
+                .Select(s => $"{s.Health.Score:0.#} ({s.CreatedUtc.ToLocalTime():MMM d})");
+            return "Score history: " + string.Join("  →  ", entries.Reverse());
         }
 
         private void ShowFindingGuidance()

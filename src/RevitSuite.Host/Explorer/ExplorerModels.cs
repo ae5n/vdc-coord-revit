@@ -15,7 +15,8 @@ namespace RevitSuite.Host.Explorer
         Category,
         Level,
         Workset,
-        OwnerView
+        OwnerView,
+        DesignOption
     }
 
     /// <summary>
@@ -33,6 +34,7 @@ namespace RevitSuite.Host.Explorer
         string? LevelName,
         string? WorksetName,
         string? OwnerViewName,
+        string? DesignOptionName,
         string Origin,
         bool IsLinked,
         bool IsElementType,
@@ -54,6 +56,7 @@ namespace RevitSuite.Host.Explorer
                 LevelName ?? string.Empty,
                 WorksetName ?? string.Empty,
                 OwnerViewName ?? string.Empty,
+                DesignOptionName ?? string.Empty,
                 Origin,
                 IdValue.ToString())
             .ToLowerInvariant();
@@ -86,6 +89,7 @@ namespace RevitSuite.Host.Explorer
         EndsWith,
         IsEmpty,
         IsNotEmpty,
+        Regex,
         GreaterThan,
         GreaterThanOrEqual,
         LessThan,
@@ -226,12 +230,18 @@ namespace RevitSuite.Host.Explorer
         public string SheetNumbersText => string.Join("; ", SheetNumbers);
     }
 
-    /// <summary>Preflight facts shown in the safe-delete confirmation dialog.</summary>
+    /// <summary>
+    /// Preflight facts shown in the safe-delete confirmation dialog.
+    /// <paramref name="DependentCount"/> is the number of additional elements Revit will
+    /// cascade-delete (computed by a rolled-back trial delete); -1 when it could not be determined.
+    /// </summary>
     public sealed record DeletePreflight(
         int ElementCount,
         IReadOnlyDictionary<string, int> CategoryCounts,
         int ViewSpecificCount,
         int PinnedCount,
         int OwnedByOthersCount,
-        bool IsWorkshared);
+        bool IsWorkshared,
+        int DependentCount,
+        IReadOnlyDictionary<string, int> DependentCategoryCounts);
 }

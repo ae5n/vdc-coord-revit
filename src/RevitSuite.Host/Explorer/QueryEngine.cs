@@ -238,6 +238,7 @@ namespace RevitSuite.Host.Explorer
                     dto.DisplayValue.StartsWith(condition.Value, StringComparison.OrdinalIgnoreCase),
                 QueryOperator.EndsWith => dto.DisplayValue != null && condition.Value != null &&
                     dto.DisplayValue.EndsWith(condition.Value, StringComparison.OrdinalIgnoreCase),
+                QueryOperator.Regex => MatchesRegex(dto.DisplayValue, condition.Value),
                 QueryOperator.GreaterThan => CompareNumeric(dto, condition.Value) is > 0,
                 QueryOperator.GreaterThanOrEqual => CompareNumeric(dto, condition.Value) is >= 0,
                 QueryOperator.LessThan => CompareNumeric(dto, condition.Value) is < 0,
@@ -257,6 +258,27 @@ namespace RevitSuite.Host.Explorer
 
             return string.Equals(dto.DisplayValue ?? string.Empty, conditionValue ?? string.Empty,
                 StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesRegex(string? displayValue, string? pattern)
+        {
+            if (displayValue == null || string.IsNullOrEmpty(pattern))
+            {
+                return false;
+            }
+
+            try
+            {
+                return System.Text.RegularExpressions.Regex.IsMatch(
+                    displayValue, pattern!,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+                    TimeSpan.FromMilliseconds(250));
+            }
+            catch
+            {
+                // Invalid pattern or timeout: treat as no match rather than failing the query.
+                return false;
+            }
         }
 
         private static bool ContainsValue(string? displayValue, string? conditionValue)

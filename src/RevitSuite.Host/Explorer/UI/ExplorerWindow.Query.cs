@@ -249,9 +249,10 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 if (value is FilterStore.LoadedFilter loaded)
                 {
+                    var sourceTag = loaded.Source == "Company" ? "[Company] " : string.Empty;
                     return loaded.Query != null
-                        ? $"{loaded.Query.Name} — {FilterStore.Explain(loaded.Query)}"
-                        : $"INVALID: {System.IO.Path.GetFileName(loaded.FilePath)} — {loaded.Error}";
+                        ? $"{sourceTag}{loaded.Query.Name} — {FilterStore.Explain(loaded.Query)}"
+                        : $"{sourceTag}INVALID: {System.IO.Path.GetFileName(loaded.FilePath)} — {loaded.Error}";
                 }
 
                 return string.Empty;
@@ -570,6 +571,12 @@ namespace RevitSuite.Host.Explorer.UI
             if (_savedFilterList.SelectedItem is not FilterStore.LoadedFilter loaded)
             {
                 SetStatus("Select a saved filter first.");
+                return;
+            }
+
+            if (loaded.Source == "Company")
+            {
+                SetStatus("Company standards are read-only here — remove them from the ProgramData folder instead.");
                 return;
             }
 

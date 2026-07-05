@@ -32,18 +32,38 @@ namespace RevitSuite.Host.Explorer
             EnsureBuiltInPack();
 
             var packs = new List<LoadedPack>();
-            foreach (var path in Directory.GetFiles(ExplorerPaths.RulesDirectory, "*.rules.json")
-                         .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+            var directories = new List<string> { ExplorerPaths.RulesDirectory };
+            if (ExplorerPaths.CompanyRulesDirectory is { } companyDirectory)
             {
+                directories.Add(companyDirectory);
+            }
+
+            foreach (var directory in directories)
+            {
+                string[] files;
                 try
                 {
-                    var pack = JsonConvert.DeserializeObject<AuditRulePack>(File.ReadAllText(path), Settings);
-                    var error = pack == null ? "File does not contain a rule pack." : ValidatePack(pack);
-                    packs.Add(new LoadedPack(error == null ? pack : null, path, error));
+                    files = Directory.GetFiles(directory, "*.rules.json");
                 }
                 catch (Exception ex)
                 {
-                    packs.Add(new LoadedPack(null, path, $"Invalid rule pack JSON: {ex.Message}"));
+                    // An unreadable company share must not abort the audit.
+                    packs.Add(new LoadedPack(null, directory, $"Could not read rules folder: {ex.Message}"));
+                    continue;
+                }
+
+                foreach (var path in files.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var pack = JsonConvert.DeserializeObject<AuditRulePack>(File.ReadAllText(path), Settings);
+                        var error = pack == null ? "File does not contain a rule pack." : ValidatePack(pack);
+                        packs.Add(new LoadedPack(error == null ? pack : null, path, error));
+                    }
+                    catch (Exception ex)
+                    {
+                        packs.Add(new LoadedPack(null, path, $"Invalid rule pack JSON: {ex.Message}"));
+                    }
                 }
             }
 
@@ -98,29 +118,50 @@ namespace RevitSuite.Host.Explorer
             return null;
         }
 
-        /// <summary>API context required.</summary>
-        public static IReadOnlyList<AuditFinding> Run(UIDocument uidoc, IEnumerable<AuditRulePack> packs)
+        public sealed record AuditRunResult(
+            IReadOnlyList<AuditFinding> Findings,
+            int RulesRun,
+            int RulesPassed,
+            IReadOnlyList<string> RuleErrors);
+
+        /// <summary>
+        /// API context required. One failing rule never aborts the audit — it is reported
+        /// in RuleErrors and the remaining rules still run.
+        /// </summary>
+        public static AuditRunResult Run(UIDocument uidoc, IEnumerable<AuditRulePack> packs)
         {
             var findings = new List<AuditFinding>();
+            var ruleErrors = new List<string>();
+            var rulesRun = 0;
 
             foreach (var pack in packs)
             {
                 foreach (var rule in pack.Rules.Where(r => r.Enabled))
                 {
                     IReadOnlyList<long> elementIds;
-                    if (rule.DetectorId != null && Detectors.TryGetValue(rule.DetectorId, out var detector))
+                    try
                     {
-                        elementIds = detector(uidoc.Document);
+                        if (rule.DetectorId != null && Detectors.TryGetValue(rule.DetectorId, out var detector))
+                        {
+                            elementIds = detector(uidoc.Document);
+                        }
+                        else if (rule.Query != null)
+                        {
+                            elementIds = QueryRunner.Run(uidoc, rule.Query).Select(r => r.IdValue).ToList();
+                        }
+                        else
+                        {
+                            continue;
+                        }
                     }
-                    else if (rule.Query != null)
+                    catch (Exception ex)
                     {
-                        elementIds = QueryRunner.Run(uidoc, rule.Query).Select(r => r.IdValue).ToList();
-                    }
-                    else
-                    {
+                        Host.Logging.LogManager.Error("explorer", $"Audit rule '{rule.Id}' failed.", ex);
+                        ruleErrors.Add($"{rule.Id}: {ex.Message}");
                         continue;
                     }
 
+                    rulesRun++;
                     if (elementIds.Count == 0)
                     {
                         continue;
@@ -137,10 +178,12 @@ namespace RevitSuite.Host.Explorer
                 }
             }
 
-            return findings
+            var ordered = findings
                 .OrderByDescending(f => f.Severity)
                 .ThenBy(f => f.RuleName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            return new AuditRunResult(ordered, rulesRun, rulesRun - ordered.Count, ruleErrors);
         }
 
         /// <summary>
@@ -243,13 +286,31 @@ namespace RevitSuite.Host.Explorer
             _ => 0.0
         };
 
+        /// <summary>Version of the shipped rule pack; bump when built-in rules are added/changed.</summary>
+        private const int BuiltInPackVersion = 2;
+
         private static void EnsureBuiltInPack()
         {
             var path = Path.Combine(ExplorerPaths.RulesDirectory, BuiltInPackFileName);
-            if (!File.Exists(path))
+            if (File.Exists(path))
             {
-                File.WriteAllText(path, JsonConvert.SerializeObject(BuildBuiltInPack(), Settings));
+                // Upgrade an older shipped pack in place. Custom edits to THIS file are replaced —
+                // firm-specific rules belong in their own pack files, which are never touched.
+                try
+                {
+                    var existing = JsonConvert.DeserializeObject<AuditRulePack>(File.ReadAllText(path), Settings);
+                    if (existing != null && existing.SchemaVersion >= BuiltInPackVersion)
+                    {
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Unreadable: rewrite below.
+                }
             }
+
+            File.WriteAllText(path, JsonConvert.SerializeObject(BuildBuiltInPack(), Settings));
         }
 
         private static AuditRulePack BuildBuiltInPack()
@@ -332,10 +393,40 @@ namespace RevitSuite.Host.Explorer
                     "Rooms that report zero area (unplaced, redundant, or not enclosed).", AuditSeverity.High,
                     "Zero-area rooms corrupt area totals, schedules, and downstream analysis.",
                     "Check whether each room should be placed, re-enclosed, or deleted. Confirm phases before deleting.",
-                    "zero-area-rooms", null)
+                    "zero-area-rooms", null),
+
+                new AuditRule("unpinned-grids-levels", "Unpinned grids and levels",
+                    "Grids and levels that are not pinned.", AuditSeverity.High,
+                    "Unpinned datums are easy to move accidentally, silently shifting everything referenced to them.",
+                    "Pin every grid and level after coordination sign-off. Investigate before pinning if positions look wrong.",
+                    "unpinned-grids-levels", null),
+
+                new AuditRule("unpinned-links", "Unpinned linked models",
+                    "Revit link instances that are not pinned.", AuditSeverity.High,
+                    "An unpinned link can be dragged out of position, breaking shared coordinates for every discipline.",
+                    "Pin all link instances. If a link was moved intentionally, re-verify shared coordinates first.",
+                    "unpinned-links", null),
+
+                new AuditRule("duplicate-type-marks", "Duplicate type marks",
+                    "Element types sharing the same non-empty Type Mark.", AuditSeverity.Medium,
+                    "Duplicate type marks create ambiguous door/window/equipment schedules and legends.",
+                    "Review the affected types and renumber so each type mark is unique per category.",
+                    "duplicate-type-marks", null),
+
+                new AuditRule("detail-lines", "Detail lines",
+                    "View-specific detail lines across the model.", AuditSeverity.Low,
+                    "Large detail-line counts often mean drafting over the model instead of modeling, hurting coordination.",
+                    "Spot-check the owner views. Consider converting repeated drafting into detail components or families.",
+                    "detail-lines", null),
+
+                new AuditRule("text-notes", "Text notes",
+                    "All text notes in the model.", AuditSeverity.Info,
+                    "Excessive free text can hide information that belongs in tags, keynotes, or parameters.",
+                    "Review whether recurring notes should become tags or keynotes driven by model data.",
+                    "text-notes", null)
             };
 
-            return new AuditRulePack(1, "revitsuite-core", "RevitSuite Core Audit Rules", "RevitSuite", rules);
+            return new AuditRulePack(BuiltInPackVersion, "revitsuite-core", "RevitSuite Core Audit Rules", "RevitSuite", rules);
         }
 
         private static readonly IReadOnlyDictionary<string, Func<Document, IReadOnlyList<long>>> Detectors =
@@ -402,8 +493,66 @@ namespace RevitSuite.Host.Explorer
                     .OfType<Room>()
                     .Where(room => room.Area <= 1e-9)
                     .Select(room => room.Id.Value)
-                    .ToList()
+                    .ToList(),
+
+                ["unpinned-grids-levels"] = doc => new FilteredElementCollector(doc)
+                    .WherePasses(new ElementMulticategoryFilter(new List<BuiltInCategory>
+                    {
+                        BuiltInCategory.OST_Grids,
+                        BuiltInCategory.OST_Levels
+                    }))
+                    .WhereElementIsNotElementType()
+                    .Where(e => !e.Pinned)
+                    .Select(e => e.Id.Value)
+                    .ToList(),
+
+                ["unpinned-links"] = doc => new FilteredElementCollector(doc)
+                    .OfClass(typeof(RevitLinkInstance))
+                    .Where(e => !e.Pinned)
+                    .Select(e => e.Id.Value)
+                    .ToList(),
+
+                ["duplicate-type-marks"] = doc => CollectDuplicateTypeMarks(doc),
+
+                ["detail-lines"] = doc => new FilteredElementCollector(doc)
+                    .OfCategory(BuiltInCategory.OST_Lines)
+                    .WhereElementIsNotElementType()
+                    .Where(e => e.ViewSpecific)
+                    .Select(e => e.Id.Value)
+                    .ToList(),
+
+                ["text-notes"] = doc => Ids(new FilteredElementCollector(doc)
+                    .OfClass(typeof(TextNote)))
             };
+
+        private static IReadOnlyList<long> CollectDuplicateTypeMarks(Document doc)
+        {
+            var byMark = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var type in new FilteredElementCollector(doc)
+                         .WhereElementIsElementType())
+            {
+                var mark = type.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_MARK)?.AsString();
+                if (string.IsNullOrWhiteSpace(mark))
+                {
+                    continue;
+                }
+
+                var categoryName = type.Category?.Name ?? string.Empty;
+                var key = categoryName + "|" + mark;
+                if (!byMark.TryGetValue(key, out var list))
+                {
+                    byMark[key] = list = new List<long>();
+                }
+
+                list.Add(type.Id.Value);
+            }
+
+            return byMark.Values
+                .Where(list => list.Count > 1)
+                .SelectMany(list => list)
+                .ToList();
+        }
 
         private static IReadOnlyList<long> Ids(FilteredElementCollector collector) =>
             collector.ToElementIds().Select(id => id.Value).ToList();

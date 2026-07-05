@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Threading;
+using RevitSuite.Host.Logging;
 
 namespace RevitSuite.Host.Explorer.UI
 {
@@ -20,6 +21,8 @@ namespace RevitSuite.Host.Explorer.UI
         private ComboBox _scopeCombo = null!;
         private ComboBox _groupingCombo = null!;
         private CheckBox _includeLinksCheck = null!;
+        private CheckBox _includeUncategorizedCheck = null!;
+        private int _treeBuildGeneration;
         private TextBox _searchBox = null!;
         private TreeView _exploreTree = null!;
         private StackPanel _detailsPanel = null!;
@@ -62,6 +65,15 @@ namespace RevitSuite.Host.Explorer.UI
                 Margin = new Thickness(0, 0, 12, 0)
             };
             toolbar.Children.Add(_includeLinksCheck);
+
+            _includeUncategorizedCheck = new CheckBox
+            {
+                Content = "Include uncategorized",
+                ToolTip = "Also index elements with no category (sketch lines, internal elements). Off by default to reduce noise.",
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0)
+            };
+            toolbar.Children.Add(_includeUncategorizedCheck);
 
             toolbar.Children.Add(MakeCaption("Search"));
             _searchBox = new TextBox { Width = 220, Margin = new Thickness(0, 0, 12, 0) };
@@ -106,6 +118,8 @@ namespace RevitSuite.Host.Explorer.UI
             var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
             actions.Children.Add(MakeButton("Select in Revit", (_, _) => SelectChecked()));
             actions.Children.Add(MakeButton("Show / Zoom", (_, _) => ShowChecked()));
+            actions.Children.Add(MakeButton("Isolate", (_, _) => IsolateChecked()));
+            actions.Children.Add(MakeButton("Reset Isolate", (_, _) => ResetIsolate()));
             actions.Children.Add(MakeButton("Export CSV", (_, _) => ExportExploreCsv()));
             actions.Children.Add(MakeButton("Safe Delete…", (_, _) => SafeDeleteChecked(), destructive: true));
             Grid.SetRow(actions, 2);
@@ -154,7 +168,104 @@ namespace RevitSuite.Host.Explorer.UI
                 new Binding("IsExpanded") { Mode = BindingMode.TwoWay }));
             tree.ItemContainerStyle = itemStyle;
 
+            // Double-click an instance row zooms straight to it.
+            tree.MouseDoubleClick += (_, _) =>
+            {
+                if (tree.SelectedItem is ExplorerTreeItem { Record: { IsLinked: false } record })
+                {
+                    ShowByIds(new[] { record.IdValue });
+                }
+            };
+
+            var menu = new ContextMenu();
+            void AddMenuItem(string header, Action action)
+            {
+                var item = new MenuItem { Header = header };
+                item.Click += (_, _) => action();
+                menu.Items.Add(item);
+            }
+
+            AddMenuItem("Select in Revit", SelectChecked);
+            AddMenuItem("Show / zoom", ShowChecked);
+            AddMenuItem("Isolate in active view", IsolateChecked);
+            AddMenuItem("Reset isolate", ResetIsolate);
+            menu.Items.Add(new Separator());
+            AddMenuItem("Copy Element Id(s)", CopyElementIds);
+            AddMenuItem("Copy UniqueId", CopyUniqueId);
+            menu.Items.Add(new Separator());
+            AddMenuItem("Safe delete…", SafeDeleteChecked);
+            tree.ContextMenu = menu;
+
             return tree;
+        }
+
+        private void ShowByIds(IReadOnlyList<long> ids)
+        {
+            RunOnRevit("Showing element…", (_, uidoc) =>
+            {
+                var (shown, error) = RevitActions.ShowElements(uidoc, ids);
+                OnUi(() => SetStatus(error ?? $"Showing {shown:N0} element(s)."));
+            });
+        }
+
+        private void IsolateChecked()
+        {
+            var (hostIds, linkedSkipped) = PartitionChecked();
+            if (hostIds.Count == 0)
+            {
+                SetStatus(linkedSkipped > 0
+                    ? "Only linked elements are checked — linked elements cannot be isolated in the host view."
+                    : "Nothing is checked.");
+                return;
+            }
+
+            RunOnRevit("Isolating elements…", (_, uidoc) =>
+            {
+                var (isolated, error) = RevitActions.IsolateElements(uidoc, hostIds);
+                OnUi(() => SetStatus(error ??
+                    $"Temporarily isolated {isolated:N0} element(s) in the active view. Use Reset Isolate to restore."));
+            });
+        }
+
+        private void CopyElementIds()
+        {
+            var records = GetCheckedRecords();
+            if (records.Count == 0 && _exploreTree.SelectedItem is ExplorerTreeItem highlighted)
+            {
+                var fallback = new List<ElementRecord>();
+                highlighted.CollectAllRecords(fallback);
+                records = fallback;
+            }
+
+            if (records.Count == 0)
+            {
+                SetStatus("Nothing checked or highlighted to copy.");
+                return;
+            }
+
+            Clipboard.SetText(string.Join(",", records.Select(r => r.IdValue).Distinct()));
+            SetStatus($"Copied {records.Count:N0} element id(s) to the clipboard.");
+        }
+
+        private void CopyUniqueId()
+        {
+            if (_exploreTree.SelectedItem is not ExplorerTreeItem { Record: { } record })
+            {
+                SetStatus("Highlight an element row to copy its UniqueId.");
+                return;
+            }
+
+            Clipboard.SetText(record.UniqueId);
+            SetStatus($"Copied UniqueId of element {record.IdValue}.");
+        }
+
+        private void ResetIsolate()
+        {
+            RunOnRevit("Resetting isolate…", (_, uidoc) =>
+            {
+                var error = RevitActions.ResetIsolate(uidoc);
+                OnUi(() => SetStatus(error ?? "Temporary isolate mode reset."));
+            });
         }
 
         private ExplorerScope CurrentScope => _scopeCombo.SelectedIndex switch
@@ -171,10 +282,14 @@ namespace RevitSuite.Host.Explorer.UI
         {
             var scope = CurrentScope;
             var includeLinks = _includeLinksCheck.IsChecked == true;
+            var includeUncategorized = _includeUncategorizedCheck.IsChecked == true;
 
             RunOnRevit("Indexing model…", (_, uidoc) =>
             {
-                var records = ElementCollectionService.Collect(uidoc, scope, includeLinks);
+                var records = ElementCollectionService.Collect(
+                    uidoc, scope, includeLinks, includeUncategorized,
+                    progress: count => ReportProgress($"Indexing model… {count:N0} elements"),
+                    isCancelled: () => _cancelRequested);
                 var title = uidoc.Document.Title;
 
                 OnUi(() =>
@@ -209,14 +324,38 @@ namespace RevitSuite.Host.Explorer.UI
             RebuildExploreTree();
         }
 
-        private void RebuildExploreTree()
+        private async void RebuildExploreTree()
         {
             if (_exploreTree == null)
             {
                 return;
             }
 
-            var nodes = TreeBuilder.Build(_exploreRecords, CurrentGrouping, _searchBox.Text);
+            // Grouping/search over immutable DTOs runs off the UI thread so typing stays
+            // responsive on 100k+ element indexes. A generation counter drops stale results
+            // when the user changes the search/grouping before the previous build finishes.
+            var generation = ++_treeBuildGeneration;
+            var records = _exploreRecords;
+            var grouping = CurrentGrouping;
+            var search = _searchBox.Text;
+
+            IReadOnlyList<ExplorerTreeNode> nodes;
+            try
+            {
+                nodes = await System.Threading.Tasks.Task.Run(() => TreeBuilder.Build(records, grouping, search));
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Tree build failed.", ex);
+                SetStatus($"Error building tree: {ex.Message}");
+                return;
+            }
+
+            if (generation != _treeBuildGeneration)
+            {
+                return;
+            }
+
             _exploreItems.Clear();
             foreach (var node in nodes)
             {
@@ -235,10 +374,21 @@ namespace RevitSuite.Host.Explorer.UI
             return records;
         }
 
-        /// <summary>Splits checked records into selectable host ids and skipped linked count.</summary>
+        /// <summary>
+        /// Splits checked records into selectable host ids and skipped linked count. When
+        /// nothing is checked, falls back to the highlighted tree item so right-click and
+        /// toolbar actions work on the row under the cursor.
+        /// </summary>
         private (List<long> HostIds, int LinkedSkipped) PartitionChecked()
         {
             var checkedRecords = GetCheckedRecords();
+            if (checkedRecords.Count == 0 && _exploreTree.SelectedItem is ExplorerTreeItem highlighted)
+            {
+                var fallback = new List<ElementRecord>();
+                highlighted.CollectAllRecords(fallback);
+                checkedRecords = fallback;
+            }
+
             var hostIds = checkedRecords.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
             return (hostIds, checkedRecords.Count(r => r.IsLinked));
         }
@@ -410,6 +560,7 @@ namespace RevitSuite.Host.Explorer.UI
             AddRow("Level", record.LevelName);
             AddRow("Workset", record.WorksetName);
             AddRow("Owner View", record.OwnerViewName);
+            AddRow("Design Option", record.DesignOptionName);
             AddRow("Origin", record.Origin);
             AddRow("Flags", string.Join(", ", new[]
             {

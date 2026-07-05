@@ -72,7 +72,23 @@ namespace RevitSuite.Host.Explorer.UI
                 AddLine($"Owned by other users: {preflight.OwnedByOthersCount:N0} — delete may fail for these.", warn: true);
             }
 
-            AddLine("Revit may also delete dependent elements (tags, dimensions, hosted items).", warn: true);
+            switch (preflight.DependentCount)
+            {
+                case > 0:
+                    var breakdown = string.Join(", ",
+                        preflight.DependentCategoryCounts
+                            .OrderByDescending(kv => kv.Value)
+                            .Take(8)
+                            .Select(kv => $"{kv.Key} ({kv.Value})"));
+                    AddLine($"Dependent elements Revit will also delete: {preflight.DependentCount:N0} — {breakdown}", warn: true);
+                    break;
+                case 0:
+                    AddLine("No additional dependent elements will be deleted.");
+                    break;
+                default:
+                    AddLine("Dependent-element impact could not be determined — Revit may delete additional elements.", warn: true);
+                    break;
+            }
 
             var acknowledge = new CheckBox
             {

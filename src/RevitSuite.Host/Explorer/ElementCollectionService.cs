@@ -15,15 +15,19 @@ namespace RevitSuite.Host.Explorer
         public static IReadOnlyList<ElementRecord> Collect(
             UIDocument uidoc,
             ExplorerScope scope,
-            bool includeLinkedModels)
+            bool includeLinkedModels,
+            bool includeUncategorized = false,
+            Action<int>? progress = null,
+            Func<bool>? isCancelled = null)
         {
             var doc = uidoc.Document;
             var records = new List<ElementRecord>();
+            var options = new CollectOptions(includeUncategorized, progress, isCancelled);
 
             switch (scope)
             {
                 case ExplorerScope.EntireProject:
-                    AppendFromDocument(doc, "Host", isLinked: false, records);
+                    AppendFromDocument(doc, "Host", isLinked: false, records, options);
                     if (includeLinkedModels)
                     {
                         // A link placed multiple times returns the same link document per
@@ -47,7 +51,7 @@ namespace RevitSuite.Host.Explorer
                                 continue;
                             }
 
-                            AppendFromDocument(linkDoc, linkDoc.Title, isLinked: true, records);
+                            AppendFromDocument(linkDoc, linkDoc.Title, isLinked: true, records, options);
                         }
                     }
 
@@ -60,7 +64,8 @@ namespace RevitSuite.Host.Explorer
                             .WhereElementIsNotElementType(),
                         "Host",
                         isLinked: false,
-                        records);
+                        records,
+                        options);
                     break;
 
                 case ExplorerScope.CurrentSelection:
@@ -68,7 +73,7 @@ namespace RevitSuite.Host.Explorer
                     foreach (var id in uidoc.Selection.GetElementIds())
                     {
                         var element = doc.GetElement(id);
-                        if (element?.Category == null)
+                        if (element == null || (element.Category == null && !includeUncategorized))
                         {
                             continue;
                         }
@@ -85,14 +90,18 @@ namespace RevitSuite.Host.Explorer
             return records;
         }
 
-        private static void AppendFromDocument(Document doc, string origin, bool isLinked, List<ElementRecord> sink)
+        private sealed record CollectOptions(bool IncludeUncategorized, Action<int>? Progress, Func<bool>? IsCancelled);
+
+        private static void AppendFromDocument(
+            Document doc, string origin, bool isLinked, List<ElementRecord> sink, CollectOptions options)
         {
             AppendElements(
                 doc,
                 new FilteredElementCollector(doc).WhereElementIsNotElementType(),
                 origin,
                 isLinked,
-                sink);
+                sink,
+                options);
         }
 
         private static void AppendElements(
@@ -100,12 +109,26 @@ namespace RevitSuite.Host.Explorer
             FilteredElementCollector collector,
             string origin,
             bool isLinked,
-            List<ElementRecord> sink)
+            List<ElementRecord> sink,
+            CollectOptions options)
         {
+            const int progressInterval = 2500;
             var context = new RecordContext(doc, origin, isLinked);
+            var sinceCheck = 0;
+
             foreach (var element in collector)
             {
-                if (element?.Category == null)
+                if (++sinceCheck >= progressInterval)
+                {
+                    sinceCheck = 0;
+                    options.Progress?.Invoke(sink.Count);
+                    if (options.IsCancelled?.Invoke() == true)
+                    {
+                        throw new OperationCanceledException();
+                    }
+                }
+
+                if (element == null || (element.Category == null && !options.IncludeUncategorized))
                 {
                     continue;
                 }
@@ -140,6 +163,7 @@ namespace RevitSuite.Host.Explorer
                 LevelName: context.GetLevelName(element),
                 WorksetName: context.GetWorksetName(element),
                 OwnerViewName: context.GetOwnerViewName(element),
+                DesignOptionName: context.GetDesignOptionName(element),
                 Origin: context.Origin,
                 IsLinked: context.IsLinked,
                 IsElementType: element is ElementType,
@@ -168,6 +192,7 @@ namespace RevitSuite.Host.Explorer
             private readonly Dictionary<long, string?> _familyNames = new Dictionary<long, string?>();
             private readonly Dictionary<long, string?> _levelNames = new Dictionary<long, string?>();
             private readonly Dictionary<long, string?> _viewNames = new Dictionary<long, string?>();
+            private readonly Dictionary<long, string?> _designOptionNames = new Dictionary<long, string?>();
             private readonly Dictionary<int, string?> _worksetNames = new Dictionary<int, string?>();
             private readonly bool _isWorkshared;
 
@@ -265,6 +290,33 @@ namespace RevitSuite.Host.Explorer
 
                 var name = SafeName(_doc.GetElement(viewId));
                 _viewNames[viewId.Value] = name;
+                return name;
+            }
+
+            public string? GetDesignOptionName(Element element)
+            {
+                ElementId? optionId = null;
+                try
+                {
+                    optionId = element.get_Parameter(BuiltInParameter.DESIGN_OPTION_ID)?.AsElementId();
+                }
+                catch
+                {
+                    // Leave null.
+                }
+
+                if (optionId == null || optionId == ElementId.InvalidElementId)
+                {
+                    return null;
+                }
+
+                if (_designOptionNames.TryGetValue(optionId.Value, out var cached))
+                {
+                    return cached;
+                }
+
+                var name = SafeName(_doc.GetElement(optionId));
+                _designOptionNames[optionId.Value] = name;
                 return name;
             }
 

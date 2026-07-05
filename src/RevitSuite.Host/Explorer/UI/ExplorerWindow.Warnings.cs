@@ -11,21 +11,45 @@ namespace RevitSuite.Host.Explorer.UI
 {
     public sealed partial class ExplorerWindow
     {
-        /// <summary>Row shown in the warnings grid; wraps a WarningRecord with display fields.</summary>
-        public sealed record WarningRow(
-            string Rank,
-            string Description,
-            int ElementCount,
-            string Categories,
-            string Elements,
-            string DiffStatus,
-            WarningRecord Record);
+        /// <summary>Row shown in the warnings grid. Status/AssignedTo are editable triage fields.</summary>
+        public sealed class WarningRow
+        {
+            public WarningRow(string rank, string description, int elementCount, string categories,
+                string elements, string diffStatus, WarningRecord record, WarningMetadataStore.WarningMetadata? metadata)
+            {
+                Rank = rank;
+                Description = description;
+                ElementCount = elementCount;
+                Categories = categories;
+                Elements = elements;
+                DiffStatus = diffStatus;
+                Record = record;
+                Status = metadata?.Status ?? "Open";
+                AssignedTo = metadata?.AssignedTo;
+            }
+
+            public string Rank { get; set; }
+            public string Description { get; }
+            public int ElementCount { get; }
+            public string Categories { get; }
+            public string Elements { get; }
+            public string DiffStatus { get; }
+            public WarningRecord Record { get; }
+            public string Status { get; set; }
+            public string? AssignedTo { get; set; }
+
+            public string ElementIds =>
+                string.Join(",", Record.FailingElementIds.Concat(Record.AdditionalElementIds));
+        }
 
         private readonly ObservableCollection<WarningRow> _warningRows = new ObservableCollection<WarningRow>();
         private IReadOnlyList<WarningRecord> _currentWarnings = Array.Empty<WarningRecord>();
+        private string _warningModelIdentity = string.Empty;
+        private int _warningNavigateIndex = -1;
 
         private ComboBox _warningGroupCombo = null!;
         private ComboBox _snapshotCombo = null!;
+        private ComboBox _setRankCombo = null!;
         private DataGrid _warningsGrid = null!;
         private TextBlock _warningsSummary = null!;
         private IReadOnlyList<(string Path, DateTimeOffset CreatedUtc)> _snapshotEntries =
@@ -56,6 +80,20 @@ namespace RevitSuite.Host.Explorer.UI
             _snapshotCombo = new ComboBox { Width = 190, Margin = new Thickness(0, 0, 8, 0) };
             toolbar.Children.Add(_snapshotCombo);
             toolbar.Children.Add(MakeButton("Diff", (_, _) => DiffAgainstSnapshot()));
+
+            toolbar.Children.Add(MakeCaption("Set rank"));
+            _setRankCombo = new ComboBox { Width = 100, Margin = new Thickness(0, 0, 4, 0) };
+            foreach (var rank in Enum.GetNames(typeof(WarningRank)))
+            {
+                _setRankCombo.Items.Add(rank);
+            }
+
+            _setRankCombo.SelectedIndex = 3; // High
+            toolbar.Children.Add(_setRankCombo);
+            toolbar.Children.Add(MakeButton("Apply to Selected Type", (_, _) => ApplyRankToSelected()));
+            toolbar.Children.Add(MakeButton("Save Triage", (_, _) => SaveWarningTriage()));
+            toolbar.Children.Add(MakeButton("◀ Prev", (_, _) => NavigateWarning(-1)));
+            toolbar.Children.Add(MakeButton("Next ▶", (_, _) => NavigateWarning(1)));
             Grid.SetRow(toolbar, 0);
             layout.Children.Add(toolbar);
 
@@ -72,9 +110,9 @@ namespace RevitSuite.Host.Explorer.UI
             _warningsGrid = new DataGrid
             {
                 AutoGenerateColumns = false,
-                IsReadOnly = true,
                 SelectionMode = DataGridSelectionMode.Extended,
                 EnableRowVirtualization = true,
+                CanUserAddRows = false,
                 ItemsSource = _warningRows
             };
 
@@ -84,16 +122,34 @@ namespace RevitSuite.Host.Explorer.UI
                 {
                     Header = header,
                     Binding = new Binding(path),
-                    Width = new DataGridLength(weight, DataGridLengthUnitType.Star)
+                    Width = new DataGridLength(weight, DataGridLengthUnitType.Star),
+                    IsReadOnly = true
                 });
             }
 
             AddColumn("Rank", nameof(WarningRow.Rank), 0.5);
-            AddColumn("Diff", nameof(WarningRow.DiffStatus), 0.5);
-            AddColumn("Description", nameof(WarningRow.Description), 3);
-            AddColumn("Elements", nameof(WarningRow.ElementCount), 0.5);
-            AddColumn("Categories", nameof(WarningRow.Categories), 1);
-            AddColumn("Element Names", nameof(WarningRow.Elements), 1.5);
+            AddColumn("Diff", nameof(WarningRow.DiffStatus), 0.4);
+            AddColumn("Description", nameof(WarningRow.Description), 2.6);
+            AddColumn("Elements", nameof(WarningRow.ElementCount), 0.4);
+            AddColumn("Categories", nameof(WarningRow.Categories), 0.9);
+            AddColumn("Element Names", nameof(WarningRow.Elements), 1.2);
+            AddColumn("Element Ids", nameof(WarningRow.ElementIds), 0.9);
+
+            var statusColumn = new DataGridComboBoxColumn
+            {
+                Header = "Status",
+                Width = new DataGridLength(0.7, DataGridLengthUnitType.Star),
+                ItemsSource = WarningMetadataStore.Statuses,
+                SelectedItemBinding = new Binding(nameof(WarningRow.Status))
+            };
+            _warningsGrid.Columns.Add(statusColumn);
+
+            _warningsGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Assigned To",
+                Binding = new Binding(nameof(WarningRow.AssignedTo)),
+                Width = new DataGridLength(0.8, DataGridLengthUnitType.Star)
+            });
 
             Grid.SetRow(_warningsGrid, 2);
             layout.Children.Add(_warningsGrid);
@@ -117,10 +173,13 @@ namespace RevitSuite.Host.Explorer.UI
                 var rankings = WarningService.LoadRankings();
                 var warnings = WarningService.Extract(uidoc.Document, rankings);
                 var snapshots = WarningService.ListSnapshots(uidoc.Document);
+                var identity = ExplorerPaths.GetModelIdentity(uidoc.Document);
 
                 OnUi(() =>
                 {
                     _currentWarnings = warnings;
+                    _warningModelIdentity = identity;
+                    _warningNavigateIndex = -1;
                     PopulateWarningRows(warnings.Select(w => (w, "")));
                     _snapshotEntries = snapshots;
                     _snapshotCombo.Items.Clear();
@@ -155,9 +214,14 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void PopulateWarningRows(IEnumerable<(WarningRecord Record, string DiffStatus)> rows)
         {
+            var metadata = string.IsNullOrEmpty(_warningModelIdentity)
+                ? new Dictionary<string, WarningMetadataStore.WarningMetadata>()
+                : WarningMetadataStore.Load(_warningModelIdentity);
+
             _warningRows.Clear();
             foreach (var (record, diffStatus) in rows)
             {
+                metadata.TryGetValue(record.WarningKey, out var meta);
                 _warningRows.Add(new WarningRow(
                     record.Rank.ToString(),
                     record.Description,
@@ -165,10 +229,120 @@ namespace RevitSuite.Host.Explorer.UI
                     string.Join("; ", record.Categories),
                     string.Join("; ", record.ElementNames),
                     diffStatus,
-                    record));
+                    record,
+                    meta));
             }
 
             ApplyWarningGrouping();
+        }
+
+        private void SaveWarningTriage()
+        {
+            if (string.IsNullOrEmpty(_warningModelIdentity))
+            {
+                SetStatus("Refresh warnings before saving triage.");
+                return;
+            }
+
+            _warningsGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
+            TryFileOperation("Save triage", () =>
+            {
+                // Merge with what's on disk so triage of warnings not in the current view survives.
+                var merged = WarningMetadataStore.Load(_warningModelIdentity);
+
+                foreach (var row in _warningRows)
+                {
+                    merged[row.Record.WarningKey] =
+                        new WarningMetadataStore.WarningMetadata(row.Status, row.AssignedTo, null);
+                }
+
+                WarningMetadataStore.Save(_warningModelIdentity, merged);
+                SetStatus($"Saved triage for {_warningRows.Count} warning(s).");
+            });
+        }
+
+        /// <summary>
+        /// Applies the chosen rank to every warning sharing the selected row's failure type,
+        /// persists it to warning-rankings.json, and re-ranks the current list.
+        /// </summary>
+        private void ApplyRankToSelected()
+        {
+            if (_warningsGrid.SelectedItem is not WarningRow row)
+            {
+                SetStatus("Select a warning first — the rank applies to its whole warning type.");
+                return;
+            }
+
+            if (!Enum.TryParse<WarningRank>((string)_setRankCombo.SelectedItem, out var rank))
+            {
+                return;
+            }
+
+            TryFileOperation("Set rank", () =>
+            {
+                var rankings = WarningService.LoadRankings()
+                    .Where(r => !string.Equals(r.FailureDefinitionId, row.Record.FailureDefinitionId,
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                rankings.Insert(0, new WarningRanking(row.Record.FailureDefinitionId, null, rank));
+                WarningService.SaveRankings(rankings);
+
+                foreach (var other in _warningRows.Where(r =>
+                             string.Equals(r.Record.FailureDefinitionId, row.Record.FailureDefinitionId,
+                                 StringComparison.OrdinalIgnoreCase)))
+                {
+                    other.Rank = rank.ToString();
+                }
+
+                // Rebuild the view so grouping and cell text reflect the new rank.
+                _currentWarnings = _currentWarnings
+                    .Select(w => string.Equals(w.FailureDefinitionId, row.Record.FailureDefinitionId,
+                        StringComparison.OrdinalIgnoreCase)
+                        ? w with { Rank = rank }
+                        : w)
+                    .ToList();
+                PopulateWarningRows(_currentWarnings.Select(w => (w, "")));
+                SetStatus($"Ranked '{Truncate(row.Description, 60)}' as {rank} (saved to warning-rankings.json).");
+            });
+        }
+
+        private static string Truncate(string text, int max) =>
+            text.Length <= max ? text : text.Substring(0, max) + "…";
+
+        /// <summary>Steps through warnings one at a time, selecting and zooming to each.</summary>
+        private void NavigateWarning(int delta)
+        {
+            if (_warningRows.Count == 0)
+            {
+                SetStatus("Refresh warnings first.");
+                return;
+            }
+
+            _warningNavigateIndex = ((_warningNavigateIndex + delta) % _warningRows.Count + _warningRows.Count)
+                                    % _warningRows.Count;
+            var row = _warningRows[_warningNavigateIndex];
+
+            _warningsGrid.SelectedItems.Clear();
+            _warningsGrid.SelectedItem = row;
+            _warningsGrid.ScrollIntoView(row);
+
+            var ids = row.Record.FailingElementIds.Concat(row.Record.AdditionalElementIds).Distinct().ToList();
+            var position = $"{_warningNavigateIndex + 1}/{_warningRows.Count}";
+
+            if (ids.Count == 0)
+            {
+                SetStatus($"Warning {position}: no selectable elements. {Truncate(row.Description, 80)}");
+                return;
+            }
+
+            RunOnRevit("Showing warning elements…", (_, uidoc) =>
+            {
+                var (shown, error) = RevitActions.ShowElements(uidoc, ids);
+                OnUi(() => SetStatus(error != null
+                    ? $"Warning {position}: {error}"
+                    : $"Warning {position} — showing {shown} element(s): {Truncate(row.Description, 80)}"));
+            });
         }
 
         private void ApplyWarningGrouping()
@@ -342,7 +516,11 @@ namespace RevitSuite.Host.Explorer.UI
 
             TryFileOperation("Export", () =>
             {
-                var table = ExportService.BuildWarningsTable(records);
+                var triage = _warningRows.ToDictionary(
+                    r => r.Record.WarningKey,
+                    r => (r.Status, r.AssignedTo),
+                    StringComparer.Ordinal);
+                var table = ExportService.BuildWarningsTable(records, triage);
                 switch (format)
                 {
                     case "xlsx":

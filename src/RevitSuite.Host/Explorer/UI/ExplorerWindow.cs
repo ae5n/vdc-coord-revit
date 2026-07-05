@@ -20,6 +20,10 @@ namespace RevitSuite.Host.Explorer.UI
         private readonly Grid _busyOverlay;
         private readonly TextBlock _statusText;
         private readonly TextBlock _busyText;
+        private readonly Button _busyCancelButton;
+
+        /// <summary>Set by the busy-overlay Cancel button; polled by long-running bridge actions.</summary>
+        private volatile bool _cancelRequested;
 
         /// <summary>Single-instance entry point. Must be called from a valid Revit API context.</summary>
         public static void ShowWindow(UIApplication app)
@@ -82,12 +86,32 @@ namespace RevitSuite.Host.Explorer.UI
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
+            _busyCancelButton = new Button
+            {
+                Content = "Cancel",
+                Padding = new Thickness(16, 5, 16, 5),
+                Margin = new Thickness(0, 12, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            _busyCancelButton.Click += (_, _) =>
+            {
+                _cancelRequested = true;
+                _busyCancelButton.IsEnabled = false;
+                _busyText.Text = "Cancelling…";
+            };
+            var busyStack = new StackPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            busyStack.Children.Add(_busyText);
+            busyStack.Children.Add(_busyCancelButton);
             _busyOverlay = new Grid
             {
                 Background = new SolidColorBrush(Color.FromArgb(0x88, 0x10, 0x18, 0x27)),
                 Visibility = Visibility.Collapsed
             };
-            _busyOverlay.Children.Add(_busyText);
+            _busyOverlay.Children.Add(busyStack);
             Grid.SetRowSpan(_busyOverlay, 2);
             root.Children.Add(_busyOverlay);
 
@@ -116,6 +140,10 @@ namespace RevitSuite.Host.Explorer.UI
 
                     work(app, uidoc);
                 }
+                catch (OperationCanceledException)
+                {
+                    OnUi(() => SetStatus("Cancelled."));
+                }
                 catch (Exception ex)
                 {
                     LogManager.Error("explorer", $"Explorer action failed: {busyMessage}", ex);
@@ -132,9 +160,20 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void SetBusy(string message)
         {
+            _cancelRequested = false;
+            _busyCancelButton.IsEnabled = true;
             _busyText.Text = message;
             _busyOverlay.Visibility = Visibility.Visible;
         }
+
+        /// <summary>Updates the busy overlay text from a bridge action (any thread).</summary>
+        private void ReportProgress(string message) => OnUi(() =>
+        {
+            if (_busyOverlay.Visibility == Visibility.Visible)
+            {
+                _busyText.Text = message;
+            }
+        });
 
         private void ClearBusy() => _busyOverlay.Visibility = Visibility.Collapsed;
 
