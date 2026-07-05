@@ -889,13 +889,13 @@ namespace RevitSuite.Host.Commands
             writer.WriteLine("h2 { font-size: 1.1rem; margin-top: 32px; margin-bottom: 10px; color: #0f172a; }");
             writer.WriteLine("p { margin: 0 0 1.25rem 0; color: #52606d; }");
             writer.WriteLine("table { border-collapse: collapse; width: 100%; margin-top: 10px; background: #ffffff; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); border-radius: 12px; overflow: hidden; }");
-            writer.WriteLine("th, td { border-bottom: 1px solid #e2e8f0; padding: 12px 16px; text-align: left; font-size: 0.95rem; }");
+            writer.WriteLine("table th, table td { border-bottom: 1px solid #e2e8f0; padding: 6px 9px !important; text-align: left; font-size: 12px !important; line-height: 1.3; }");
             writer.WriteLine("thead th { background: #0f172a; color: #f8fafc; font-weight: 600; }");
             writer.WriteLine("tbody tr:nth-child(even) td { background: #f8fafc; }");
             writer.WriteLine(".bad { background: #fee2e2; }");
             writer.WriteLine(".num { text-align: right; font-family: 'Consolas', monospace; }");
-            writer.WriteLine(".info { color: #52606d; font-size: 0.85rem; margin-top: 5px; }");
-            writer.WriteLine(".pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }");
+            writer.WriteLine(".info { color: #52606d; font-size: 11px; margin-top: 5px; }");
+            writer.WriteLine(".pill { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; }");
             writer.WriteLine(".pill-host { background: #dbeafe; color: #1d4ed8; }");
             writer.WriteLine(".pill-link { background: #e2e8f0; color: #334155; }");
             writer.WriteLine(".sev-aligned { background: #ecfdf5; }");

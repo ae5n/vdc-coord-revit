@@ -28,6 +28,7 @@ namespace RevitSuite.Host.UI
         public static IconSet SharedCoordinatesReport => _sharedCoordinatesReport ??= CreateSharedCoordinatesReportIconSet();
         public static IconSet NwcBatchExport => _nwcBatchExport ??= CreateNwcBatchExportIconSet();
         public static IconSet CopyLinkedViews => _copyLinkedViews ??= CreateCopyLinkedViewsIconSet();
+        public static IconSet ModelExplorer => _modelExplorer ??= CreateModelExplorerIconSet();
         public static IconSet Mcp => _mcp ??= CreateMcpIconSet();
         public static IconSet McpSettings => _mcpSettings ??= CreateMcpSettingsIconSet();
         public static IconSet About => _about ??= CreateAboutIconSet();
@@ -41,6 +42,7 @@ namespace RevitSuite.Host.UI
         private static IconSet? _sharedCoordinatesReport;
         private static IconSet? _nwcBatchExport;
         private static IconSet? _copyLinkedViews;
+        private static IconSet? _modelExplorer;
         private static IconSet? _mcp;
         private static IconSet? _mcpSettings;
         private static IconSet? _about;
@@ -115,6 +117,53 @@ namespace RevitSuite.Host.UI
                 Color.FromRgb(0x1E, 0x3C, 0x5A),
                 Color.FromRgb(0x45, 0x8A, 0xD1),
                 DrawCopyLinkedViewsContent);
+        }
+
+        private static IconSet CreateModelExplorerIconSet()
+        {
+            return CreateIconSet(
+                Color.FromRgb(0x0F, 0x4C, 0x5C),
+                Color.FromRgb(0x2E, 0x9C, 0xB8),
+                DrawModelExplorerContent);
+        }
+
+        private static void DrawModelExplorerContent(DrawingContext dc, double width, double height)
+        {
+            var min = Math.Min(width, height);
+
+            // Tree structure: three rows with indent lines, suggesting a category tree.
+            var treePen = new Pen(new SolidColorBrush(Color.FromArgb(220, 255, 255, 255)), min * 0.07)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            treePen.Freeze();
+
+            dc.DrawLine(treePen, new Point(width * 0.2, height * 0.26), new Point(width * 0.5, height * 0.26));
+            dc.DrawLine(treePen, new Point(width * 0.3, height * 0.44), new Point(width * 0.56, height * 0.44));
+            dc.DrawLine(treePen, new Point(width * 0.3, height * 0.62), new Point(width * 0.5, height * 0.62));
+
+            var spinePen = new Pen(new SolidColorBrush(Color.FromArgb(160, 255, 255, 255)), min * 0.05);
+            spinePen.Freeze();
+            dc.DrawLine(spinePen, new Point(width * 0.22, height * 0.30), new Point(width * 0.22, height * 0.62));
+
+            // Magnifier over the lower right.
+            var lensPen = new Pen(new SolidColorBrush(Color.FromArgb(235, 255, 255, 255)), min * 0.09);
+            lensPen.Freeze();
+            var lensBrush = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255));
+            lensBrush.Freeze();
+            var lensCenter = new Point(width * 0.62, height * 0.6);
+            dc.DrawEllipse(lensBrush, lensPen, lensCenter, min * 0.18, min * 0.18);
+
+            var handlePen = new Pen(new SolidColorBrush(Color.FromArgb(235, 255, 255, 255)), min * 0.1)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round
+            };
+            handlePen.Freeze();
+            dc.DrawLine(handlePen,
+                new Point(width * 0.74, height * 0.74),
+                new Point(width * 0.86, height * 0.86));
         }
 
         private static IconSet CreateMcpIconSet()

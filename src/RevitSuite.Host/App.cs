@@ -10,6 +10,7 @@ namespace RevitSuite.Host
     {
         private const string TabName = "Lewis VDC";
         private const string AutomationPanelName = "Automation";
+        private const string ModelPanelName = "Model";
         private const string ReportsPanelName = "Reports";
         private const string ViewsPanelName = "Views";
         private const string ExportsPanelName = "Exports";
@@ -22,6 +23,7 @@ namespace RevitSuite.Host
             {
                 TryCreateTab(application);
                 var automationPanel = GetOrCreatePanel(application, AutomationPanelName);
+                var modelPanel = GetOrCreatePanel(application, ModelPanelName);
                 var reportsPanel = GetOrCreatePanel(application, ReportsPanelName);
                 var viewsPanel = GetOrCreatePanel(application, ViewsPanelName);
                 var exportsPanel = GetOrCreatePanel(application, ExportsPanelName);
@@ -68,6 +70,29 @@ namespace RevitSuite.Host
                         LongDescription = "Export control points to CSV template, import field data from layout team, calculate deviations, and visualize results with color-coding and deviation indicators."
                     });
                 ApplyIcons(qaqcButton, RibbonIconFactory.QAQC);
+
+                try
+                {
+                    var modelExplorerButton = AddButton(
+                        modelPanel,
+                        new PushButtonData(
+                            "RevitSuite_ModelExplorer",
+                            "Model Explorer",
+                            assemblyPath,
+                            "RevitSuite.Host.Commands.ModelExplorerCommand")
+                        {
+                            ToolTip = "Explore, query, audit, and clean up everything in the model.",
+                            LongDescription = "Modeless model-wide explorer: browse every element by category, level, or workset; " +
+                                              "search and select; run parameter queries and saved filters; review and rank warnings; " +
+                                              "run audit rules with a model health score; navigate views and sheets; export to CSV, Excel, or JSON."
+                        });
+                    ApplyIcons(modelExplorerButton, RibbonIconFactory.ModelExplorer);
+                }
+                catch
+                {
+                    // A failure registering the Model Explorer button must not take down the
+                    // rest of the ribbon (e.g. duplicate button name from a stale add-in copy).
+                }
 
                 var reportsDropdown = AddPulldownButton(
                     reportsPanel,

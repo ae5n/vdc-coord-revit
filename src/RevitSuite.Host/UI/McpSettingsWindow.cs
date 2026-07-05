@@ -24,7 +24,7 @@ namespace RevitSuite.Host.UI
         {
             Title = "MCP Tool Settings";
             Width = 720;
-            Height = 520;
+            Height = 620;
             ResizeMode = ResizeMode.CanResize;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
@@ -88,17 +88,9 @@ namespace RevitSuite.Host.UI
                 DisplayMemberBinding = new Binding("CommandName")
             });
 
-            // Group column
-            gridView.Columns.Add(new GridViewColumn
-            {
-                Header = "Source",
-                Width = 150,
-                DisplayMemberBinding = new Binding("Group")
-            });
-
             _listView.View = gridView;
 
-            // Group by Source
+            // Group related tools without repeating the group in each row.
             var view = CollectionViewSource.GetDefaultView(_items);
             view.GroupDescriptions.Add(new PropertyGroupDescription("Group"));
             view.SortDescriptions.Add(new SortDescription("Group", ListSortDirection.Ascending));
@@ -161,20 +153,20 @@ namespace RevitSuite.Host.UI
             {
                 Text =
                     "1. In Revit, click MCP Server to start the local socket server." + Environment.NewLine +
-                    "2. In Codex or Claude Code, point the MCP config to one deployed RevitSuite mcp-server path." + Environment.NewLine +
-                    "3. Restart the MCP client after saving the config." + Environment.NewLine + Environment.NewLine +
-                    "RevitSuite can be installed for multiple Revit years, but MCP only needs one configured path. " +
-                    "The deployed mcp-server is version-agnostic and connects to the running Revit instance hosting the socket server.",
+                    "2. Add this server command to your agent MCP config, then restart the MCP client.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
                 Margin = new Thickness(0, 6, 0, 10)
             });
 
-            section.Children.Add(CreateCodeBlock(
+            var agentInstruction =
 @"Codex / Claude Code example
 command: node
 args:
-  C:\Users\<you>\AppData\Roaming\Autodesk\Revit\Addins\2026\RevitSuite\mcp-server\build\index.js"));
+  C:\Users\<you>\AppData\Roaming\Autodesk\Revit\Addins\2026\RevitSuite\mcp-server\build\index.js";
+
+            var codeBlock = CreateCodeBlock(agentInstruction);
+            section.Children.Add(codeBlock);
 
             return new Border
             {
@@ -190,19 +182,40 @@ args:
 
         private static Border CreateCodeBlock(string text)
         {
+            var blockGrid = new Grid();
+
+            blockGrid.Children.Add(new TextBlock
+            {
+                Text = text,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 12,
+                Foreground = Brushes.White,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 38, 0)
+            });
+
+            var copyButton = new Button
+            {
+                Content = "⧉",
+                Width = 28,
+                Height = 24,
+                Padding = new Thickness(0),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                ToolTip = "Copy",
+                Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x38, 0x44)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x4A, 0x55, 0x62)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0xE7, 0xEB))
+            };
+            copyButton.Click += (sender, args) => Clipboard.SetText(text);
+            blockGrid.Children.Add(copyButton);
+
             return new Border
             {
                 Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x29, 0x33)),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(10),
-                Child = new TextBlock
-                {
-                    Text = text,
-                    FontFamily = new FontFamily("Consolas"),
-                    FontSize = 12,
-                    Foreground = Brushes.White,
-                    TextWrapping = TextWrapping.Wrap
-                }
+                Child = blockGrid
             };
         }
 
@@ -234,7 +247,7 @@ args:
                 foreach (var cmd in commands)
                 {
                     var group = cmd.AssemblyPath?.Contains("RevitSuite.Host") == true
-                        ? "RevitSuite Tools"
+                        ? "Other Tools"
                         : "General MCP Tools";
 
                     _items.Add(new CommandItem

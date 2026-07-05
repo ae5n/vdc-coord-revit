@@ -72,8 +72,12 @@ namespace RevitSuite.Host.UI
                     AllowUserToAddRows = false,
                     AllowUserToDeleteRows = false,
                     AutoSizeColumnsMode = WinForms.DataGridViewAutoSizeColumnsMode.DisplayedCells,
+                    Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point),
+                    RowTemplate = { Height = 22 },
                     DataSource = LoadCsv(model.CsvPreviewPath)
                 };
+                grid.ColumnHeadersDefaultCellStyle.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+                grid.ColumnHeadersHeight = 24;
 
                 var dataTab = new WinForms.TabPage("Data");
                 dataTab.Controls.Add(grid);
