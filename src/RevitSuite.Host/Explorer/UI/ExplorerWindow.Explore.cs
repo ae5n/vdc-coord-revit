@@ -18,11 +18,52 @@ namespace RevitSuite.Host.Explorer.UI
         private IReadOnlyList<ElementRecord> _exploreRecords = Array.Empty<ElementRecord>();
         private string _exploreModelTitle = string.Empty;
 
+        /// <summary>One checkbox row in the Models filter dropdown.</summary>
+        public sealed class OriginOption : System.ComponentModel.INotifyPropertyChanged
+        {
+            private bool _isChecked = true;
+
+            public OriginOption(string name, int count)
+            {
+                Name = name;
+                Count = count;
+            }
+
+            public string Name { get; }
+            public int Count { get; }
+            public string Label => $"{Name} ({Count:N0})";
+
+            public bool IsChecked
+            {
+                get => _isChecked;
+                set
+                {
+                    if (_isChecked == value)
+                    {
+                        return;
+                    }
+
+                    _isChecked = value;
+                    PropertyChanged?.Invoke(this,
+                        new System.ComponentModel.PropertyChangedEventArgs(nameof(IsChecked)));
+                    CheckedChanged?.Invoke();
+                }
+            }
+
+            public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+            public event Action? CheckedChanged;
+        }
+
+        private readonly ObservableCollection<OriginOption> _originOptions =
+            new ObservableCollection<OriginOption>();
+
         private ComboBox _scopeCombo = null!;
         private ComboBox _groupingCombo = null!;
         private CheckBox _includeLinksCheck = null!;
         private CheckBox _includeUncategorizedCheck = null!;
+        private System.Windows.Controls.Primitives.ToggleButton _modelsFilterButton = null!;
         private int _treeBuildGeneration;
+        private bool _suppressOriginRebuild;
         private TextBox _searchBox = null!;
         private TreeView _exploreTree = null!;
         private StackPanel _detailsPanel = null!;
@@ -75,12 +116,21 @@ namespace RevitSuite.Host.Explorer.UI
             };
             toolbar.Children.Add(_includeUncategorizedCheck);
 
+            toolbar.Children.Add(BuildModelsFilter());
+
             toolbar.Children.Add(MakeCaption("Search"));
-            _searchBox = new TextBox { Width = 220, Margin = new Thickness(0, 0, 12, 0) };
+            _searchBox = new TextBox
+            {
+                Width = 220,
+                Margin = new Thickness(0, 0, 12, 0),
+                ToolTip = "Search category, family, type, name, level, workset, or element id. Ctrl+F focuses, Esc clears."
+            };
             _searchBox.TextChanged += OnSearchChanged;
             toolbar.Children.Add(_searchBox);
 
-            toolbar.Children.Add(MakeButton("Refresh", (_, _) => RefreshExplore()));
+            toolbar.Children.Add(MakeButton("Refresh (F5)", (_, _) => RefreshExplore()));
+            toolbar.Children.Add(MakeButton("Check All", (_, _) => SetAllChecks(true)));
+            toolbar.Children.Add(MakeButton("Clear Checks", (_, _) => SetAllChecks(false)));
             Grid.SetRow(toolbar, 0);
             layout.Children.Add(toolbar);
 
@@ -128,6 +178,137 @@ namespace RevitSuite.Host.Explorer.UI
             return layout;
         }
 
+        /// <summary>
+        /// "Models: …" dropdown — checkbox per origin (Host + each loaded link) with
+        /// Host-only / Links-only presets, so the tree can show any subset of the federation.
+        /// </summary>
+        private UIElement BuildModelsFilter()
+        {
+            _modelsFilterButton = new System.Windows.Controls.Primitives.ToggleButton
+            {
+                Content = "Models: All",
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 0, 12, 0)
+            };
+
+            var presets = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6) };
+            presets.Children.Add(MakeButton("All", (_, _) => SetOriginPreset(_ => true)));
+            presets.Children.Add(MakeButton("Host only", (_, _) => SetOriginPreset(o => o.Name == "Host")));
+            presets.Children.Add(MakeButton("Links only", (_, _) => SetOriginPreset(o => o.Name != "Host")));
+
+            var list = new ItemsControl { ItemsSource = _originOptions };
+            var itemTemplate = new DataTemplate(typeof(OriginOption));
+            var checkFactory = new FrameworkElementFactory(typeof(CheckBox));
+            checkFactory.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty,
+                new Binding(nameof(OriginOption.IsChecked)) { Mode = BindingMode.TwoWay });
+            checkFactory.SetBinding(ContentControl.ContentProperty, new Binding(nameof(OriginOption.Label)));
+            checkFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 2, 0, 2));
+            itemTemplate.VisualTree = checkFactory;
+            list.ItemTemplate = itemTemplate;
+
+            var panel = new StackPanel { Margin = new Thickness(10) };
+            panel.Children.Add(presets);
+            panel.Children.Add(new ScrollViewer
+            {
+                Content = list,
+                MaxHeight = 320,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            });
+
+            var popup = new System.Windows.Controls.Primitives.Popup
+            {
+                PlacementTarget = _modelsFilterButton,
+                Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
+                StaysOpen = false,
+                MinWidth = 260,
+                Child = new Border
+                {
+                    Background = SystemColors.WindowBrush,
+                    BorderBrush = SystemColors.ActiveBorderBrush,
+                    BorderThickness = new Thickness(1),
+                    Child = panel
+                }
+            };
+
+            _modelsFilterButton.Checked += (_, _) => popup.IsOpen = true;
+            _modelsFilterButton.Unchecked += (_, _) => popup.IsOpen = false;
+            popup.Closed += (_, _) => _modelsFilterButton.IsChecked = false;
+
+            return _modelsFilterButton;
+        }
+
+        private void SetOriginPreset(Func<OriginOption, bool> shouldCheck)
+        {
+            _suppressOriginRebuild = true;
+            foreach (var option in _originOptions)
+            {
+                option.IsChecked = shouldCheck(option);
+            }
+
+            _suppressOriginRebuild = false;
+            OnOriginFilterChanged();
+        }
+
+        private void OnOriginFilterChanged()
+        {
+            if (_suppressOriginRebuild)
+            {
+                return;
+            }
+
+            UpdateModelsFilterCaption();
+            RebuildExploreTree();
+        }
+
+        private void UpdateModelsFilterCaption()
+        {
+            var total = _originOptions.Count;
+            var selected = _originOptions.Count(o => o.IsChecked);
+            _modelsFilterButton.Content = total == 0 || selected == total
+                ? "Models: All"
+                : selected == 1
+                    ? $"Models: {_originOptions.First(o => o.IsChecked).Name}"
+                    : $"Models: {selected}/{total}";
+        }
+
+        private void RebuildOriginOptions()
+        {
+            var previous = _originOptions.ToDictionary(o => o.Name, o => o.IsChecked, StringComparer.OrdinalIgnoreCase);
+
+            _suppressOriginRebuild = true;
+            _originOptions.Clear();
+            foreach (var group in _exploreRecords
+                         .GroupBy(r => r.Origin, StringComparer.OrdinalIgnoreCase)
+                         .OrderBy(g => g.Key == "Host" ? 0 : 1)
+                         .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var option = new OriginOption(group.Key, group.Count())
+                {
+                    IsChecked = !previous.TryGetValue(group.Key, out var wasChecked) || wasChecked
+                };
+                option.CheckedChanged += OnOriginFilterChanged;
+                _originOptions.Add(option);
+            }
+
+            _suppressOriginRebuild = false;
+            UpdateModelsFilterCaption();
+        }
+
+        /// <summary>Records passing the Models filter (search applies later in TreeBuilder).</summary>
+        private IReadOnlyList<ElementRecord> OriginFilteredRecords()
+        {
+            var selected = new HashSet<string>(
+                _originOptions.Where(o => o.IsChecked).Select(o => o.Name),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (_originOptions.Count == 0 || selected.Count == _originOptions.Count)
+            {
+                return _exploreRecords;
+            }
+
+            return _exploreRecords.Where(r => selected.Contains(r.Origin)).ToList();
+        }
+
         private TreeView BuildTree()
         {
             var tree = new TreeView { ItemsSource = _exploreItems };
@@ -168,10 +349,21 @@ namespace RevitSuite.Host.Explorer.UI
                 new Binding("IsExpanded") { Mode = BindingMode.TwoWay }));
             tree.ItemContainerStyle = itemStyle;
 
-            // Double-click an instance row zooms straight to it.
+            // Double-click an instance row zooms straight to it — host or linked.
             tree.MouseDoubleClick += (_, _) =>
             {
-                if (tree.SelectedItem is ExplorerTreeItem { Record: { IsLinked: false } record })
+                if (tree.SelectedItem is not ExplorerTreeItem { Record: { } record })
+                {
+                    return;
+                }
+
+                if (record.IsLinked && record.LinkInstanceIdValue.HasValue)
+                {
+                    ShowMixedByRecords(
+                        Array.Empty<long>(),
+                        new[] { new RevitActions.LinkedTarget(record.LinkInstanceIdValue.Value, record.IdValue) });
+                }
+                else if (!record.IsLinked)
                 {
                     ShowByIds(new[] { record.IdValue });
                 }
@@ -208,13 +400,22 @@ namespace RevitSuite.Host.Explorer.UI
             });
         }
 
+        private void ShowMixedByRecords(IReadOnlyList<long> hostIds, IReadOnlyList<RevitActions.LinkedTarget> linked)
+        {
+            RunOnRevit("Showing element…", (_, uidoc) =>
+            {
+                var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
+                OnUi(() => SetStatus(error ?? $"Showing {shown:N0} element(s) (zoomed to linked geometry)."));
+            });
+        }
+
         private void IsolateChecked()
         {
-            var (hostIds, linkedSkipped) = PartitionChecked();
+            var (hostIds, linked) = PartitionChecked();
             if (hostIds.Count == 0)
             {
-                SetStatus(linkedSkipped > 0
-                    ? "Only linked elements are checked — linked elements cannot be isolated in the host view."
+                SetStatus(linked.Count > 0
+                    ? "Only linked elements are checked — Revit can only isolate host elements (hide/show the whole link instead)."
                     : "Nothing is checked.");
                 return;
             }
@@ -296,8 +497,16 @@ namespace RevitSuite.Host.Explorer.UI
                 {
                     _exploreRecords = records;
                     _exploreModelTitle = title;
+                    RebuildOriginOptions();
                     RebuildExploreTree();
-                    SetStatus($"Indexed {records.Count:N0} element(s) from '{title}' ({ScopeLabel(scope)}).");
+
+                    var perModel = string.Join(" · ", records
+                        .GroupBy(r => r.Origin, StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(g => g.Key == "Host" ? 0 : 1)
+                        .ThenByDescending(g => g.Count())
+                        .Take(6)
+                        .Select(g => $"{g.Key} {g.Count():N0}"));
+                    SetStatus($"Indexed {records.Count:N0} element(s) ({ScopeLabel(scope)}): {perModel}");
                 });
             });
         }
@@ -335,7 +544,7 @@ namespace RevitSuite.Host.Explorer.UI
             // responsive on 100k+ element indexes. A generation counter drops stale results
             // when the user changes the search/grouping before the previous build finishes.
             var generation = ++_treeBuildGeneration;
-            var records = _exploreRecords;
+            var records = OriginFilteredRecords();
             var grouping = CurrentGrouping;
             var search = _searchBox.Text;
 
@@ -375,11 +584,11 @@ namespace RevitSuite.Host.Explorer.UI
         }
 
         /// <summary>
-        /// Splits checked records into selectable host ids and skipped linked count. When
-        /// nothing is checked, falls back to the highlighted tree item so right-click and
-        /// toolbar actions work on the row under the cursor.
+        /// Splits checked records into host ids and linked targets. When nothing is checked,
+        /// falls back to the highlighted tree item so right-click and toolbar actions work
+        /// on the row under the cursor.
         /// </summary>
-        private (List<long> HostIds, int LinkedSkipped) PartitionChecked()
+        private (List<long> HostIds, List<RevitActions.LinkedTarget> Linked) PartitionChecked()
         {
             var checkedRecords = GetCheckedRecords();
             if (checkedRecords.Count == 0 && _exploreTree.SelectedItem is ExplorerTreeItem highlighted)
@@ -390,56 +599,59 @@ namespace RevitSuite.Host.Explorer.UI
             }
 
             var hostIds = checkedRecords.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
-            return (hostIds, checkedRecords.Count(r => r.IsLinked));
+            var linked = checkedRecords
+                .Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue)
+                .Select(r => new RevitActions.LinkedTarget(r.LinkInstanceIdValue!.Value, r.IdValue))
+                .Distinct()
+                .ToList();
+            return (hostIds, linked);
         }
 
         private void SelectChecked()
         {
-            var (hostIds, linkedSkipped) = PartitionChecked();
-            if (hostIds.Count == 0)
+            var (hostIds, linked) = PartitionChecked();
+            if (hostIds.Count == 0 && linked.Count == 0)
             {
-                SetStatus(linkedSkipped > 0
-                    ? "Only linked elements are checked — linked elements cannot be selected in the host model."
-                    : "Nothing is checked.");
+                SetStatus("Nothing is checked or highlighted.");
                 return;
             }
 
             RunOnRevit("Selecting elements…", (_, uidoc) =>
             {
-                var selected = RevitActions.SelectElements(uidoc, hostIds);
-                OnUi(() => SetStatus(BuildActionStatus($"Selected {selected:N0} element(s)", hostIds.Count - selected, linkedSkipped)));
+                var (selected, failed, error) = RevitActions.SelectMixed(uidoc, hostIds, linked);
+                OnUi(() => SetStatus(error ?? BuildActionStatus(
+                    $"Selected {selected:N0} element(s)", failed, linked.Count)));
             });
         }
 
         private void ShowChecked()
         {
-            var (hostIds, linkedSkipped) = PartitionChecked();
-            if (hostIds.Count == 0)
+            var (hostIds, linked) = PartitionChecked();
+            if (hostIds.Count == 0 && linked.Count == 0)
             {
-                SetStatus(linkedSkipped > 0
-                    ? "Only linked elements are checked — Revit cannot zoom to elements inside links."
-                    : "Nothing is checked.");
+                SetStatus("Nothing is checked or highlighted.");
                 return;
             }
 
             RunOnRevit("Showing elements…", (_, uidoc) =>
             {
-                var (shown, error) = RevitActions.ShowElements(uidoc, hostIds);
-                OnUi(() => SetStatus(error ?? BuildActionStatus($"Showing {shown:N0} element(s)", hostIds.Count - shown, linkedSkipped)));
+                var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
+                OnUi(() => SetStatus(error ?? BuildActionStatus(
+                    $"Showing {shown:N0} element(s)", 0, linked.Count)));
             });
         }
 
-        private static string BuildActionStatus(string headline, int missing, int linkedSkipped)
+        private static string BuildActionStatus(string headline, int failed, int linkedCount)
         {
             var notes = new List<string>();
-            if (missing > 0)
+            if (failed > 0)
             {
-                notes.Add($"{missing} no longer exist");
+                notes.Add($"{failed} could not be resolved");
             }
 
-            if (linkedSkipped > 0)
+            if (linkedCount > 0)
             {
-                notes.Add($"{linkedSkipped} linked skipped");
+                notes.Add($"{linkedCount} from linked models");
             }
 
             return notes.Count == 0 ? $"{headline}." : $"{headline} ({string.Join(", ", notes)}).";
@@ -447,7 +659,8 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void ExportExploreCsv()
         {
-            var visible = TreeBuilder.Filter(_exploreRecords, _searchBox.Text ?? string.Empty).ToList();
+            // Export exactly what the tree shows: Models filter plus search filter.
+            var visible = TreeBuilder.Filter(OriginFilteredRecords(), _searchBox.Text ?? string.Empty).ToList();
             if (visible.Count == 0)
             {
                 SetStatus("Nothing to export — refresh the model index first.");
@@ -472,13 +685,18 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void SafeDeleteChecked()
         {
-            var (hostIds, linkedSkipped) = PartitionChecked();
+            var (hostIds, linked) = PartitionChecked();
             if (hostIds.Count == 0)
             {
-                SetStatus(linkedSkipped > 0
-                    ? "Only linked elements are checked — elements inside links cannot be deleted from the host model."
+                SetStatus(linked.Count > 0
+                    ? "Only linked elements are checked — elements inside links can only be deleted in the link's own file."
                     : "Nothing is checked.");
                 return;
+            }
+
+            if (linked.Count > 0)
+            {
+                SetStatus($"Note: {linked.Count} linked element(s) are excluded — deletion only applies to host elements.");
             }
 
             RunOnRevit("Checking elements before delete…", (_, uidoc) =>
@@ -515,14 +733,29 @@ namespace RevitSuite.Host.Explorer.UI
             });
         }
 
+        private ElementRecord? _detailsRecord;
+
+        private void SetAllChecks(bool value)
+        {
+            foreach (var item in _exploreItems)
+            {
+                item.IsChecked = value;
+            }
+
+            SetStatus(value ? "Checked everything currently in the tree." : "Cleared all checks.");
+        }
+
         private void ShowDetails(ExplorerTreeItem? item)
         {
             _detailsPanel.Children.Clear();
+            _detailsRecord = item?.Record;
             if (item == null)
             {
                 return;
             }
 
+            // Rows render as borderless read-only TextBoxes so any value can be selected
+            // and copied directly, and Copy All grabs the whole panel at once.
             void AddRow(string label, string? value)
             {
                 if (string.IsNullOrEmpty(value))
@@ -530,20 +763,44 @@ namespace RevitSuite.Host.Explorer.UI
                     return;
                 }
 
-                var block = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 1, 0, 1) };
-                block.Inlines.Add(new System.Windows.Documents.Run(label + ": ") { FontWeight = FontWeights.SemiBold });
-                block.Inlines.Add(new System.Windows.Documents.Run(value));
-                _detailsPanel.Children.Add(block);
+                var row = new DockPanel { Margin = new Thickness(0, 1, 0, 1) };
+                var caption = new TextBlock
+                {
+                    Text = label + ":",
+                    FontWeight = FontWeights.SemiBold,
+                    Width = 96,
+                    VerticalAlignment = VerticalAlignment.Top
+                };
+                DockPanel.SetDock(caption, Dock.Left);
+                row.Children.Add(caption);
+                row.Children.Add(new TextBox
+                {
+                    Text = value,
+                    IsReadOnly = true,
+                    BorderThickness = new Thickness(0),
+                    Background = System.Windows.Media.Brushes.Transparent,
+                    TextWrapping = TextWrapping.Wrap,
+                    Padding = new Thickness(0)
+                });
+                _detailsPanel.Children.Add(row);
             }
 
-            _detailsPanel.Children.Add(new TextBlock
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+            var copyButton = MakeButton("Copy All", (_, _) => CopyDetails());
+            copyButton.Margin = new Thickness(8, 0, 0, 0);
+            DockPanel.SetDock(copyButton, Dock.Right);
+            header.Children.Add(copyButton);
+            header.Children.Add(new TextBox
             {
                 Text = item.Record == null ? item.Label : item.Record.DisplayName,
+                IsReadOnly = true,
+                BorderThickness = new Thickness(0),
+                Background = System.Windows.Media.Brushes.Transparent,
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 0, 6)
+                TextWrapping = TextWrapping.Wrap
             });
+            _detailsPanel.Children.Add(header);
 
             if (item.Record == null)
             {
@@ -570,23 +827,68 @@ namespace RevitSuite.Host.Explorer.UI
                 record.IsLinked ? "Linked" : null
             }.Where(f => f != null)));
 
-            if (!record.IsLinked)
+            var loadButton = MakeButton("Load Parameters", (_, _) => LoadParameters(record));
+            loadButton.Margin = new Thickness(0, 8, 0, 0);
+            loadButton.HorizontalAlignment = HorizontalAlignment.Left;
+            _detailsPanel.Children.Add(loadButton);
+        }
+
+        private void CopyDetails()
+        {
+            if (_detailsRecord == null)
             {
-                var loadButton = MakeButton("Load Parameters", (_, _) => LoadParameters(record));
-                loadButton.Margin = new Thickness(0, 8, 0, 0);
-                loadButton.HorizontalAlignment = HorizontalAlignment.Left;
-                _detailsPanel.Children.Add(loadButton);
+                SetStatus("Highlight an element row to copy its details.");
+                return;
             }
+
+            var r = _detailsRecord;
+            var lines = new List<string>
+            {
+                $"Element Id\t{r.IdValue}",
+                $"Unique Id\t{r.UniqueId}",
+                $"Category\t{r.Category}",
+                $"Family\t{r.Family}",
+                $"Type\t{r.TypeName}",
+                $"Name\t{r.InstanceName}",
+                $"Level\t{r.LevelName}",
+                $"Workset\t{r.WorksetName}",
+                $"Owner View\t{r.OwnerViewName}",
+                $"Design Option\t{r.DesignOptionName}",
+                $"Origin\t{r.Origin}"
+            };
+
+            if (_detailsPanel.Children.OfType<DataGrid>().FirstOrDefault()?.ItemsSource
+                is IEnumerable<ParameterValueDto> parameters)
+            {
+                lines.Add(string.Empty);
+                lines.AddRange(parameters.Select(p => $"{p.DisplayName}\t{p.DisplayValue}"));
+            }
+
+            Clipboard.SetText(string.Join(Environment.NewLine, lines));
+            SetStatus($"Copied details of element {r.IdValue} to the clipboard (tab-separated, Excel-ready).");
         }
 
         private void LoadParameters(ElementRecord record)
         {
             RunOnRevit("Loading parameters…", (_, uidoc) =>
             {
-                var element = uidoc.Document.GetElement(new Autodesk.Revit.DB.ElementId(record.IdValue));
+                // Linked records resolve inside their link document; host records in the host.
+                Autodesk.Revit.DB.Element? element;
+                if (record.IsLinked && record.LinkInstanceIdValue.HasValue)
+                {
+                    var link = uidoc.Document.GetElement(
+                            new Autodesk.Revit.DB.ElementId(record.LinkInstanceIdValue.Value))
+                        as Autodesk.Revit.DB.RevitLinkInstance;
+                    element = link?.GetLinkDocument()?.GetElement(new Autodesk.Revit.DB.ElementId(record.IdValue));
+                }
+                else
+                {
+                    element = uidoc.Document.GetElement(new Autodesk.Revit.DB.ElementId(record.IdValue));
+                }
+
                 if (element == null)
                 {
-                    OnUi(() => SetStatus("Element no longer exists."));
+                    OnUi(() => SetStatus("Element no longer exists (or its link is unloaded)."));
                     return;
                 }
 
@@ -605,6 +907,7 @@ namespace RevitSuite.Host.Explorer.UI
                         AutoGenerateColumns = false,
                         IsReadOnly = true,
                         HeadersVisibility = DataGridHeadersVisibility.Column,
+                        ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
                         Margin = new Thickness(0, 8, 0, 0),
                         MaxHeight = 400,
                         ItemsSource = parameters

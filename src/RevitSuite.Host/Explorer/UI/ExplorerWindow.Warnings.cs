@@ -38,6 +38,8 @@ namespace RevitSuite.Host.Explorer.UI
             public string Status { get; set; }
             public string? AssignedTo { get; set; }
 
+            public string Origin => Record.Origin;
+
             public string ElementIds =>
                 string.Join(",", Record.FailingElementIds.Concat(Record.AdditionalElementIds));
         }
@@ -50,6 +52,7 @@ namespace RevitSuite.Host.Explorer.UI
         private ComboBox _warningGroupCombo = null!;
         private ComboBox _snapshotCombo = null!;
         private ComboBox _setRankCombo = null!;
+        private CheckBox _warningsIncludeLinksCheck = null!;
         private DataGrid _warningsGrid = null!;
         private TextBlock _warningsSummary = null!;
         private IReadOnlyList<(string Path, DateTimeOffset CreatedUtc)> _snapshotEntries =
@@ -65,6 +68,14 @@ namespace RevitSuite.Host.Explorer.UI
 
             var toolbar = new WrapPanel { Margin = new Thickness(0, 0, 0, 6) };
             toolbar.Children.Add(MakeButton("Refresh Warnings", (_, _) => RefreshWarnings()));
+            _warningsIncludeLinksCheck = new CheckBox
+            {
+                Content = "Include linked models",
+                IsChecked = true,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0)
+            };
+            toolbar.Children.Add(_warningsIncludeLinksCheck);
 
             toolbar.Children.Add(MakeCaption("Group by"));
             _warningGroupCombo = new ComboBox { Width = 130, Margin = new Thickness(0, 0, 12, 0) };
@@ -113,7 +124,15 @@ namespace RevitSuite.Host.Explorer.UI
                 SelectionMode = DataGridSelectionMode.Extended,
                 EnableRowVirtualization = true,
                 CanUserAddRows = false,
+                ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
                 ItemsSource = _warningRows
+            };
+            _warningsGrid.MouseDoubleClick += (_, _) =>
+            {
+                if (_warningsGrid.SelectedItem is WarningRow)
+                {
+                    ActOnWarnings(selectOnly: false);
+                }
             };
 
             void AddColumn(string header, string path, double weight)
@@ -128,8 +147,9 @@ namespace RevitSuite.Host.Explorer.UI
             }
 
             AddColumn("Rank", nameof(WarningRow.Rank), 0.5);
+            AddColumn("Model", nameof(WarningRow.Origin), 0.7);
             AddColumn("Diff", nameof(WarningRow.DiffStatus), 0.4);
-            AddColumn("Description", nameof(WarningRow.Description), 2.6);
+            AddColumn("Description", nameof(WarningRow.Description), 2.4);
             AddColumn("Elements", nameof(WarningRow.ElementCount), 0.4);
             AddColumn("Categories", nameof(WarningRow.Categories), 0.9);
             AddColumn("Element Names", nameof(WarningRow.Elements), 1.2);
@@ -168,10 +188,12 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void RefreshWarnings()
         {
+            var includeLinks = _warningsIncludeLinksCheck.IsChecked == true;
+
             RunOnRevit("Reading warnings…", (_, uidoc) =>
             {
                 var rankings = WarningService.LoadRankings();
-                var warnings = WarningService.Extract(uidoc.Document, rankings);
+                var warnings = WarningService.Extract(uidoc.Document, rankings, includeLinks);
                 var snapshots = WarningService.ListSnapshots(uidoc.Document);
                 var identity = ExplorerPaths.GetModelIdentity(uidoc.Document);
 
@@ -327,10 +349,10 @@ namespace RevitSuite.Host.Explorer.UI
             _warningsGrid.SelectedItem = row;
             _warningsGrid.ScrollIntoView(row);
 
-            var ids = row.Record.FailingElementIds.Concat(row.Record.AdditionalElementIds).Distinct().ToList();
+            var (hostIds, linked) = GetWarningElementTargets(new[] { row });
             var position = $"{_warningNavigateIndex + 1}/{_warningRows.Count}";
 
-            if (ids.Count == 0)
+            if (hostIds.Count == 0 && linked.Count == 0)
             {
                 SetStatus($"Warning {position}: no selectable elements. {Truncate(row.Description, 80)}");
                 return;
@@ -338,7 +360,7 @@ namespace RevitSuite.Host.Explorer.UI
 
             RunOnRevit("Showing warning elements…", (_, uidoc) =>
             {
-                var (shown, error) = RevitActions.ShowElements(uidoc, ids);
+                var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
                 OnUi(() => SetStatus(error != null
                     ? $"Warning {position}: {error}"
                     : $"Warning {position} — showing {shown} element(s): {Truncate(row.Description, 80)}"));
@@ -391,22 +413,33 @@ namespace RevitSuite.Host.Explorer.UI
             return new GroupStyle { HeaderTemplate = headerTemplate };
         }
 
-        private IReadOnlyList<long> GetWarningElementIds()
+        private (List<long> HostIds, List<RevitActions.LinkedTarget> Linked) GetWarningElementTargets(
+            IEnumerable<WarningRow>? source = null)
         {
-            var rows = _warningsGrid.SelectedItems.Count > 0
-                ? _warningsGrid.SelectedItems.Cast<WarningRow>()
-                : _warningRows;
+            var rows = (source ?? (_warningsGrid.SelectedItems.Count > 0
+                    ? _warningsGrid.SelectedItems.Cast<WarningRow>()
+                    : _warningRows))
+                .ToList();
 
-            return rows
+            var hostIds = rows
+                .Where(r => r.Record.LinkInstanceIdValue == null)
                 .SelectMany(r => r.Record.FailingElementIds.Concat(r.Record.AdditionalElementIds))
                 .Distinct()
                 .ToList();
+            var linked = rows
+                .Where(r => r.Record.LinkInstanceIdValue != null)
+                .SelectMany(r => r.Record.FailingElementIds.Concat(r.Record.AdditionalElementIds)
+                    .Select(id => new RevitActions.LinkedTarget(r.Record.LinkInstanceIdValue!.Value, id)))
+                .Distinct()
+                .ToList();
+
+            return (hostIds, linked);
         }
 
         private void ActOnWarnings(bool selectOnly)
         {
-            var ids = GetWarningElementIds();
-            if (ids.Count == 0)
+            var (hostIds, linked) = GetWarningElementTargets();
+            if (hostIds.Count == 0 && linked.Count == 0)
             {
                 SetStatus("No warning elements to act on. Refresh warnings first.");
                 return;
@@ -416,14 +449,14 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 if (selectOnly)
                 {
-                    var selected = RevitActions.SelectElements(uidoc, ids);
-                    OnUi(() => SetStatus(selected == 0
+                    var (selected, _, error) = RevitActions.SelectMixed(uidoc, hostIds, linked);
+                    OnUi(() => SetStatus(error ?? (selected == 0
                         ? "None of the warning elements can be selected (they may be sketch/internal elements)."
-                        : $"Selected {selected:N0} warning element(s)."));
+                        : $"Selected {selected:N0} warning element(s).")));
                 }
                 else
                 {
-                    var (shown, error) = RevitActions.ShowElements(uidoc, ids);
+                    var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
                     OnUi(() => SetStatus(error ?? $"Showing {shown:N0} warning element(s)."));
                 }
             });

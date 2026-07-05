@@ -116,7 +116,87 @@ namespace RevitSuite.Host.Explorer.UI
             root.Children.Add(_busyOverlay);
 
             Content = root;
-            SetStatus("Ready. Use Refresh on the Explore tab to index the model.");
+
+            ApplyUiSettings();
+            Closing += (_, _) => SaveUiSettings();
+
+            // Index the model as soon as the window opens — no empty first impression.
+            Loaded += (_, _) => RefreshExplore();
+
+            PreviewKeyDown += OnWindowKeyDown;
+            SetStatus("Indexing starts automatically. F5 re-indexes, Ctrl+F jumps to search.");
+        }
+
+        private void OnWindowKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.F5)
+            {
+                RefreshExplore();
+                e.Handled = true;
+            }
+            else if (e.Key == System.Windows.Input.Key.F &&
+                     (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) != 0)
+            {
+                _searchBox.Focus();
+                _searchBox.SelectAll();
+                e.Handled = true;
+            }
+            else if (e.Key == System.Windows.Input.Key.Escape && _searchBox.IsKeyboardFocused)
+            {
+                _searchBox.Clear();
+                e.Handled = true;
+            }
+        }
+
+        private void ApplyUiSettings()
+        {
+            var settings = ExplorerUiSettings.Load();
+
+            if (settings.WindowWidth is > 400 && settings.WindowHeight is > 300)
+            {
+                Width = settings.WindowWidth.Value;
+                Height = settings.WindowHeight.Value;
+            }
+
+            // Only restore a position that is actually on the current virtual screen.
+            if (settings.WindowLeft.HasValue && settings.WindowTop.HasValue &&
+                settings.WindowLeft.Value >= SystemParameters.VirtualScreenLeft &&
+                settings.WindowTop.Value >= SystemParameters.VirtualScreenTop &&
+                settings.WindowLeft.Value + 200 <= SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth &&
+                settings.WindowTop.Value + 200 <= SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight)
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = settings.WindowLeft.Value;
+                Top = settings.WindowTop.Value;
+            }
+
+            if (settings.ScopeIndex >= 0 && settings.ScopeIndex < _scopeCombo.Items.Count)
+            {
+                _scopeCombo.SelectedIndex = settings.ScopeIndex;
+            }
+
+            if (settings.GroupingIndex >= 0 && settings.GroupingIndex < _groupingCombo.Items.Count)
+            {
+                _groupingCombo.SelectedIndex = settings.GroupingIndex;
+            }
+
+            _includeLinksCheck.IsChecked = settings.IncludeLinks;
+            _includeUncategorizedCheck.IsChecked = settings.IncludeUncategorized;
+        }
+
+        private void SaveUiSettings()
+        {
+            new ExplorerUiSettings
+            {
+                WindowLeft = Left,
+                WindowTop = Top,
+                WindowWidth = Width,
+                WindowHeight = Height,
+                ScopeIndex = _scopeCombo.SelectedIndex,
+                GroupingIndex = _groupingCombo.SelectedIndex,
+                IncludeLinks = _includeLinksCheck.IsChecked == true,
+                IncludeUncategorized = _includeUncategorizedCheck.IsChecked == true
+            }.Save();
         }
 
         /// <summary>

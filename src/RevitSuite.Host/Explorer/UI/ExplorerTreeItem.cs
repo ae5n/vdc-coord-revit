@@ -42,7 +42,8 @@ namespace RevitSuite.Host.Explorer.UI
         {
             Record = record;
             Parent = parent;
-            Label = record.DisplayName;
+            // Linked elements are visibly marked so their origin is obvious at a glance.
+            Label = record.IsLinked ? $"{record.DisplayName}  🔗 {record.Origin}" : record.DisplayName;
             Count = 1;
             _childrenMaterialized = true;
         }

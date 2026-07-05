@@ -307,7 +307,7 @@ namespace RevitSuite.Host.Explorer
         {
             var headers = new[]
             {
-                "ElementId", "Role", "Rank", "Status", "AssignedTo", "Description", "ElementName", "Categories", "WarningKey"
+                "ElementId", "Model", "Role", "Rank", "Status", "AssignedTo", "Description", "ElementName", "Categories", "WarningKey"
             };
 
             var rows = new List<IReadOnlyList<string>>();
@@ -325,7 +325,7 @@ namespace RevitSuite.Host.Explorer
 
                 IReadOnlyList<string> MakeRow(string id, string role, string name) => new[]
                 {
-                    id, role, warning.Rank.ToString(), status, assignedTo,
+                    id, warning.Origin, role, warning.Rank.ToString(), status, assignedTo,
                     warning.Description, name, categories, warning.WarningKey
                 };
 

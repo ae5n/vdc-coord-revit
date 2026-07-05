@@ -335,6 +335,48 @@ namespace RevitSuite.Host.Explorer
                     break;
             }
 
+            var results = new List<ElementRecord>();
+            Evaluate(collector, doc, query, new ElementCollectionService.RecordContext(doc, "Host", isLinked: false), results);
+
+            // Linked documents are always queried whole-model (view/selection scopes are host concepts).
+            if (query.IncludeLinkedDocuments)
+            {
+                var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var instance in new FilteredElementCollector(doc)
+                             .OfClass(typeof(RevitLinkInstance))
+                             .Cast<RevitLinkInstance>())
+                {
+                    var linkDoc = instance.GetLinkDocument();
+                    if (linkDoc == null)
+                    {
+                        continue;
+                    }
+
+                    var key = string.IsNullOrWhiteSpace(linkDoc.PathName) ? linkDoc.Title : linkDoc.PathName;
+                    if (!visited.Add(key))
+                    {
+                        continue;
+                    }
+
+                    Evaluate(
+                        new FilteredElementCollector(linkDoc),
+                        linkDoc,
+                        query,
+                        new ElementCollectionService.RecordContext(linkDoc, linkDoc.Title, isLinked: true, instance.Id.Value),
+                        results);
+                }
+            }
+
+            return results;
+        }
+
+        private static void Evaluate(
+            FilteredElementCollector collector,
+            Document doc,
+            QueryDefinition query,
+            ElementCollectionService.RecordContext context,
+            List<ElementRecord> results)
+        {
             var categoryIds = ResolveCategoryIds(doc, query.Categories);
             if (categoryIds.Count > 0)
             {
@@ -354,9 +396,6 @@ namespace RevitSuite.Host.Explorer
                     new ElementIsElementTypeFilter(true)));
             }
 
-            var context = new ElementCollectionService.RecordContext(doc, "Host", isLinked: false);
-            var results = new List<ElementRecord>();
-
             foreach (var element in collector)
             {
                 if (element?.Category == null)
@@ -369,8 +408,6 @@ namespace RevitSuite.Host.Explorer
                     results.Add(ElementCollectionService.CreateRecord(element, context));
                 }
             }
-
-            return results;
         }
 
         /// <summary>Distinct parameter names/keys available on elements of the given categories (sampled).</summary>

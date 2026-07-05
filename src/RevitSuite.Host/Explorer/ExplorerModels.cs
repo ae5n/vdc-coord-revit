@@ -13,6 +13,7 @@ namespace RevitSuite.Host.Explorer
     public enum GroupingMode
     {
         Category,
+        Model,
         Level,
         Workset,
         OwnerView,
@@ -37,6 +38,7 @@ namespace RevitSuite.Host.Explorer
         string? DesignOptionName,
         string Origin,
         bool IsLinked,
+        long? LinkInstanceIdValue,
         bool IsElementType,
         bool IsViewSpecific,
         bool IsPinned,
@@ -119,7 +121,8 @@ namespace RevitSuite.Host.Explorer
         IReadOnlyList<string> Categories,
         IReadOnlyList<QueryCondition> Conditions,
         LogicalOperator Operator,
-        bool IncludeElementTypes);
+        bool IncludeElementTypes,
+        bool IncludeLinkedDocuments = false);
 
     public enum WarningRank
     {
@@ -137,7 +140,9 @@ namespace RevitSuite.Host.Explorer
         IReadOnlyList<long> FailingElementIds,
         IReadOnlyList<long> AdditionalElementIds,
         IReadOnlyList<string> Categories,
-        IReadOnlyList<string> ElementNames);
+        IReadOnlyList<string> ElementNames,
+        string Origin = "Host",
+        long? LinkInstanceIdValue = null);
 
     public sealed record WarningRanking(
         string? FailureDefinitionId,
@@ -195,7 +200,9 @@ namespace RevitSuite.Host.Explorer
         IReadOnlyList<long> ElementIds,
         string Summary,
         string WhyItMatters,
-        string SafeFixGuidance);
+        string SafeFixGuidance,
+        string Origin = "Host",
+        long? LinkInstanceIdValue = null);
 
     public sealed record HealthScoreComponent(
         string Label,

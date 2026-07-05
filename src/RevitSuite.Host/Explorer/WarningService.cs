@@ -20,8 +20,48 @@ namespace RevitSuite.Host.Explorer
             Converters = { new StringEnumConverter() }
         };
 
-        /// <summary>API context required.</summary>
-        public static IReadOnlyList<WarningRecord> Extract(Document doc, IReadOnlyList<WarningRanking> rankings)
+        /// <summary>API context required. Extracts host warnings, plus each loaded link's when requested.</summary>
+        public static IReadOnlyList<WarningRecord> Extract(
+            Document doc,
+            IReadOnlyList<WarningRanking> rankings,
+            bool includeLinkedModels = false)
+        {
+            var records = ExtractFromDocument(doc, rankings, "Host", null);
+
+            if (!includeLinkedModels)
+            {
+                return records;
+            }
+
+            var all = new List<WarningRecord>(records);
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var instance in new FilteredElementCollector(doc)
+                         .OfClass(typeof(RevitLinkInstance))
+                         .Cast<RevitLinkInstance>())
+            {
+                var linkDoc = instance.GetLinkDocument();
+                if (linkDoc == null)
+                {
+                    continue;
+                }
+
+                var key = string.IsNullOrWhiteSpace(linkDoc.PathName) ? linkDoc.Title : linkDoc.PathName;
+                if (!visited.Add(key))
+                {
+                    continue;
+                }
+
+                all.AddRange(ExtractFromDocument(linkDoc, rankings, linkDoc.Title, instance.Id.Value));
+            }
+
+            return all;
+        }
+
+        private static List<WarningRecord> ExtractFromDocument(
+            Document doc,
+            IReadOnlyList<WarningRanking> rankings,
+            string origin,
+            long? linkInstanceIdValue)
         {
             var records = new List<WarningRecord>();
 
@@ -41,15 +81,20 @@ namespace RevitSuite.Host.Explorer
                     failureId = description;
                 }
 
+                var baseKey = CreateKey(failureId, failingIds, additionalIds);
                 records.Add(new WarningRecord(
-                    WarningKey: CreateKey(failureId, failingIds, additionalIds),
+                    // Link warnings get an origin prefix so they never collide with host keys;
+                    // host keys stay unprefixed so existing snapshots/triage remain valid.
+                    WarningKey: linkInstanceIdValue == null ? baseKey : origin + "|" + baseKey,
                     FailureDefinitionId: failureId,
                     Description: description,
                     Rank: ResolveRank(rankings, failureId, description),
                     FailingElementIds: failingIds,
                     AdditionalElementIds: additionalIds,
                     Categories: ResolveCategories(doc, failingIds),
-                    ElementNames: ResolveNames(doc, failingIds)));
+                    ElementNames: ResolveNames(doc, failingIds),
+                    Origin: origin,
+                    LinkInstanceIdValue: linkInstanceIdValue));
             }
 
             return records;

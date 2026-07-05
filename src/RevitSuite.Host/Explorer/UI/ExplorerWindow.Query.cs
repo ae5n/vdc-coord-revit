@@ -33,6 +33,7 @@ namespace RevitSuite.Host.Explorer.UI
         private ComboBox _queryScopeCombo = null!;
         private ComboBox _logicCombo = null!;
         private CheckBox _includeTypesCheck = null!;
+        private CheckBox _queryIncludeLinksCheck = null!;
         private TextBox _queryNameBox = null!;
         private TextBlock _explainText = null!;
         private ListBox _savedFilterList = null!;
@@ -93,9 +94,17 @@ namespace RevitSuite.Host.Explorer.UI
             _includeTypesCheck = new CheckBox
             {
                 Content = "Include element types",
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0)
             };
             headerRow.Children.Add(_includeTypesCheck);
+
+            _queryIncludeLinksCheck = new CheckBox
+            {
+                Content = "Include linked models",
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            headerRow.Children.Add(_queryIncludeLinksCheck);
             stack.Children.Add(headerRow);
 
             // Categories
@@ -279,6 +288,7 @@ namespace RevitSuite.Host.Explorer.UI
                 IsReadOnly = true,
                 SelectionMode = DataGridSelectionMode.Extended,
                 EnableRowVirtualization = true,
+                ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
                 ItemsSource = _queryResults
             };
             AddElementColumns(_queryResultsGrid);
@@ -313,6 +323,7 @@ namespace RevitSuite.Host.Explorer.UI
             AddColumn("Type", nameof(ElementRecord.TypeName), 1);
             AddColumn("Name", nameof(ElementRecord.InstanceName), 1);
             AddColumn("Level", nameof(ElementRecord.LevelName), 0.8);
+            AddColumn("Model", nameof(ElementRecord.Origin), 0.8);
         }
 
         private void LoadCategories()
@@ -404,7 +415,8 @@ namespace RevitSuite.Host.Explorer.UI
                 Categories: _categoryList.SelectedItems.Cast<string>().ToList(),
                 Conditions: conditions,
                 Operator: _logicCombo.SelectedIndex == 1 ? LogicalOperator.Or : LogicalOperator.And,
-                IncludeElementTypes: _includeTypesCheck.IsChecked == true);
+                IncludeElementTypes: _includeTypesCheck.IsChecked == true,
+                IncludeLinkedDocuments: _queryIncludeLinksCheck.IsChecked == true);
 
             var validationError = FilterStore.Validate(query);
             if (validationError != null)
@@ -499,6 +511,7 @@ namespace RevitSuite.Host.Explorer.UI
             };
             _logicCombo.SelectedIndex = query.Operator == LogicalOperator.Or ? 1 : 0;
             _includeTypesCheck.IsChecked = query.IncludeElementTypes;
+            _queryIncludeLinksCheck.IsChecked = query.IncludeLinkedDocuments;
 
             _categoryList.SelectedItems.Clear();
             foreach (var category in query.Categories)
@@ -598,12 +611,16 @@ namespace RevitSuite.Host.Explorer.UI
             var records = (_queryResultsGrid.SelectedItems.Count > 0
                     ? _queryResultsGrid.SelectedItems.Cast<ElementRecord>()
                     : _queryResults)
-                .Where(r => !r.IsLinked)
-                .Select(r => r.IdValue)
+                .ToList();
+
+            var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
+            var linked = records
+                .Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue)
+                .Select(r => new RevitActions.LinkedTarget(r.LinkInstanceIdValue!.Value, r.IdValue))
                 .Distinct()
                 .ToList();
 
-            if (records.Count == 0)
+            if (hostIds.Count == 0 && linked.Count == 0)
             {
                 SetStatus("No query results to act on.");
                 return;
@@ -613,12 +630,12 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 if (selectOnly)
                 {
-                    var selected = RevitActions.SelectElements(uidoc, records);
-                    OnUi(() => SetStatus($"Selected {selected:N0} element(s)."));
+                    var (selected, _, error) = RevitActions.SelectMixed(uidoc, hostIds, linked);
+                    OnUi(() => SetStatus(error ?? $"Selected {selected:N0} element(s)."));
                 }
                 else
                 {
-                    var (shown, error) = RevitActions.ShowElements(uidoc, records);
+                    var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
                     OnUi(() => SetStatus(error ?? $"Showing {shown:N0} element(s)."));
                 }
             });

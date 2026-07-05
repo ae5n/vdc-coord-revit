@@ -14,6 +14,7 @@ namespace RevitSuite.Host.Explorer.UI
         public sealed record FindingRow(
             string Severity,
             string Rule,
+            string Origin,
             int Count,
             string Summary,
             string ElementIds,
@@ -32,6 +33,7 @@ namespace RevitSuite.Host.Explorer.UI
         private TextBlock _guidanceText = null!;
         private TextBlock _trendText = null!;
         private DataGrid _findingsGrid = null!;
+        private CheckBox _auditIncludeLinksCheck = null!;
 
         private UIElement BuildAuditTab()
         {
@@ -43,6 +45,14 @@ namespace RevitSuite.Host.Explorer.UI
 
             var toolbar = new WrapPanel { Margin = new Thickness(0, 0, 0, 6) };
             toolbar.Children.Add(MakeButton("Run Audit", (_, _) => RunAudit()));
+            _auditIncludeLinksCheck = new CheckBox
+            {
+                Content = "Include linked models",
+                IsChecked = true,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0)
+            };
+            toolbar.Children.Add(_auditIncludeLinksCheck);
             toolbar.Children.Add(MakeButton("Save Snapshot", (_, _) => SaveAuditSnapshot()));
             toolbar.Children.Add(MakeButton("Export Package (XLSX)", (_, _) => ExportAuditPackage("xlsx")));
             toolbar.Children.Add(MakeButton("Export Package (JSON)", (_, _) => ExportAuditPackage("json")));
@@ -94,6 +104,7 @@ namespace RevitSuite.Host.Explorer.UI
                 IsReadOnly = true,
                 SelectionMode = DataGridSelectionMode.Extended,
                 EnableRowVirtualization = true,
+                ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
                 ItemsSource = _findingRows
             };
 
@@ -108,7 +119,8 @@ namespace RevitSuite.Host.Explorer.UI
             }
 
             AddFindingColumn("Severity", nameof(FindingRow.Severity), 0.7);
-            AddFindingColumn("Rule", nameof(FindingRow.Rule), 1.5);
+            AddFindingColumn("Rule", nameof(FindingRow.Rule), 1.4);
+            AddFindingColumn("Model", nameof(FindingRow.Origin), 0.8);
             AddFindingColumn("Count", nameof(FindingRow.Count), 0.5);
             AddFindingColumn("Summary", nameof(FindingRow.Summary), 1.6);
             AddFindingColumn("Element Ids", nameof(FindingRow.ElementIds), 1.2);
@@ -143,6 +155,7 @@ namespace RevitSuite.Host.Explorer.UI
                 AutoGenerateColumns = false,
                 IsReadOnly = true,
                 HeadersVisibility = DataGridHeadersVisibility.Column,
+                ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
                 Margin = new Thickness(0, 8, 0, 0),
                 ItemsSource = _healthRows
             };
@@ -182,6 +195,8 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void RunAudit()
         {
+            var includeLinks = _auditIncludeLinksCheck.IsChecked == true;
+
             RunOnRevit("Running audit…", (_, uidoc) =>
             {
                 var loadedPacks = AuditService.LoadPacks();
@@ -190,8 +205,8 @@ namespace RevitSuite.Host.Explorer.UI
                     .Select(p => $"{System.IO.Path.GetFileName(p.FilePath)}: {p.Error}")
                     .ToList();
 
-                var run = AuditService.Run(uidoc, validPacks);
-                var warnings = WarningService.Extract(uidoc.Document, WarningService.LoadRankings());
+                var run = AuditService.Run(uidoc, validPacks, includeLinks);
+                var warnings = WarningService.Extract(uidoc.Document, WarningService.LoadRankings(), includeLinks);
                 var health = AuditService.ComputeHealth(run.Findings, warnings);
                 var history = AuditService.LoadSnapshots(uidoc.Document);
 
@@ -208,6 +223,7 @@ namespace RevitSuite.Host.Explorer.UI
                         _findingRows.Add(new FindingRow(
                             finding.Severity.ToString(),
                             finding.RuleName,
+                            finding.Origin,
                             finding.ElementIds.Count,
                             finding.Summary,
                             FormatIds(finding.ElementIds),
@@ -298,14 +314,24 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void ActOnFindings(bool selectOnly)
         {
-            var ids = (_findingsGrid.SelectedItems.Count > 0
+            var rows = (_findingsGrid.SelectedItems.Count > 0
                     ? _findingsGrid.SelectedItems.Cast<FindingRow>()
                     : _findingRows)
+                .ToList();
+
+            var hostIds = rows
+                .Where(r => r.Finding.LinkInstanceIdValue == null)
                 .SelectMany(r => r.Finding.ElementIds)
                 .Distinct()
                 .ToList();
+            var linked = rows
+                .Where(r => r.Finding.LinkInstanceIdValue != null)
+                .SelectMany(r => r.Finding.ElementIds
+                    .Select(id => new RevitActions.LinkedTarget(r.Finding.LinkInstanceIdValue!.Value, id)))
+                .Distinct()
+                .ToList();
 
-            if (ids.Count == 0)
+            if (hostIds.Count == 0 && linked.Count == 0)
             {
                 SetStatus("No audit findings to act on. Run an audit first.");
                 return;
@@ -315,12 +341,12 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 if (selectOnly)
                 {
-                    var selected = RevitActions.SelectElements(uidoc, ids);
-                    OnUi(() => SetStatus($"Selected {selected:N0} element(s)."));
+                    var (selected, _, error) = RevitActions.SelectMixed(uidoc, hostIds, linked);
+                    OnUi(() => SetStatus(error ?? $"Selected {selected:N0} element(s)."));
                 }
                 else
                 {
-                    var (shown, error) = RevitActions.ShowElements(uidoc, ids);
+                    var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
                     OnUi(() => SetStatus(error ?? $"Showing {shown:N0} element(s)."));
                 }
             });

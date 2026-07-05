@@ -83,6 +83,7 @@ namespace RevitSuite.Host.Explorer.UI
                 IsReadOnly = true,
                 SelectionMode = DataGridSelectionMode.Single,
                 EnableRowVirtualization = true,
+                ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
                 ItemsSource = source
             };
 

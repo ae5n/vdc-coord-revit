@@ -74,6 +74,9 @@ namespace RevitSuite.Host.Explorer
         public static ICollection<ElementId> ToElementIds(IEnumerable<long> idValues) =>
             idValues.Select(value => new ElementId(value)).ToList();
 
+        /// <summary>An element that lives inside a Revit link, addressed via its link instance.</summary>
+        public sealed record LinkedTarget(long LinkInstanceIdValue, long ElementIdValue);
+
         /// <summary>
         /// Sets the Revit selection to the given host-model element ids.
         /// Returns the number of ids that resolved to live elements.
@@ -83,6 +86,189 @@ namespace RevitSuite.Host.Explorer
             var valid = FilterToLiveElements(uidoc.Document, idValues);
             uidoc.Selection.SetElementIds(valid);
             return valid.Count;
+        }
+
+        /// <summary>
+        /// Selects host and linked elements together. Linked elements are selected through
+        /// link references (Revit 2023+); host elements become references too so one
+        /// SetReferences call covers everything.
+        /// </summary>
+        public static (int Selected, int Failed, string? Error) SelectMixed(
+            UIDocument uidoc,
+            IReadOnlyCollection<long> hostIds,
+            IReadOnlyCollection<LinkedTarget> linkedTargets)
+        {
+            if (linkedTargets.Count == 0)
+            {
+                return (SelectElements(uidoc, hostIds), 0, null);
+            }
+
+            var references = BuildReferences(uidoc.Document, hostIds, linkedTargets, out var failed);
+            if (references.Count == 0)
+            {
+                return (0, failed, "None of the elements could be resolved for selection.");
+            }
+
+            try
+            {
+                uidoc.Selection.SetReferences(references);
+                return (references.Count, failed, null);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Mixed selection failed.", ex);
+                return (0, failed + references.Count, $"Selection failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Shows host and linked elements. Pure-host falls back to Revit's ShowElements
+        /// (which can open a suitable view); with linked elements involved, everything is
+        /// selected via references and the active view zooms to the combined bounding box
+        /// (linked boxes transformed by their link instance).
+        /// </summary>
+        public static (int Shown, string? Error) ShowMixed(
+            UIDocument uidoc,
+            IReadOnlyCollection<long> hostIds,
+            IReadOnlyCollection<LinkedTarget> linkedTargets)
+        {
+            if (linkedTargets.Count == 0)
+            {
+                return ShowElements(uidoc, hostIds);
+            }
+
+            var doc = uidoc.Document;
+            var references = BuildReferences(doc, hostIds, linkedTargets, out _);
+            if (references.Count == 0)
+            {
+                return (0, "None of the elements could be resolved.");
+            }
+
+            XYZ? min = null, max = null;
+            void Extend(BoundingBoxXYZ? box, Transform? transform)
+            {
+                if (box == null)
+                {
+                    return;
+                }
+
+                foreach (var corner in Corners(box))
+                {
+                    var point = transform?.OfPoint(corner) ?? corner;
+                    min = min == null
+                        ? point
+                        : new XYZ(Math.Min(min.X, point.X), Math.Min(min.Y, point.Y), Math.Min(min.Z, point.Z));
+                    max = max == null
+                        ? point
+                        : new XYZ(Math.Max(max.X, point.X), Math.Max(max.Y, point.Y), Math.Max(max.Z, point.Z));
+                }
+            }
+
+            foreach (var id in hostIds)
+            {
+                Extend(doc.GetElement(new ElementId(id))?.get_BoundingBox(null), null);
+            }
+
+            foreach (var target in linkedTargets)
+            {
+                if (doc.GetElement(new ElementId(target.LinkInstanceIdValue)) is not RevitLinkInstance link)
+                {
+                    continue;
+                }
+
+                var linkedElement = link.GetLinkDocument()?.GetElement(new ElementId(target.ElementIdValue));
+                Extend(linkedElement?.get_BoundingBox(null), link.GetTotalTransform());
+            }
+
+            try
+            {
+                uidoc.Selection.SetReferences(references);
+
+                if (min != null && max != null)
+                {
+                    var uiView = uidoc.GetOpenUIViews()
+                        .FirstOrDefault(v => v.ViewId == uidoc.ActiveView.Id);
+                    // Pad the box slightly so elements aren't glued to the viewport edge.
+                    var padding = Math.Max(1.0, max.DistanceTo(min) * 0.1);
+                    uiView?.ZoomAndCenterRectangle(
+                        new XYZ(min.X - padding, min.Y - padding, min.Z - padding),
+                        new XYZ(max.X + padding, max.Y + padding, max.Z + padding));
+                }
+
+                return (references.Count, null);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Show linked elements failed.", ex);
+                return (0, $"Could not show linked elements: {ex.Message}");
+            }
+        }
+
+        private static IList<Reference> BuildReferences(
+            Document doc,
+            IReadOnlyCollection<long> hostIds,
+            IReadOnlyCollection<LinkedTarget> linkedTargets,
+            out int failed)
+        {
+            var references = new List<Reference>();
+            failed = 0;
+
+            foreach (var id in hostIds)
+            {
+                var element = doc.GetElement(new ElementId(id));
+                if (element == null)
+                {
+                    failed++;
+                    continue;
+                }
+
+                try
+                {
+                    references.Add(new Reference(element));
+                }
+                catch
+                {
+                    failed++;
+                }
+            }
+
+            foreach (var target in linkedTargets)
+            {
+                try
+                {
+                    if (doc.GetElement(new ElementId(target.LinkInstanceIdValue)) is not RevitLinkInstance link)
+                    {
+                        failed++;
+                        continue;
+                    }
+
+                    var linkedElement = link.GetLinkDocument()?.GetElement(new ElementId(target.ElementIdValue));
+                    if (linkedElement == null)
+                    {
+                        failed++;
+                        continue;
+                    }
+
+                    references.Add(new Reference(linkedElement).CreateLinkReference(link));
+                }
+                catch
+                {
+                    failed++;
+                }
+            }
+
+            return references;
+        }
+
+        private static IEnumerable<XYZ> Corners(BoundingBoxXYZ box)
+        {
+            var boxTransform = box.Transform ?? Transform.Identity;
+            foreach (var x in new[] { box.Min.X, box.Max.X })
+            foreach (var y in new[] { box.Min.Y, box.Max.Y })
+            foreach (var z in new[] { box.Min.Z, box.Max.Z })
+            {
+                yield return boxTransform.OfPoint(new XYZ(x, y, z));
+            }
         }
 
         /// <summary>Selects and zooms to elements. Returns (shownCount, error message or null).</summary>

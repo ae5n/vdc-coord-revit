@@ -51,7 +51,8 @@ namespace RevitSuite.Host.Explorer
                                 continue;
                             }
 
-                            AppendFromDocument(linkDoc, linkDoc.Title, isLinked: true, records, options);
+                            AppendFromDocument(linkDoc, linkDoc.Title, isLinked: true, records, options,
+                                linkInstanceIdValue: instance.Id.Value);
                         }
                     }
 
@@ -90,10 +91,37 @@ namespace RevitSuite.Host.Explorer
             return records;
         }
 
+        /// <summary>Loaded link documents, one entry per distinct linked file (first placement wins).</summary>
+        public static IReadOnlyList<(RevitLinkInstance Instance, Document Document)> GetDistinctLinkDocuments(Document doc)
+        {
+            var result = new List<(RevitLinkInstance, Document)>();
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var instance in new FilteredElementCollector(doc)
+                         .OfClass(typeof(RevitLinkInstance))
+                         .Cast<RevitLinkInstance>())
+            {
+                var linkDoc = instance.GetLinkDocument();
+                if (linkDoc == null)
+                {
+                    continue;
+                }
+
+                var key = string.IsNullOrWhiteSpace(linkDoc.PathName) ? linkDoc.Title : linkDoc.PathName;
+                if (visited.Add(key))
+                {
+                    result.Add((instance, linkDoc));
+                }
+            }
+
+            return result;
+        }
+
         private sealed record CollectOptions(bool IncludeUncategorized, Action<int>? Progress, Func<bool>? IsCancelled);
 
         private static void AppendFromDocument(
-            Document doc, string origin, bool isLinked, List<ElementRecord> sink, CollectOptions options)
+            Document doc, string origin, bool isLinked, List<ElementRecord> sink, CollectOptions options,
+            long? linkInstanceIdValue = null)
         {
             AppendElements(
                 doc,
@@ -101,7 +129,8 @@ namespace RevitSuite.Host.Explorer
                 origin,
                 isLinked,
                 sink,
-                options);
+                options,
+                linkInstanceIdValue);
         }
 
         private static void AppendElements(
@@ -110,10 +139,11 @@ namespace RevitSuite.Host.Explorer
             string origin,
             bool isLinked,
             List<ElementRecord> sink,
-            CollectOptions options)
+            CollectOptions options,
+            long? linkInstanceIdValue = null)
         {
             const int progressInterval = 2500;
-            var context = new RecordContext(doc, origin, isLinked);
+            var context = new RecordContext(doc, origin, isLinked, linkInstanceIdValue);
             var sinceCheck = 0;
 
             foreach (var element in collector)
@@ -166,6 +196,7 @@ namespace RevitSuite.Host.Explorer
                 DesignOptionName: context.GetDesignOptionName(element),
                 Origin: context.Origin,
                 IsLinked: context.IsLinked,
+                LinkInstanceIdValue: context.LinkInstanceIdValue,
                 IsElementType: element is ElementType,
                 IsViewSpecific: element.ViewSpecific,
                 IsPinned: element.Pinned,
@@ -196,16 +227,18 @@ namespace RevitSuite.Host.Explorer
             private readonly Dictionary<int, string?> _worksetNames = new Dictionary<int, string?>();
             private readonly bool _isWorkshared;
 
-            public RecordContext(Document doc, string origin, bool isLinked)
+            public RecordContext(Document doc, string origin, bool isLinked, long? linkInstanceIdValue = null)
             {
                 _doc = doc;
                 Origin = origin;
                 IsLinked = isLinked;
+                LinkInstanceIdValue = linkInstanceIdValue;
                 _isWorkshared = doc.IsWorkshared;
             }
 
             public string Origin { get; }
             public bool IsLinked { get; }
+            public long? LinkInstanceIdValue { get; }
 
             public string? GetTypeName(ElementId typeId)
             {

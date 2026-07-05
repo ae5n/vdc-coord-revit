@@ -126,28 +126,66 @@ namespace RevitSuite.Host.Explorer
 
         /// <summary>
         /// API context required. One failing rule never aborts the audit — it is reported
-        /// in RuleErrors and the remaining rules still run.
+        /// in RuleErrors and the remaining rules still run. With includeLinkedModels, every
+        /// detector also sweeps each loaded link, producing origin-tagged findings.
         /// </summary>
-        public static AuditRunResult Run(UIDocument uidoc, IEnumerable<AuditRulePack> packs)
+        public static AuditRunResult Run(UIDocument uidoc, IEnumerable<AuditRulePack> packs, bool includeLinkedModels = false)
         {
             var findings = new List<AuditFinding>();
             var ruleErrors = new List<string>();
             var rulesRun = 0;
+            var links = includeLinkedModels
+                ? ElementCollectionService.GetDistinctLinkDocuments(uidoc.Document)
+                : Array.Empty<(RevitLinkInstance, Document)>();
+
+            void AddFinding(AuditRule rule, IReadOnlyList<long> elementIds, string origin, long? linkInstanceId)
+            {
+                if (elementIds.Count == 0)
+                {
+                    return;
+                }
+
+                var originSuffix = linkInstanceId == null ? string.Empty : $" in link '{origin}'";
+                findings.Add(new AuditFinding(
+                    RuleId: rule.Id,
+                    RuleName: rule.Name,
+                    Severity: rule.Severity,
+                    ElementIds: elementIds,
+                    Summary: $"{elementIds.Count} element(s) matched '{rule.Name}'{originSuffix}.",
+                    WhyItMatters: rule.WhyItMatters,
+                    SafeFixGuidance: rule.SafeFixGuidance,
+                    Origin: origin,
+                    LinkInstanceIdValue: linkInstanceId));
+            }
 
             foreach (var pack in packs)
             {
                 foreach (var rule in pack.Rules.Where(r => r.Enabled))
                 {
-                    IReadOnlyList<long> elementIds;
                     try
                     {
                         if (rule.DetectorId != null && Detectors.TryGetValue(rule.DetectorId, out var detector))
                         {
-                            elementIds = detector(uidoc.Document);
+                            AddFinding(rule, detector(uidoc.Document), "Host", null);
+                            foreach (var (instance, linkDoc) in links)
+                            {
+                                AddFinding(rule, detector(linkDoc), linkDoc.Title, instance.Id.Value);
+                            }
                         }
                         else if (rule.Query != null)
                         {
-                            elementIds = QueryRunner.Run(uidoc, rule.Query).Select(r => r.IdValue).ToList();
+                            var query = includeLinkedModels && !rule.Query.IncludeLinkedDocuments
+                                ? rule.Query with { IncludeLinkedDocuments = true }
+                                : rule.Query;
+
+                            // Query results may span host and links; split into per-origin findings
+                            // so element ids always resolve in the right document.
+                            foreach (var group in QueryRunner.Run(uidoc, query)
+                                         .GroupBy(r => (r.Origin, r.LinkInstanceIdValue)))
+                            {
+                                AddFinding(rule, group.Select(r => r.IdValue).ToList(),
+                                    group.Key.Origin, group.Key.LinkInstanceIdValue);
+                            }
                         }
                         else
                         {
@@ -162,33 +200,27 @@ namespace RevitSuite.Host.Explorer
                     }
 
                     rulesRun++;
-                    if (elementIds.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    findings.Add(new AuditFinding(
-                        RuleId: rule.Id,
-                        RuleName: rule.Name,
-                        Severity: rule.Severity,
-                        ElementIds: elementIds,
-                        Summary: $"{elementIds.Count} element(s) matched '{rule.Name}'.",
-                        WhyItMatters: rule.WhyItMatters,
-                        SafeFixGuidance: rule.SafeFixGuidance));
                 }
             }
 
             var ordered = findings
                 .OrderByDescending(f => f.Severity)
                 .ThenBy(f => f.RuleName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(f => f.Origin, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            return new AuditRunResult(ordered, rulesRun, rulesRun - ordered.Count, ruleErrors);
+            var rulesWithFindings = ordered.Select(f => f.RuleId).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            return new AuditRunResult(ordered, rulesRun, rulesRun - rulesWithFindings, ruleErrors);
         }
 
         /// <summary>
-        /// Transparent weighted score: every component and its deduction is listed,
-        /// so the number is explainable rather than a black box.
+        /// Transparent weighted score: every component and its deduction is listed, so the
+        /// number is explainable rather than a black box.
+        ///
+        /// Each component's deduction saturates toward a severity budget:
+        ///   deduction = budget × (1 − e^(−weight × count / budget))
+        /// so the first few offenders cost the most and 10,000 detail lines cannot zero the
+        /// score on their own — a linear formula floors every real production model at 0.
         /// </summary>
         public static HealthScore ComputeHealth(
             IReadOnlyList<AuditFinding> findings,
@@ -198,7 +230,7 @@ namespace RevitSuite.Host.Explorer
 
             foreach (var finding in findings)
             {
-                var weight = SeverityWeight(finding.Severity);
+                var (weight, budget) = SeverityWeightAndBudget(finding.Severity);
                 if (weight <= 0)
                 {
                     continue;
@@ -208,12 +240,12 @@ namespace RevitSuite.Host.Explorer
                     $"Audit: {finding.RuleName}",
                     finding.Severity,
                     finding.ElementIds.Count,
-                    Math.Round(Math.Min(finding.ElementIds.Count * weight, 25.0), 2)));
+                    SaturatingDeduction(finding.ElementIds.Count, weight, budget)));
             }
 
             foreach (var group in warnings.GroupBy(w => w.Rank))
             {
-                var weight = RankWeight(group.Key);
+                var (weight, budget) = RankWeightAndBudget(group.Key);
                 if (weight <= 0)
                 {
                     continue;
@@ -224,12 +256,15 @@ namespace RevitSuite.Host.Explorer
                     $"Warnings: {group.Key}",
                     group.Key == WarningRank.High ? AuditSeverity.High : AuditSeverity.Medium,
                     count,
-                    Math.Round(Math.Min(count * weight, 30.0), 2)));
+                    SaturatingDeduction(count, weight, budget)));
             }
 
             var score = Math.Max(0.0, 100.0 - components.Sum(c => c.Deduction));
             return new HealthScore(Math.Round(score, 1), components, DateTimeOffset.UtcNow);
         }
+
+        private static double SaturatingDeduction(int count, double weight, double budget) =>
+            Math.Round(budget * (1.0 - Math.Exp(-weight * count / budget)), 2);
 
         public static string SaveSnapshot(Document doc, IReadOnlyList<AuditFinding> findings, HealthScore health)
         {
@@ -268,22 +303,22 @@ namespace RevitSuite.Host.Explorer
             return snapshots.OrderByDescending(s => s.CreatedUtc).ToList();
         }
 
-        private static double SeverityWeight(AuditSeverity severity) => severity switch
+        private static (double Weight, double Budget) SeverityWeightAndBudget(AuditSeverity severity) => severity switch
         {
-            AuditSeverity.Critical => 4.0,
-            AuditSeverity.High => 2.0,
-            AuditSeverity.Medium => 0.8,
-            AuditSeverity.Low => 0.25,
-            _ => 0.0
+            AuditSeverity.Critical => (2.0, 20.0),
+            AuditSeverity.High => (1.0, 12.0),
+            AuditSeverity.Medium => (0.2, 6.0),
+            AuditSeverity.Low => (0.02, 3.0),
+            _ => (0.0, 0.0)
         };
 
-        private static double RankWeight(WarningRank rank) => rank switch
+        private static (double Weight, double Budget) RankWeightAndBudget(WarningRank rank) => rank switch
         {
-            WarningRank.High => 2.0,
-            WarningRank.Medium => 0.8,
-            WarningRank.Low => 0.25,
-            WarningRank.NotRanked => 0.4,
-            _ => 0.0
+            WarningRank.High => (0.5, 15.0),
+            WarningRank.Medium => (0.2, 8.0),
+            WarningRank.Low => (0.05, 3.0),
+            WarningRank.NotRanked => (0.1, 6.0),
+            _ => (0.0, 0.0)
         };
 
         /// <summary>Version of the shipped rule pack; bump when built-in rules are added/changed.</summary>
