@@ -490,7 +490,9 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
-            var first = matches[0];
+            // When the pick came from inside a link, reveal the linked element itself,
+            // never the link-instance row that carried it.
+            var first = (linked.Count > 0 ? matches.FirstOrDefault(r => r.IsLinked) : null) ?? matches[0];
             var revealed = FindAndReveal(first);
             var more = matches.Count > 1 ? $" (+{matches.Count - 1} more selected)" : string.Empty;
             SetStatus(revealed

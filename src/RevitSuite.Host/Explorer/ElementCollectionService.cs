@@ -67,6 +67,15 @@ namespace RevitSuite.Host.Explorer
                         isLinked: false,
                         records,
                         options);
+                    if (includeLinkedModels)
+                    {
+                        // A view-scoped collector never returns linked contents, so links are
+                        // approximated: every link instance visible in this view contributes its
+                        // elements clipped to the view's crop/section box (transformed into link
+                        // coordinates). No crop active = the whole link.
+                        AppendLinkedFromActiveView(uidoc, records, options);
+                    }
+
                     break;
 
                 case ExplorerScope.CurrentSelection:
@@ -115,6 +124,118 @@ namespace RevitSuite.Host.Explorer
             }
 
             return result;
+        }
+
+        private static void AppendLinkedFromActiveView(UIDocument uidoc, List<ElementRecord> sink, CollectOptions options)
+        {
+            var doc = uidoc.Document;
+            var view = uidoc.ActiveView;
+            var viewBox = GetViewExtentsBox(view);
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // A view-scoped collector for RevitLinkInstance naturally honors hide/VG state,
+            // so only links actually visible in this view are swept.
+            foreach (var instance in new FilteredElementCollector(doc, view.Id)
+                         .OfClass(typeof(RevitLinkInstance))
+                         .Cast<RevitLinkInstance>())
+            {
+                var linkDoc = instance.GetLinkDocument();
+                if (linkDoc == null)
+                {
+                    continue;
+                }
+
+                var key = string.IsNullOrWhiteSpace(linkDoc.PathName) ? linkDoc.Title : linkDoc.PathName;
+                if (!visited.Add(key))
+                {
+                    continue;
+                }
+
+                var collector = new FilteredElementCollector(linkDoc).WhereElementIsNotElementType();
+                if (viewBox != null)
+                {
+                    var outline = TransformViewBoxToLinkOutline(viewBox, view.ViewType, instance);
+                    if (outline != null)
+                    {
+                        collector = collector.WherePasses(new BoundingBoxIntersectsFilter(outline));
+                    }
+                }
+
+                AppendElements(linkDoc, collector, linkDoc.Title, isLinked: true, sink, options,
+                    linkInstanceIdValue: instance.Id.Value);
+            }
+        }
+
+        /// <summary>The active view's spatial extents: 3D section box, else crop box, else null (uncropped).</summary>
+        private static BoundingBoxXYZ? GetViewExtentsBox(View view)
+        {
+            try
+            {
+                if (view is View3D { IsSectionBoxActive: true } view3D)
+                {
+                    return view3D.GetSectionBox();
+                }
+
+                if (view.CropBoxActive)
+                {
+                    return view.CropBox;
+                }
+            }
+            catch
+            {
+                // Some view kinds have no usable extents.
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Converts a view extents box into an axis-aligned outline in the link's coordinate
+        /// space (conservative: bounding box of the transformed corners). Plan-view crop boxes
+        /// carry unreliable Z, so plans keep X/Y and open up Z.
+        /// </summary>
+        private static Outline? TransformViewBoxToLinkOutline(
+            BoundingBoxXYZ box,
+            ViewType viewType,
+            RevitLinkInstance instance)
+        {
+            try
+            {
+                var toModel = box.Transform ?? Transform.Identity;
+                var toLink = instance.GetTotalTransform().Inverse;
+
+                XYZ? min = null, max = null;
+                foreach (var x in new[] { box.Min.X, box.Max.X })
+                foreach (var y in new[] { box.Min.Y, box.Max.Y })
+                foreach (var z in new[] { box.Min.Z, box.Max.Z })
+                {
+                    var point = toLink.OfPoint(toModel.OfPoint(new XYZ(x, y, z)));
+                    min = min == null
+                        ? point
+                        : new XYZ(Math.Min(min.X, point.X), Math.Min(min.Y, point.Y), Math.Min(min.Z, point.Z));
+                    max = max == null
+                        ? point
+                        : new XYZ(Math.Max(max.X, point.X), Math.Max(max.Y, point.Y), Math.Max(max.Z, point.Z));
+                }
+
+                if (min == null || max == null)
+                {
+                    return null;
+                }
+
+                if (viewType is ViewType.FloorPlan or ViewType.CeilingPlan
+                    or ViewType.EngineeringPlan or ViewType.AreaPlan)
+                {
+                    min = new XYZ(min.X, min.Y, -1e6);
+                    max = new XYZ(max.X, max.Y, 1e6);
+                }
+
+                return new Outline(min, max);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>Loaded vs unloaded link counts, so the UI can say why a link isn't indexable.</summary>

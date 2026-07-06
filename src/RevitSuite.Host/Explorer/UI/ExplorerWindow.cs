@@ -85,7 +85,11 @@ namespace RevitSuite.Host.Explorer.UI
                 // Selection args can be finicky mid-edit; a missed sync beats a crash.
             }
 
-            var hostIds = host.Distinct().ToList();
+            // A Tab-pick inside a link reports BOTH the linked reference and the link instance
+            // as a "selected element". The link instance is just the carrier — drop it so the
+            // reveal targets the actual linked element instead of the RVT Link row.
+            var carrierLinkInstanceIds = new HashSet<long>(linked.Select(t => t.LinkInstanceIdValue));
+            var hostIds = host.Distinct().Where(id => !carrierLinkInstanceIds.Contains(id)).ToList();
             var linkedTargets = linked.Distinct().ToList();
             if (hostIds.Count == 0 && linkedTargets.Count == 0)
             {

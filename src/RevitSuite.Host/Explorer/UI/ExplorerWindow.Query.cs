@@ -360,6 +360,10 @@ namespace RevitSuite.Host.Explorer.UI
 
                     FilterCategoryList();
                     UpdateCategoryCount();
+
+                    // Seed the parameter dropdown right away (model-wide sample); it re-discovers
+                    // with sharper results as soon as categories are checked.
+                    DiscoverParametersSilently();
                 });
             }, showBusy: false);
         }

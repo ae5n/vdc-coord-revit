@@ -122,8 +122,8 @@ namespace RevitSuite.Host.UI
         private static IconSet CreateModelExplorerIconSet()
         {
             return CreateIconSet(
-                Color.FromRgb(0x0F, 0x4C, 0x5C),
-                Color.FromRgb(0x2E, 0x9C, 0xB8),
+                Color.FromRgb(0x9A, 0x34, 0x12),
+                Color.FromRgb(0xF9, 0x73, 0x16),
                 DrawModelExplorerContent);
         }
 
