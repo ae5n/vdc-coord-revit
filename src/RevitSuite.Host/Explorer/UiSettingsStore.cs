@@ -7,6 +7,10 @@ namespace RevitSuite.Host.Explorer
     /// <summary>Remembers window placement and last-used Explore options between sessions.</summary>
     internal sealed class ExplorerUiSettings
     {
+        /// <summary>Bumped when a saved setting needs a one-time migration (see Load).</summary>
+        public const int CurrentVersion = 2;
+
+        public int SettingsVersion { get; set; }
         public double? WindowLeft { get; set; }
         public double? WindowTop { get; set; }
         public double? WindowWidth { get; set; }
@@ -26,8 +30,19 @@ namespace RevitSuite.Host.Explorer
             {
                 if (File.Exists(FilePath))
                 {
-                    return JsonConvert.DeserializeObject<ExplorerUiSettings>(File.ReadAllText(FilePath))
-                           ?? new ExplorerUiSettings();
+                    var settings = JsonConvert.DeserializeObject<ExplorerUiSettings>(File.ReadAllText(FilePath))
+                                   ?? new ExplorerUiSettings();
+
+                    // v1 files silently persisted "Include linked models" off, which read as a
+                    // broken feature. One-time migration turns it back on; from v2 onward an
+                    // explicit user choice sticks.
+                    if (settings.SettingsVersion < 2)
+                    {
+                        settings.IncludeLinks = true;
+                        settings.SettingsVersion = CurrentVersion;
+                    }
+
+                    return settings;
                 }
             }
             catch

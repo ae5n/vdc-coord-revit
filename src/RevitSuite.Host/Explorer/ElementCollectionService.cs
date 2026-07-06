@@ -117,6 +117,33 @@ namespace RevitSuite.Host.Explorer
             return result;
         }
 
+        /// <summary>Loaded vs unloaded link counts, so the UI can say why a link isn't indexable.</summary>
+        public static (int Loaded, int Unloaded) CountLinkStatus(Document doc)
+        {
+            var loaded = GetDistinctLinkDocuments(doc).Count;
+            var unloaded = 0;
+
+            foreach (var linkType in new FilteredElementCollector(doc)
+                         .OfClass(typeof(RevitLinkType))
+                         .Cast<RevitLinkType>())
+            {
+                try
+                {
+                    if (linkType.GetLinkedFileStatus() != LinkedFileStatus.Loaded)
+                    {
+                        unloaded++;
+                    }
+                }
+                catch
+                {
+                    // Treat unknown status as not indexable.
+                    unloaded++;
+                }
+            }
+
+            return (loaded, unloaded);
+        }
+
         private sealed record CollectOptions(bool IncludeUncategorized, Action<int>? Progress, Func<bool>? IsCancelled);
 
         private static void AppendFromDocument(

@@ -683,6 +683,16 @@ namespace RevitSuite.Host.Explorer.UI
         private GroupingMode CurrentGrouping =>
             (GroupingMode)Enum.Parse(typeof(GroupingMode), (string)_groupingCombo.SelectedItem);
 
+        /// <summary>Changing scope or the include toggles re-indexes immediately — no stale tree.</summary>
+        private void WireExploreAutoRefresh()
+        {
+            _scopeCombo.SelectionChanged += (_, _) => RefreshExplore();
+            _includeLinksCheck.Checked += (_, _) => RefreshExplore();
+            _includeLinksCheck.Unchecked += (_, _) => RefreshExplore();
+            _includeUncategorizedCheck.Checked += (_, _) => RefreshExplore();
+            _includeUncategorizedCheck.Unchecked += (_, _) => RefreshExplore();
+        }
+
         private void RefreshExplore()
         {
             var scope = CurrentScope;
@@ -696,6 +706,7 @@ namespace RevitSuite.Host.Explorer.UI
                     progress: count => ReportProgress($"Indexing model… {count:N0} elements"),
                     isCancelled: () => _cancelRequested);
                 var title = uidoc.Document.Title;
+                var (loadedLinks, unloadedLinks) = ElementCollectionService.CountLinkStatus(uidoc.Document);
 
                 OnUi(() =>
                 {
@@ -710,7 +721,19 @@ namespace RevitSuite.Host.Explorer.UI
                         .ThenByDescending(g => g.Count())
                         .Take(6)
                         .Select(g => $"{g.Key} {g.Count():N0}"));
-                    SetStatus($"Indexed {records.Count:N0} element(s) ({ScopeLabel(scope)}): {perModel}");
+                    var linkNotes = new List<string>();
+                    if (!includeLinks && loadedLinks > 0)
+                    {
+                        linkNotes.Add($"⚠ {loadedLinks} loaded link(s) NOT indexed — check 'Include linked models'");
+                    }
+
+                    if (unloadedLinks > 0)
+                    {
+                        linkNotes.Add($"⚠ {unloadedLinks} link(s) unloaded in Revit — reload via Manage Links to index them");
+                    }
+
+                    var linkHint = linkNotes.Count > 0 ? "  " + string.Join("  ", linkNotes) + "." : string.Empty;
+                    SetStatus($"Indexed {records.Count:N0} element(s) ({ScopeLabel(scope)}): {perModel}{linkHint}");
                 });
             });
         }

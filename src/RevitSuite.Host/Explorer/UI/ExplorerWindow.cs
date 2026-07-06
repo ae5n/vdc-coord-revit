@@ -186,6 +186,14 @@ namespace RevitSuite.Host.Explorer.UI
             var tabs = new TabControl { Margin = new Thickness(8) };
             tabs.Items.Add(new TabItem { Header = "Explore", Content = BuildExploreTab() });
             tabs.Items.Add(new TabItem { Header = "Query + Filters", Content = BuildQueryTab() });
+            tabs.SelectionChanged += (_, args) =>
+            {
+                if (ReferenceEquals(args.Source, tabs) &&
+                    tabs.SelectedItem is TabItem { Header: "Query + Filters" })
+                {
+                    EnsureQueryTabInitialized();
+                }
+            };
             tabs.Items.Add(new TabItem { Header = "Warnings", Content = BuildWarningsTab() });
             tabs.Items.Add(new TabItem { Header = "Audit", Content = BuildAuditTab() });
             tabs.Items.Add(new TabItem { Header = "Navigate", Content = BuildNavigateTab() });
@@ -241,6 +249,8 @@ namespace RevitSuite.Host.Explorer.UI
             Content = root;
 
             ApplyUiSettings();
+            // Wired AFTER ApplyUiSettings so restoring saved state doesn't trigger refreshes.
+            WireExploreAutoRefresh();
             Closing += (_, _) => SaveUiSettings();
 
             // Index the model as soon as the window opens — no empty first impression.
@@ -311,6 +321,7 @@ namespace RevitSuite.Host.Explorer.UI
         {
             new ExplorerUiSettings
             {
+                SettingsVersion = ExplorerUiSettings.CurrentVersion,
                 WindowLeft = Left,
                 WindowTop = Top,
                 WindowWidth = Width,
@@ -327,9 +338,13 @@ namespace RevitSuite.Host.Explorer.UI
         /// a live UIApplication and must marshal any UI updates back via <see cref="OnUi"/>.
         /// A null ActiveUIDocument is reported instead of crashing (document may have closed).
         /// </summary>
-        private void RunOnRevit(string busyMessage, Action<UIApplication, UIDocument> work)
+        private void RunOnRevit(string busyMessage, Action<UIApplication, UIDocument> work, bool showBusy = true)
         {
-            SetBusy(busyMessage);
+            if (showBusy)
+            {
+                SetBusy(busyMessage);
+            }
+
             RevitActionBridge.Instance.Post(app =>
             {
                 try
@@ -354,7 +369,10 @@ namespace RevitSuite.Host.Explorer.UI
                 }
                 finally
                 {
-                    OnUi(ClearBusy);
+                    if (showBusy)
+                    {
+                        OnUi(ClearBusy);
+                    }
                 }
             });
         }
