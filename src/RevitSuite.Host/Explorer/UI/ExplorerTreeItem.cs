@@ -71,6 +71,23 @@ namespace RevitSuite.Host.Explorer.UI
             set => SetChecked(value ?? false, updateChildren: true, updateParent: true);
         }
 
+        private bool _isSelected;
+
+        public bool IsSelected
+        {
+            get => _isSelected;
+            set
+            {
+                if (_isSelected == value)
+                {
+                    return;
+                }
+
+                _isSelected = value;
+                OnPropertyChanged(nameof(IsSelected));
+            }
+        }
+
         public bool IsExpanded
         {
             get => _isExpanded;

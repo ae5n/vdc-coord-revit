@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -25,6 +27,98 @@ namespace RevitSuite.Host.Explorer.UI
         /// <summary>Set by the busy-overlay Cancel button; polled by long-running bridge actions.</summary>
         private volatile bool _cancelRequested;
 
+        // --- Revit → Explorer selection sync ---
+        private static UIApplication? _subscribedApp;
+        private static EventHandler<Autodesk.Revit.UI.Events.SelectionChangedEventArgs>? _selectionHandler;
+
+        /// <summary>Read on the Revit event thread; toggled by the "Sync from Revit" checkbox.</summary>
+        private volatile bool _syncFromRevitEnabled = true;
+
+        /// <summary>Last time the Explorer itself pushed a selection, to suppress the echo.</summary>
+        private long _lastSelectionPushTicks;
+
+        private System.Windows.Threading.DispatcherTimer? _revealDebounce;
+        private (IReadOnlyList<long> Host, IReadOnlyList<RevitActions.LinkedTarget> Linked)? _pendingReveal;
+
+        /// <summary>Call before any action that changes the Revit selection.</summary>
+        private void MarkSelectionPush() =>
+            System.Threading.Interlocked.Exchange(ref _lastSelectionPushTicks, DateTime.UtcNow.Ticks);
+
+        /// <summary>Runs on Revit's event thread — extract plain data, then hop to the UI thread.</summary>
+        private void OnRevitSelectionChanged(object? sender, Autodesk.Revit.UI.Events.SelectionChangedEventArgs e)
+        {
+            if (!_syncFromRevitEnabled || !IsVisible)
+            {
+                return;
+            }
+
+            var sincePush = DateTime.UtcNow.Ticks - System.Threading.Interlocked.Read(ref _lastSelectionPushTicks);
+            if (sincePush < TimeSpan.FromMilliseconds(1500).Ticks)
+            {
+                return;
+            }
+
+            var host = new List<long>();
+            var linked = new List<RevitActions.LinkedTarget>();
+            try
+            {
+                foreach (var reference in e.GetReferences())
+                {
+                    if (reference.LinkedElementId != Autodesk.Revit.DB.ElementId.InvalidElementId)
+                    {
+                        linked.Add(new RevitActions.LinkedTarget(
+                            reference.ElementId.Value, reference.LinkedElementId.Value));
+                    }
+                    else if (reference.ElementId != Autodesk.Revit.DB.ElementId.InvalidElementId)
+                    {
+                        host.Add(reference.ElementId.Value);
+                    }
+                }
+
+                foreach (var id in e.GetSelectedElements())
+                {
+                    host.Add(id.Value);
+                }
+            }
+            catch
+            {
+                // Selection args can be finicky mid-edit; a missed sync beats a crash.
+            }
+
+            var hostIds = host.Distinct().ToList();
+            var linkedTargets = linked.Distinct().ToList();
+            if (hostIds.Count == 0 && linkedTargets.Count == 0)
+            {
+                return;
+            }
+
+            OnUi(() => QueueSelectionReveal(hostIds, linkedTargets));
+        }
+
+        /// <summary>UI thread. Debounces rapid selection events before revealing in the tree.</summary>
+        private void QueueSelectionReveal(IReadOnlyList<long> hostIds, IReadOnlyList<RevitActions.LinkedTarget> linked)
+        {
+            _pendingReveal = (hostIds, linked);
+            _revealDebounce ??= new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(250)
+            };
+            _revealDebounce.Stop();
+            _revealDebounce.Tick -= OnRevealDebounceTick;
+            _revealDebounce.Tick += OnRevealDebounceTick;
+            _revealDebounce.Start();
+        }
+
+        private void OnRevealDebounceTick(object? sender, EventArgs e)
+        {
+            _revealDebounce?.Stop();
+            if (_pendingReveal is { } pending)
+            {
+                _pendingReveal = null;
+                RevealRevitSelection(pending.Host, pending.Linked);
+            }
+        }
+
         /// <summary>Single-instance entry point. Must be called from a valid Revit API context.</summary>
         public static void ShowWindow(UIApplication app)
         {
@@ -43,7 +137,36 @@ namespace RevitSuite.Host.Explorer.UI
 
             _instance = new ExplorerWindow();
             new WindowInteropHelper(_instance) { Owner = app.MainWindowHandle };
-            _instance.Closed += (_, _) => _instance = null;
+
+            try
+            {
+                _selectionHandler = _instance.OnRevitSelectionChanged;
+                app.SelectionChanged += _selectionHandler;
+                _subscribedApp = app;
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Could not subscribe to Revit selection changes.", ex);
+            }
+
+            _instance.Closed += (_, _) =>
+            {
+                try
+                {
+                    if (_subscribedApp != null && _selectionHandler != null)
+                    {
+                        _subscribedApp.SelectionChanged -= _selectionHandler;
+                    }
+                }
+                catch
+                {
+                    // Best effort; Revit may be shutting down.
+                }
+
+                _subscribedApp = null;
+                _selectionHandler = null;
+                _instance = null;
+            };
             _instance.Show();
         }
 

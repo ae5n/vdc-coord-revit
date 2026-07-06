@@ -337,6 +337,7 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            MarkSelectionPush();
             RunOnRevit(selectOnly ? "Selecting elements…" : "Showing elements…", (_, uidoc) =>
             {
                 if (selectOnly)

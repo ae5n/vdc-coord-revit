@@ -358,6 +358,7 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            MarkSelectionPush();
             RunOnRevit("Showing warning elements…", (_, uidoc) =>
             {
                 var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
@@ -445,6 +446,7 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            MarkSelectionPush();
             RunOnRevit(selectOnly ? "Selecting warning elements…" : "Showing warning elements…", (_, uidoc) =>
             {
                 if (selectOnly)

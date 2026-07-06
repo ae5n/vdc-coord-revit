@@ -61,6 +61,39 @@ namespace RevitSuite.Host.Explorer
             };
         }
 
+        /// <summary>
+        /// The three group labels a record lands under for a grouping mode. Must stay in
+        /// sync with <see cref="Build"/> — used to locate a record's path in the tree.
+        /// </summary>
+        public static string[] GetGroupKeys(ElementRecord r, GroupingMode mode) => mode switch
+        {
+            GroupingMode.Category => new[]
+            {
+                r.Category ?? "(No Category)", r.Family ?? "(No Family)", r.TypeName ?? "(No Type)"
+            },
+            GroupingMode.Model => new[]
+            {
+                r.Origin, r.Category ?? "(No Category)", r.TypeName ?? "(No Type)"
+            },
+            GroupingMode.Level => new[]
+            {
+                r.LevelName ?? "(No Level)", r.Category ?? "(No Category)", r.TypeName ?? "(No Type)"
+            },
+            GroupingMode.Workset => new[]
+            {
+                r.WorksetName ?? "(No Workset)", r.Category ?? "(No Category)", r.TypeName ?? "(No Type)"
+            },
+            GroupingMode.OwnerView => new[]
+            {
+                r.OwnerViewName ?? "(Model / Not View-Specific)", r.Category ?? "(No Category)", r.TypeName ?? "(No Type)"
+            },
+            GroupingMode.DesignOption => new[]
+            {
+                r.DesignOptionName ?? "(Main Model)", r.Category ?? "(No Category)", r.TypeName ?? "(No Type)"
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
+        };
+
         public static IEnumerable<ElementRecord> Filter(IEnumerable<ElementRecord> records, string searchFilter)
         {
             var terms = searchFilter

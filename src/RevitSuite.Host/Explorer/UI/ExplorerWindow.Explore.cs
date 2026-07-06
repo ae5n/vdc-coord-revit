@@ -116,6 +116,18 @@ namespace RevitSuite.Host.Explorer.UI
             };
             toolbar.Children.Add(_includeUncategorizedCheck);
 
+            var syncCheck = new CheckBox
+            {
+                Content = "Sync from Revit",
+                IsChecked = true,
+                ToolTip = "When you select elements in Revit, find and highlight them here automatically.",
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0)
+            };
+            syncCheck.Checked += (_, _) => _syncFromRevitEnabled = true;
+            syncCheck.Unchecked += (_, _) => _syncFromRevitEnabled = false;
+            toolbar.Children.Add(syncCheck);
+
             toolbar.Children.Add(BuildModelsFilter());
 
             toolbar.Children.Add(MakeCaption("Search"));
@@ -314,6 +326,12 @@ namespace RevitSuite.Host.Explorer.UI
             var tree = new TreeView { ItemsSource = _exploreItems };
             tree.SetValue(VirtualizingStackPanel.IsVirtualizingProperty, true);
             tree.SetValue(VirtualizingStackPanel.VirtualizationModeProperty, VirtualizationMode.Recycling);
+
+            // Keep the selected row's background fully highlighted (blue) even while Revit has
+            // focus — otherwise sync-from-Revit selections render as barely-visible inactive
+            // gray. The text brush is NOT overridden here (Revit's theme applies it to all
+            // rows, blanking them); selected-row text color is handled by a style trigger below.
+            tree.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = SystemColors.HighlightBrush;
             tree.SelectedItemChanged += (_, args) => ShowDetails(args.NewValue as ExplorerTreeItem);
 
             var template = new HierarchicalDataTemplate(typeof(ExplorerTreeItem))
@@ -347,6 +365,23 @@ namespace RevitSuite.Host.Explorer.UI
             var itemStyle = new Style(typeof(TreeViewItem));
             itemStyle.Setters.Add(new Setter(TreeViewItem.IsExpandedProperty,
                 new Binding("IsExpanded") { Mode = BindingMode.TwoWay }));
+            itemStyle.Setters.Add(new Setter(TreeViewItem.IsSelectedProperty,
+                new Binding("IsSelected") { Mode = BindingMode.TwoWay }));
+            itemStyle.Setters.Add(new Setter(TreeViewItem.ForegroundProperty, SystemColors.ControlTextBrush));
+
+            // White text only on the selected row, so it reads on the blue highlight.
+            var selectedTrigger = new Trigger { Property = TreeViewItem.IsSelectedProperty, Value = true };
+            selectedTrigger.Setters.Add(new Setter(TreeViewItem.ForegroundProperty, SystemColors.HighlightTextBrush));
+            itemStyle.Triggers.Add(selectedTrigger);
+            itemStyle.Setters.Add(new EventSetter(TreeViewItem.SelectedEvent,
+                new RoutedEventHandler((s, args) =>
+                {
+                    // Only the item itself, not bubbled child selections.
+                    if (ReferenceEquals(s, args.OriginalSource))
+                    {
+                        ((TreeViewItem)s).BringIntoView();
+                    }
+                })));
             tree.ItemContainerStyle = itemStyle;
 
             // Double-click an instance row zooms straight to it — host or linked.
@@ -393,6 +428,7 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void ShowByIds(IReadOnlyList<long> ids)
         {
+            MarkSelectionPush();
             RunOnRevit("Showing element…", (_, uidoc) =>
             {
                 var (shown, error) = RevitActions.ShowElements(uidoc, ids);
@@ -402,6 +438,7 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void ShowMixedByRecords(IReadOnlyList<long> hostIds, IReadOnlyList<RevitActions.LinkedTarget> linked)
         {
+            MarkSelectionPush();
             RunOnRevit("Showing element…", (_, uidoc) =>
             {
                 var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
@@ -426,6 +463,173 @@ namespace RevitSuite.Host.Explorer.UI
                 OnUi(() => SetStatus(error ??
                     $"Temporarily isolated {isolated:N0} element(s) in the active view. Use Reset Isolate to restore."));
             });
+        }
+
+        /// <summary>
+        /// Reveals the Revit selection in the tree: matches records (host and linked),
+        /// expands the group path under the current grouping, highlights the first hit.
+        /// </summary>
+        private void RevealRevitSelection(IReadOnlyList<long> hostIds, IReadOnlyList<RevitActions.LinkedTarget> linked)
+        {
+            if (_exploreRecords.Count == 0)
+            {
+                return;
+            }
+
+            var hostSet = new HashSet<long>(hostIds);
+            var linkedSet = new HashSet<long>(linked.Select(t => t.ElementIdValue));
+
+            var matches = _exploreRecords
+                .Where(r => r.IsLinked ? linkedSet.Contains(r.IdValue) : hostSet.Contains(r.IdValue))
+                .ToList();
+
+            var totalSelected = hostIds.Count + linked.Count;
+            if (matches.Count == 0)
+            {
+                SetStatus($"Revit selection: {totalSelected} element(s) — none in the current index (try Refresh).");
+                return;
+            }
+
+            var first = matches[0];
+            var revealed = FindAndReveal(first);
+            var more = matches.Count > 1 ? $" (+{matches.Count - 1} more selected)" : string.Empty;
+            SetStatus(revealed
+                ? $"Revit selection: revealed {first.DisplayName}{(first.IsLinked ? $" from {first.Origin}" : string.Empty)}{more}."
+                : $"Revit selection: {first.DisplayName} is hidden by the current search/Models filter{more}.");
+        }
+
+        /// <summary>Expands the record's group path, selects its row, and scrolls to it. Returns false when filtered out.</summary>
+        private bool FindAndReveal(ElementRecord record)
+        {
+            var keys = TreeBuilder.GetGroupKeys(record, CurrentGrouping);
+            var chain = new List<ExplorerTreeItem>();
+
+            var current = _exploreItems.FirstOrDefault(i =>
+                string.Equals(i.Label, keys[0], StringComparison.OrdinalIgnoreCase));
+            if (current == null)
+            {
+                return false;
+            }
+
+            current.IsExpanded = true;
+            chain.Add(current);
+            foreach (var key in new[] { keys[1], keys[2] })
+            {
+                current = current.Children.FirstOrDefault(c =>
+                    string.Equals(c.Label, key, StringComparison.OrdinalIgnoreCase));
+                if (current == null)
+                {
+                    return false;
+                }
+
+                current.IsExpanded = true;
+                chain.Add(current);
+            }
+
+            var instance = current.Children.FirstOrDefault(c =>
+                c.Record != null &&
+                c.Record.IdValue == record.IdValue &&
+                c.Record.IsLinked == record.IsLinked &&
+                string.Equals(c.Record.Origin, record.Origin, StringComparison.OrdinalIgnoreCase));
+            if (instance == null)
+            {
+                return false;
+            }
+
+            instance.IsSelected = true;
+
+            // The tree is virtualized, so the row's container may not exist yet. After the
+            // expansion layout pass, walk the container chain, forcing each level to realize,
+            // then physically scroll the instance row into view.
+            Dispatcher.BeginInvoke(
+                new Action(() => ScrollPathIntoView(chain, instance)),
+                DispatcherPriority.Background);
+            return true;
+        }
+
+        private void ScrollPathIntoView(IReadOnlyList<ExplorerTreeItem> chain, ExplorerTreeItem instance)
+        {
+            try
+            {
+                ItemsControl parent = _exploreTree;
+                foreach (var item in chain)
+                {
+                    var container = RealizeContainer(parent, item);
+                    if (container == null)
+                    {
+                        return;
+                    }
+
+                    parent = container;
+                }
+
+                RealizeContainer(parent, instance)?.BringIntoView();
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Scroll-to-selection failed.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Forces the virtualized container for an item to be generated (via
+        /// VirtualizingStackPanel.BringIndexIntoViewPublic) and returns it.
+        /// </summary>
+        private static TreeViewItem? RealizeContainer(ItemsControl parent, ExplorerTreeItem item)
+        {
+            parent.ApplyTemplate();
+            parent.UpdateLayout();
+
+            var index = parent.Items.IndexOf(item);
+            if (index < 0)
+            {
+                return null;
+            }
+
+            if (FindItemsHostPanel(parent) is VirtualizingStackPanel panel)
+            {
+                panel.BringIndexIntoViewPublic(index);
+                parent.UpdateLayout();
+            }
+
+            return parent.ItemContainerGenerator.ContainerFromIndex(index) as TreeViewItem;
+        }
+
+        private static Panel? FindItemsHostPanel(ItemsControl control)
+        {
+            var presenter = FindVisualChild<ItemsPresenter>(control);
+            if (presenter == null)
+            {
+                control.UpdateLayout();
+                presenter = FindVisualChild<ItemsPresenter>(control);
+            }
+
+            if (presenter == null || System.Windows.Media.VisualTreeHelper.GetChildrenCount(presenter) == 0)
+            {
+                return null;
+            }
+
+            return System.Windows.Media.VisualTreeHelper.GetChild(presenter, 0) as Panel;
+        }
+
+        private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+                if (child is T typed)
+                {
+                    return typed;
+                }
+
+                var descendant = FindVisualChild<T>(child);
+                if (descendant != null)
+                {
+                    return descendant;
+                }
+            }
+
+            return null;
         }
 
         private void CopyElementIds()
@@ -616,6 +820,7 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            MarkSelectionPush();
             RunOnRevit("Selecting elements…", (_, uidoc) =>
             {
                 var (selected, failed, error) = RevitActions.SelectMixed(uidoc, hostIds, linked);
@@ -633,6 +838,7 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            MarkSelectionPush();
             RunOnRevit("Showing elements…", (_, uidoc) =>
             {
                 var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
