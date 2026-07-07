@@ -100,7 +100,17 @@ namespace RevitSuite.Host.Explorer
                 .ToLowerInvariant()
                 .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
-            return records.Where(r => terms.All(term => r.SearchText.Contains(term)));
+            if (terms.Length == 0)
+            {
+                return records;
+            }
+
+            // Pure in-memory scan over pre-normalized search strings — no Revit access.
+            // Parallel keeps half-million-record federations inside the search debounce.
+            return records
+                .AsParallel()
+                .AsOrdered()
+                .Where(r => terms.All(term => r.SearchText.Contains(term)));
         }
 
         private static IReadOnlyList<ExplorerTreeNode> Group(

@@ -176,14 +176,47 @@ namespace RevitSuite.Host.Explorer.UI
             Grid.SetRow(body, 1);
             layout.Children.Add(body);
 
-            // --- Actions ---
+            // --- Actions, grouped by what they act on so the grammar is visible ---
             var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-            actions.Children.Add(MakeButton("Select in Revit", (_, _) => SelectChecked()));
-            actions.Children.Add(MakeButton("Show / Zoom", (_, _) => ShowChecked()));
-            actions.Children.Add(MakeButton("Isolate", (_, _) => IsolateChecked()));
-            actions.Children.Add(MakeButton("Reset Isolate", (_, _) => ResetIsolate()));
-            actions.Children.Add(MakeButton("Export CSV", (_, _) => ExportExploreCsv()));
-            actions.Children.Add(MakeButton("Safe Delete…", (_, _) => SafeDeleteChecked(), destructive: true));
+
+            UIElement MakeGroup(string caption, params Button[] buttons)
+            {
+                var group = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Margin = new Thickness(0, 0, 18, 4)
+                };
+                group.Children.Add(new TextBlock
+                {
+                    Text = caption,
+                    Foreground = SystemColors.GrayTextBrush,
+                    FontWeight = FontWeights.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 8, 0)
+                });
+                foreach (var button in buttons)
+                {
+                    group.Children.Add(button);
+                }
+
+                return group;
+            }
+
+            actions.Children.Add(MakeGroup("Act on checked ☑:",
+                MakeButton("Select in Revit", (_, _) => SelectChecked()),
+                MakeButton("Show / Zoom", (_, _) => ShowChecked()),
+                MakeButton("Focus 3D", (_, _) => FocusChecked()),
+                MakeButton("Isolate", (_, _) => IsolateChecked()),
+                MakeButton("Hide", (_, _) => HideChecked()),
+                MakeButton("Unhide", (_, _) => UnhideChecked()),
+                MakeButton("Export CSV", (_, _) => ExportExploreCsv()),
+                MakeButton("Safe Delete…", (_, _) => SafeDeleteChecked(), destructive: true)));
+
+            actions.Children.Add(MakeGroup("Restore view:",
+                MakeButton("Reset Focus", (_, _) => ResetFocus()),
+                MakeButton("Unhide All", (_, _) => UnhideAll()),
+                MakeButton("Reset Isolate", (_, _) => ResetIsolate())));
+
             Grid.SetRow(actions, 2);
             layout.Children.Add(actions);
 
@@ -219,6 +252,12 @@ namespace RevitSuite.Host.Explorer.UI
             list.ItemTemplate = itemTemplate;
 
             var panel = new StackPanel { Margin = new Thickness(10) };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Tree filter (what the Explorer shows):",
+                Foreground = SystemColors.GrayTextBrush,
+                Margin = new Thickness(0, 0, 0, 2)
+            });
             panel.Children.Add(presets);
             panel.Children.Add(new ScrollViewer
             {
@@ -226,6 +265,18 @@ namespace RevitSuite.Host.Explorer.UI
                 MaxHeight = 320,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto
             });
+
+            panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 4) });
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Active view visibility (what Revit shows):",
+                Foreground = SystemColors.GrayTextBrush,
+                Margin = new Thickness(0, 0, 0, 2)
+            });
+            var viewButtons = new StackPanel { Orientation = Orientation.Horizontal };
+            viewButtons.Children.Add(MakeButton("Hide unchecked links", (_, _) => HideUncheckedLinksInView()));
+            viewButtons.Children.Add(MakeButton("Show all links", (_, _) => ShowAllLinksInView()));
+            panel.Children.Add(viewButtons);
 
             var popup = new System.Windows.Controls.Primitives.Popup
             {
@@ -281,6 +332,52 @@ namespace RevitSuite.Host.Explorer.UI
                 : selected == 1
                     ? $"Models: {_originOptions.First(o => o.IsChecked).Name}"
                     : $"Models: {selected}/{total}";
+        }
+
+        /// <summary>First link-instance id per linked origin, from the current index.</summary>
+        private Dictionary<string, long> OriginLinkInstanceIds() =>
+            _exploreRecords
+                .Where(r => r.LinkInstanceIdValue.HasValue)
+                .GroupBy(r => r.Origin, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().LinkInstanceIdValue!.Value, StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Hides (in the active Revit view) every link whose checkbox is off in the Models filter.</summary>
+        private void HideUncheckedLinksInView()
+        {
+            var linkIdsByOrigin = OriginLinkInstanceIds();
+            var uncheckedLinkIds = _originOptions
+                .Where(o => !o.IsChecked && linkIdsByOrigin.ContainsKey(o.Name))
+                .Select(o => linkIdsByOrigin[o.Name])
+                .ToList();
+
+            if (uncheckedLinkIds.Count == 0)
+            {
+                SetStatus("No unchecked links to hide — uncheck link model(s) in the list above first.");
+                return;
+            }
+
+            RunOnRevit("Hiding links…", (_, uidoc) =>
+            {
+                var (changed, error) = RevitActions.SetLinkVisibility(uidoc, uncheckedLinkIds, hide: true);
+                OnUi(() => SetStatus(error ??
+                    $"Hid {changed} link placement(s) in the active view. 'Show all links' restores them."));
+            });
+        }
+
+        private void ShowAllLinksInView()
+        {
+            var allLinkIds = OriginLinkInstanceIds().Values.ToList();
+            if (allLinkIds.Count == 0)
+            {
+                SetStatus("No linked models in the current index.");
+                return;
+            }
+
+            RunOnRevit("Showing links…", (_, uidoc) =>
+            {
+                var (changed, error) = RevitActions.SetLinkVisibility(uidoc, allLinkIds, hide: false);
+                OnUi(() => SetStatus(error ?? $"Restored {changed} link placement(s) in the active view."));
+            });
         }
 
         private void RebuildOriginOptions()
@@ -412,9 +509,10 @@ namespace RevitSuite.Host.Explorer.UI
                 menu.Items.Add(item);
             }
 
-            AddMenuItem("Select in Revit", SelectChecked);
-            AddMenuItem("Show / zoom", ShowChecked);
-            AddMenuItem("Isolate in active view", IsolateChecked);
+            AddMenuItem("Select checked in Revit", SelectChecked);
+            AddMenuItem("Show / zoom checked", ShowChecked);
+            AddMenuItem("Focus 3D on checked", FocusChecked);
+            AddMenuItem("Isolate checked in active view", IsolateChecked);
             AddMenuItem("Reset isolate", ResetIsolate);
             menu.Items.Add(new Separator());
             AddMenuItem("Copy Element Id(s)", CopyElementIds);
@@ -453,7 +551,7 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 SetStatus(linked.Count > 0
                     ? "Only linked elements are checked — Revit can only isolate host elements (hide/show the whole link instead)."
-                    : "Nothing is checked.");
+                    : "Nothing is checked — tick checkbox(es) in the tree first.");
                 return;
             }
 
@@ -666,6 +764,270 @@ namespace RevitSuite.Host.Explorer.UI
             SetStatus($"Copied UniqueId of element {record.IdValue}.");
         }
 
+        /// <summary>
+        /// Forma-style focus: section-box the active 3D view to the checked/highlighted
+        /// elements (host and linked) and hide links that aren't involved.
+        /// </summary>
+        private void FocusChecked()
+        {
+            var (hostIds, linked) = PartitionChecked();
+            if (hostIds.Count == 0 && linked.Count == 0)
+            {
+                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                return;
+            }
+
+            MarkSelectionPush();
+            RunOnRevit("Focusing view…", (_, uidoc) =>
+            {
+                var error = RevitActions.FocusOnSelection(uidoc, hostIds, linked);
+                if (error == null)
+                {
+                    // Also select, so the focused elements are highlighted inside the box.
+                    RevitActions.SelectMixed(uidoc, hostIds, linked);
+                }
+
+                OnUi(() => SetStatus(error ??
+                    $"Focused the 3D view on {hostIds.Count + linked.Count:N0} element(s)" +
+                    (linked.Count > 0 ? " (other links hidden)" : string.Empty) +
+                    ". Reset Focus restores the view."));
+            });
+        }
+
+        private void ResetFocus()
+        {
+            RunOnRevit("Restoring view…", (_, uidoc) =>
+            {
+                var error = RevitActions.ResetFocus(uidoc);
+                OnUi(() => SetStatus(error ?? "View restored (section box and link visibility)."));
+            });
+        }
+
+        /// <summary>
+        /// Hides checked elements, as surgically as Revit allows: host elements hide
+        /// individually; checked LINKED elements of exactly one category hide that category
+        /// view-wide (Revit cannot scope categories per link — stated honestly); only
+        /// multi-category linked selections (whole models) hide the entire link.
+        /// </summary>
+        private void HideChecked()
+        {
+            var records = GetCheckedRecords();
+            if (records.Count == 0)
+            {
+                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                return;
+            }
+
+            var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
+            var linkedRecords = records.Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue).ToList();
+            var linkIds = linkedRecords.Select(r => r.LinkInstanceIdValue!.Value).Distinct().ToList();
+            var linkedCategories = linkedRecords
+                .Select(r => r.Category)
+                .Where(c => c != null)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Cast<string>()
+                .ToList();
+            var singleLinkedCategory = linkedCategories.Count == 1 &&
+                linkedRecords.All(r => r.Category != null);
+
+            RunOnRevit("Hiding elements…", (_, uidoc) =>
+            {
+                var messages = new List<string>();
+
+                if (hostIds.Count > 0)
+                {
+                    var (hidden, skipped, error) = RevitActions.HideInView(uidoc, hostIds);
+                    messages.Add(error ?? $"Hid {hidden:N0} host element(s)" +
+                        (skipped > 0 ? $" ({skipped} cannot be hidden in this view)" : string.Empty));
+                }
+
+                if (linkIds.Count > 0)
+                {
+                    if (singleLinkedCategory)
+                    {
+                        var (_, error) = RevitActions.SetCategoriesHidden(
+                            uidoc, new[] { linkedCategories[0] }, hide: true);
+                        messages.Add(error ?? $"hid category '{linkedCategories[0]}' view-wide " +
+                            "(host + all links — Revit cannot hide a category inside just one link)");
+                    }
+                    else
+                    {
+                        var (changed, error) = RevitActions.SetLinkVisibility(uidoc, linkIds, hide: true);
+                        messages.Add(error ?? $"hid {changed} whole link placement(s) — Revit cannot hide single linked elements");
+                    }
+                }
+
+                OnUi(() => SetStatus(string.Join("; ", messages) + ". Unhide restores them."));
+            });
+        }
+
+        /// <summary>
+        /// Shows the checked rows' elements, punching through every blocker above them:
+        /// hidden link instances, hidden categories, element hides. Showing one category of
+        /// a HIDDEN link compensates — the link is revealed and its other categories hide
+        /// view-wide — so the net visible result is just the requested category.
+        /// </summary>
+        private void UnhideChecked()
+        {
+            var records = GetCheckedRecords();
+            if (records.Count == 0)
+            {
+                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                return;
+            }
+
+            var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
+            var linkedRecords = records.Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue).ToList();
+            var linkIds = linkedRecords.Select(r => r.LinkInstanceIdValue!.Value).Distinct().ToList();
+            var categories = records
+                .Select(r => r.Category)
+                .Where(c => c != null)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Cast<string>()
+                .ToList();
+            var singleCategory = categories.Count == 1 && records.All(r => r.Category != null);
+
+            // Compensation data: which OTHER categories each involved link contains,
+            // computed from the index so a hidden link revealed for one category can keep
+            // the rest hidden view-wide.
+            Dictionary<long, List<string>>? otherCategoriesByLink = null;
+            if (linkIds.Count > 0 && singleCategory)
+            {
+                var wanted = new HashSet<string>(categories, StringComparer.OrdinalIgnoreCase);
+                otherCategoriesByLink = linkIds.ToDictionary(
+                    id => id,
+                    id => _exploreRecords
+                        .Where(r => r.LinkInstanceIdValue == id &&
+                                    r.Category != null &&
+                                    !wanted.Contains(r.Category!))
+                        .Select(r => r.Category!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList());
+            }
+
+            RunOnRevit("Unhiding selection…", (_, uidoc) =>
+            {
+                var messages = new List<string>();
+
+                if (linkIds.Count > 0)
+                {
+                    // Compensation applies only to links that were hidden BEFORE this click.
+                    var hiddenBefore = RevitActions.GetHiddenLinkIds(uidoc, linkIds);
+
+                    var (count, error) = RevitActions.SetLinkVisibility(uidoc, linkIds, hide: false);
+                    if (error == null && count > 0)
+                    {
+                        messages.Add($"showed {count} link placement(s)");
+                    }
+
+                    if (otherCategoriesByLink != null && hiddenBefore.Count > 0)
+                    {
+                        var toHide = hiddenBefore
+                            .SelectMany(id => otherCategoriesByLink.TryGetValue(id, out var list)
+                                ? list
+                                : new List<string>())
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        if (toHide.Count > 0)
+                        {
+                            var (hiddenCats, _) = RevitActions.SetCategoriesHidden(uidoc, toHide, hide: true);
+                            if (hiddenCats > 0)
+                            {
+                                messages.Add($"kept hidden view-wide: {string.Join(", ", toHide)} " +
+                                    "(affects host too — Revit cannot scope categories per link)");
+                            }
+                        }
+                    }
+                }
+
+                if (categories.Count > 0)
+                {
+                    // Explicit single-category unhide lifts even manual VG hides; broad
+                    // selections restore only Explorer-tracked ones (protects user VG setup).
+                    var (count, _) = RevitActions.SetCategoriesHidden(
+                        uidoc, categories, hide: false, trackedOnly: !singleCategory);
+                    if (count > 0)
+                    {
+                        messages.Add($"restored {count} categor{(count == 1 ? "y" : "ies")}");
+                    }
+                }
+
+                if (hostIds.Count > 0)
+                {
+                    var (shown, error) = RevitActions.UnhideInView(uidoc, hostIds);
+                    if (error == null && shown > 0)
+                    {
+                        messages.Add($"showed {shown:N0} element(s)");
+                    }
+                }
+
+                OnUi(() => SetStatus(messages.Count == 0
+                    ? "The checked elements are not hidden in this view."
+                    : $"Unhide: {string.Join("; ", messages)}."));
+            });
+        }
+
+        /// <summary>
+        /// Truth-based full restore: hides are saved with the model, so in-memory trackers
+        /// can never be the source of record. Sweeps what is ACTUALLY hidden — links,
+        /// categories the model uses, elements — and restores it.
+        /// </summary>
+        private void UnhideAll()
+        {
+            var records = _exploreRecords;
+
+            RunOnRevit("Unhiding everything…", (_, uidoc) =>
+            {
+                var snapshot = ViewStateService.Capture(uidoc, records);
+                var messages = new List<string>();
+
+                if (snapshot.HiddenLinkInstanceIds.Count > 0)
+                {
+                    var (count, error) = RevitActions.SetLinkVisibility(
+                        uidoc, snapshot.HiddenLinkInstanceIds.ToList(), hide: false);
+                    if (error == null && count > 0)
+                    {
+                        messages.Add($"{count} link placement(s)");
+                    }
+                }
+
+                var indexedCategories = new HashSet<string>(
+                    records.Select(r => r.Category).Where(c => c != null)!,
+                    StringComparer.OrdinalIgnoreCase);
+                var hiddenCategories = snapshot.HiddenCategoryNames
+                    .Where(indexedCategories.Contains)
+                    .ToList();
+                if (hiddenCategories.Count > 0)
+                {
+                    var (count, _) = RevitActions.SetCategoriesHidden(
+                        uidoc, hiddenCategories, hide: false, trackedOnly: false);
+                    if (count > 0)
+                    {
+                        messages.Add($"{count} categor{(count == 1 ? "y" : "ies")}");
+                    }
+                }
+
+                if (snapshot.HiddenHostIds.Count > 0)
+                {
+                    var (shown, error) = RevitActions.UnhideInView(uidoc, snapshot.HiddenHostIds.ToList());
+                    if (error == null && shown > 0)
+                    {
+                        messages.Add($"{shown:N0} element(s)");
+                    }
+                }
+
+                RevitActions.ClearVisibilityTracking(uidoc);
+
+                var isolateHint = snapshot.TemporaryIsolateActive
+                    ? "  ⚠ Temporary isolate is still active — use Reset Isolate."
+                    : string.Empty;
+                OnUi(() => SetStatus((messages.Count == 0
+                    ? "Nothing permanently hidden in this view."
+                    : $"Unhid {string.Join(", ", messages)}.") + isolateHint));
+            });
+        }
+
         private void ResetIsolate()
         {
             RunOnRevit("Resetting isolate…", (_, uidoc) =>
@@ -695,18 +1057,34 @@ namespace RevitSuite.Host.Explorer.UI
             _includeUncategorizedCheck.Unchecked += (_, _) => RefreshExplore();
         }
 
+        private string? _lastIndexDocKey;
+        private bool _lastIndexUncategorized;
+
         private void RefreshExplore()
         {
             var scope = CurrentScope;
             var includeLinks = _includeLinksCheck.IsChecked == true;
             var includeUncategorized = _includeUncategorizedCheck.IsChecked == true;
 
+            // Previous records enable warm refresh (host delta patch + link cache), valid
+            // only for the same document with the same uncategorized option.
+            var previous = includeUncategorized == _lastIndexUncategorized ? _exploreRecords : null;
+            var lastDocKey = _lastIndexDocKey;
+
             RunOnRevit("Indexing model…", (_, uidoc) =>
             {
-                var records = ElementCollectionService.Collect(
+                var docKey = string.IsNullOrWhiteSpace(uidoc.Document.PathName)
+                    ? uidoc.Document.Title
+                    : uidoc.Document.PathName;
+
+                var warm = ElementCollectionService.CollectWarm(
                     uidoc, scope, includeLinks, includeUncategorized,
+                    previousRecords: string.Equals(docKey, lastDocKey, StringComparison.OrdinalIgnoreCase)
+                        ? previous
+                        : null,
                     progress: count => ReportProgress($"Indexing model… {count:N0} elements"),
                     isCancelled: () => _cancelRequested);
+                var records = warm.Records;
                 var title = uidoc.Document.Title;
                 var (loadedLinks, unloadedLinks) = ElementCollectionService.CountLinkStatus(uidoc.Document);
 
@@ -714,6 +1092,8 @@ namespace RevitSuite.Host.Explorer.UI
                 {
                     _exploreRecords = records;
                     _exploreModelTitle = title;
+                    _lastIndexDocKey = docKey;
+                    _lastIndexUncategorized = includeUncategorized;
                     RebuildOriginOptions();
                     RebuildExploreTree();
 
@@ -735,7 +1115,7 @@ namespace RevitSuite.Host.Explorer.UI
                     }
 
                     var linkHint = linkNotes.Count > 0 ? "  " + string.Join("  ", linkNotes) + "." : string.Empty;
-                    SetStatus($"Indexed {records.Count:N0} element(s) ({ScopeLabel(scope)}): {perModel}{linkHint}");
+                    SetStatus($"Indexed {records.Count:N0} element(s) ({ScopeLabel(scope)}): {perModel} [{warm.Note}]{linkHint}");
                 });
             });
         }
@@ -813,20 +1193,14 @@ namespace RevitSuite.Host.Explorer.UI
         }
 
         /// <summary>
-        /// Splits checked records into host ids and linked targets. When nothing is checked,
-        /// falls back to the highlighted tree item so right-click and toolbar actions work
-        /// on the row under the cursor.
+        /// Splits checked records into host ids and linked targets. Checked rows ONLY —
+        /// no silent fallback to the highlighted row: that guessed behind the user's back
+        /// (e.g. "selected Levels while it was unchecked" because a Level happened to be
+        /// the highlighted row).
         /// </summary>
         private (List<long> HostIds, List<RevitActions.LinkedTarget> Linked) PartitionChecked()
         {
             var checkedRecords = GetCheckedRecords();
-            if (checkedRecords.Count == 0 && _exploreTree.SelectedItem is ExplorerTreeItem highlighted)
-            {
-                var fallback = new List<ElementRecord>();
-                highlighted.CollectAllRecords(fallback);
-                checkedRecords = fallback;
-            }
-
             var hostIds = checkedRecords.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
             var linked = checkedRecords
                 .Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue)
@@ -841,7 +1215,7 @@ namespace RevitSuite.Host.Explorer.UI
             var (hostIds, linked) = PartitionChecked();
             if (hostIds.Count == 0 && linked.Count == 0)
             {
-                SetStatus("Nothing is checked or highlighted.");
+                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
                 return;
             }
 
@@ -859,7 +1233,7 @@ namespace RevitSuite.Host.Explorer.UI
             var (hostIds, linked) = PartitionChecked();
             if (hostIds.Count == 0 && linked.Count == 0)
             {
-                SetStatus("Nothing is checked or highlighted.");
+                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
                 return;
             }
 
@@ -921,7 +1295,7 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 SetStatus(linked.Count > 0
                     ? "Only linked elements are checked — elements inside links can only be deleted in the link's own file."
-                    : "Nothing is checked.");
+                    : "Nothing is checked — tick checkbox(es) in the tree first.");
                 return;
             }
 

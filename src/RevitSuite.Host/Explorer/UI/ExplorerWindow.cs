@@ -127,6 +127,7 @@ namespace RevitSuite.Host.Explorer.UI
         public static void ShowWindow(UIApplication app)
         {
             RevitActionBridge.Instance.EnsureEventCreated();
+            DocumentChangeTracker.EnsureSubscribed(app);
 
             if (_instance != null)
             {

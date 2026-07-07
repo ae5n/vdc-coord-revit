@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -98,6 +98,118 @@ namespace RevitSuite.Host.Explorer
             }
 
             return records;
+        }
+
+        public sealed record WarmResult(IReadOnlyList<ElementRecord> Records, string Note);
+
+        /// <summary>
+        /// Forma-style warm indexing for EntireProject scope: linked models come from the
+        /// session cache (they cannot change while loaded), and the host is patched from
+        /// DocumentChanged deltas instead of re-swept when possible. Falls back to a full
+        /// sweep on the first run, heavy churn, or option changes. Other scopes delegate
+        /// to the plain <see cref="Collect"/>.
+        /// </summary>
+        public static WarmResult CollectWarm(
+            UIDocument uidoc,
+            ExplorerScope scope,
+            bool includeLinkedModels,
+            bool includeUncategorized,
+            IReadOnlyList<ElementRecord>? previousRecords,
+            Action<int>? progress = null,
+            Func<bool>? isCancelled = null)
+        {
+            if (scope != ExplorerScope.EntireProject)
+            {
+                return new WarmResult(
+                    Collect(uidoc, scope, includeLinkedModels, includeUncategorized, progress, isCancelled),
+                    "full index (view/selection scope)");
+            }
+
+            var doc = uidoc.Document;
+            var options = new CollectOptions(includeUncategorized, progress, isCancelled);
+            var records = new List<ElementRecord>();
+            var notes = new List<string>();
+
+            // ---- Host: delta patch when a previous baseline exists ----
+            var previousHost = previousRecords?.Where(r => !r.IsLinked).ToList();
+            var (upserts, deletes, overflow) = DocumentChangeTracker.TakeChanges(doc);
+            var patched = false;
+
+            if (previousHost is { Count: > 0 } && !overflow)
+            {
+                try
+                {
+                    var stale = new HashSet<long>(deletes);
+                    stale.UnionWith(upserts);
+                    var kept = previousHost.Where(r => !stale.Contains(r.IdValue)).ToList();
+
+                    var context = new RecordContext(doc, "Host", isLinked: false);
+                    var reindexed = 0;
+                    foreach (var idValue in upserts)
+                    {
+                        var element = doc.GetElement(new ElementId(idValue));
+                        if (element == null || element is ElementType)
+                        {
+                            continue;
+                        }
+
+                        if (element.Category == null && !includeUncategorized)
+                        {
+                            continue;
+                        }
+
+                        kept.Add(CreateRecord(element, context));
+                        reindexed++;
+                    }
+
+                    records.AddRange(kept);
+                    notes.Add(upserts.Count == 0 && deletes.Count == 0
+                        ? "host unchanged"
+                        : $"host patched ({reindexed} changed, {deletes.Count} deleted)");
+                    patched = true;
+                }
+                catch
+                {
+                    records.Clear();
+                }
+            }
+
+            if (!patched)
+            {
+                AppendFromDocument(doc, "Host", isLinked: false, records, options);
+                DocumentChangeTracker.MarkClean(doc);
+                notes.Add(overflow ? "host re-indexed (heavy churn)" : "host indexed");
+            }
+
+            // ---- Links: version-stamped session cache ----
+            if (includeLinkedModels)
+            {
+                int cachedCount = 0, sweptCount = 0;
+                foreach (var (instance, linkDoc) in GetDistinctLinkDocuments(doc))
+                {
+                    var cached = LinkIndexCache.TryGet(linkDoc, instance.Id.Value, includeUncategorized);
+                    if (cached != null)
+                    {
+                        records.AddRange(cached);
+                        cachedCount++;
+                        continue;
+                    }
+
+                    var linkRecords = new List<ElementRecord>();
+                    AppendFromDocument(linkDoc, linkDoc.Title, isLinked: true, linkRecords, options,
+                        linkInstanceIdValue: instance.Id.Value);
+                    LinkIndexCache.Store(linkDoc, instance.Id.Value, includeUncategorized, linkRecords);
+                    records.AddRange(linkRecords);
+                    sweptCount++;
+                }
+
+                if (cachedCount + sweptCount > 0)
+                {
+                    notes.Add($"links: {cachedCount} from cache, {sweptCount} indexed");
+                }
+            }
+
+            return new WarmResult(records, string.Join("; ", notes));
         }
 
         /// <summary>Loaded link documents, one entry per distinct linked file (first placement wins).</summary>

@@ -37,7 +37,7 @@ Screenshot *.png
 .codex_spreadsheet_work/
 mcp-servers-for-revit_clone/
 
-# Planning docs
+# Planning docs (scratch research stays local)
 docs/planning/
 docs/*.planning.md
 
