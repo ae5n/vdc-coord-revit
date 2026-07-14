@@ -234,12 +234,27 @@ namespace RevitSuite.Host.Explorer
 
             var trimmed = text!.Trim().ToLowerInvariant();
 
+            // Revit's native imperial format: feet-and-inches, e.g. 3'-6", 3' 6", 3'6 1/2".
+            var apostrophe = trimmed.IndexOf('\'');
+            if (apostrophe > 0 && apostrophe < trimmed.Length - 1)
+            {
+                var feetPart = trimmed.Substring(0, apostrophe).Trim();
+                var inchPart = trimmed.Substring(apostrophe + 1).Trim().TrimStart('-').TrimEnd('"').Trim();
+                if (inchPart.Length > 0 &&
+                    TryParseNumber(feetPart, out var feet) &&
+                    TryParseNumber(inchPart, out var inches))
+                {
+                    value = feet + inches / 12.0;
+                    return true;
+                }
+            }
+
             foreach (var (suffix, toFeet) in Suffixes)
             {
                 if (trimmed.EndsWith(suffix, StringComparison.Ordinal))
                 {
                     var numberPart = trimmed.Substring(0, trimmed.Length - suffix.Length).Trim();
-                    if (double.TryParse(numberPart, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+                    if (TryParseNumber(numberPart, out var number))
                     {
                         value = number * toFeet;
                         return true;
@@ -249,7 +264,7 @@ namespace RevitSuite.Host.Explorer
                 }
             }
 
-            if (!double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out var bare))
+            if (!TryParseNumber(trimmed, out var bare))
             {
                 return false;
             }
@@ -273,6 +288,50 @@ namespace RevitSuite.Host.Explorer
 
             value = bare;
             return true;
+        }
+
+        /// <summary>Parses "36", "36.5", "1/2", and "6 1/2" (whole plus fraction).</summary>
+        private static bool TryParseNumber(string text, out double value)
+        {
+            value = 0;
+            text = text.Trim();
+            if (text.Length == 0)
+            {
+                return false;
+            }
+
+            var slash = text.IndexOf('/');
+            if (slash > 0)
+            {
+                // Optional whole part before the fraction: "6 1/2".
+                var whole = 0.0;
+                var fractionPart = text;
+                var space = text.LastIndexOf(' ', slash);
+                if (space > 0)
+                {
+                    if (!double.TryParse(text.Substring(0, space).Trim(), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out whole))
+                    {
+                        return false;
+                    }
+
+                    fractionPart = text.Substring(space + 1).Trim();
+                }
+
+                var parts = fractionPart.Split('/');
+                if (parts.Length == 2 &&
+                    double.TryParse(parts[0].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var numerator) &&
+                    double.TryParse(parts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var denominator) &&
+                    denominator != 0)
+                {
+                    value = whole + numerator / denominator;
+                    return true;
+                }
+
+                return false;
+            }
+
+            return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
 
         private static readonly (string Suffix, double ToFeet)[] Suffixes =
@@ -415,10 +474,23 @@ namespace RevitSuite.Host.Explorer
         }
     }
 
+    /// <summary>A query hit: the element plus the evaluated condition-parameter display values.</summary>
+    public sealed record QueryMatch(ElementRecord Record, IReadOnlyDictionary<string, string> ConditionValues);
+
     /// <summary>Runs a QueryDefinition against the model. API context required.</summary>
     internal static class QueryRunner
     {
-        public static IReadOnlyList<ElementRecord> Run(UIDocument uidoc, QueryDefinition query)
+        private static readonly IReadOnlyDictionary<string, string> NoValues =
+            new Dictionary<string, string>();
+
+        public static IReadOnlyList<ElementRecord> Run(UIDocument uidoc, QueryDefinition query) =>
+            RunDetailed(uidoc, query).Select(m => m.Record).ToList();
+
+        /// <summary>
+        /// Like <see cref="Run"/> but keeps each match's condition-parameter display values,
+        /// so results can show WHAT matched (e.g. the actual Value of every dimension found).
+        /// </summary>
+        public static IReadOnlyList<QueryMatch> RunDetailed(UIDocument uidoc, QueryDefinition query)
         {
             var doc = uidoc.Document;
             FilteredElementCollector collector;
@@ -431,7 +503,7 @@ namespace RevitSuite.Host.Explorer
                     var selection = uidoc.Selection.GetElementIds();
                     if (selection.Count == 0)
                     {
-                        return Array.Empty<ElementRecord>();
+                        return Array.Empty<QueryMatch>();
                     }
 
                     collector = new FilteredElementCollector(doc, selection);
@@ -441,7 +513,7 @@ namespace RevitSuite.Host.Explorer
                     break;
             }
 
-            var results = new List<ElementRecord>();
+            var results = new List<QueryMatch>();
             Evaluate(collector, doc, query, new ElementCollectionService.RecordContext(doc, "Host", isLinked: false), results);
 
             // Linked documents are always queried whole-model (view/selection scopes are host concepts).
@@ -481,7 +553,7 @@ namespace RevitSuite.Host.Explorer
             Document doc,
             QueryDefinition query,
             ElementCollectionService.RecordContext context,
-            List<ElementRecord> results)
+            List<QueryMatch> results)
         {
             var categoryIds = ResolveCategoryIds(doc, query.Categories);
             if (categoryIds.Count > 0)
@@ -511,9 +583,37 @@ namespace RevitSuite.Host.Explorer
 
                 if (QueryEvaluator.Matches(element, query))
                 {
-                    results.Add(ElementCollectionService.CreateRecord(element, context));
+                    results.Add(new QueryMatch(
+                        ElementCollectionService.CreateRecord(element, context),
+                        ExtractConditionValues(element, query)));
                 }
             }
+        }
+
+        /// <summary>Display values of every condition parameter, extracted only for matches.</summary>
+        private static IReadOnlyDictionary<string, string> ExtractConditionValues(Element element, QueryDefinition query)
+        {
+            if (query.Conditions.Count == 0)
+            {
+                return NoValues;
+            }
+
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var condition in query.Conditions)
+            {
+                var name = condition.ParameterDisplayName ?? condition.ParameterKey;
+                if (values.ContainsKey(name))
+                {
+                    continue;
+                }
+
+                var parameter = ParameterExtractor.Resolve(element, condition.ParameterKey, condition.ParameterDisplayName);
+                values[name] = parameter == null
+                    ? string.Empty
+                    : ParameterExtractor.ToDto(parameter).DisplayValue ?? string.Empty;
+            }
+
+            return values;
         }
 
         /// <summary>Distinct parameter names/keys available on elements of the given categories (sampled).</summary>
