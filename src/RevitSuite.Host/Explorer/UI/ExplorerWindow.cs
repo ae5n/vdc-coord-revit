@@ -168,6 +168,14 @@ namespace RevitSuite.Host.Explorer.UI
                     // Best effort; Revit may be shutting down.
                 }
 
+                // Static classifier/event hooks reference this window instance — clear them.
+                ExplorerTreeItem.CheckClassifier = null;
+                ExplorerTreeItem.HiddenClassifier = null;
+                if (_instance != null)
+                {
+                    ExplorerTreeItem.UserCheckChanged -= _instance.OnUserCheckChanged;
+                }
+
                 _subscribedApp = null;
                 _selectionHandler = null;
                 _instance = null;
@@ -423,6 +431,68 @@ namespace RevitSuite.Host.Explorer.UI
         }
 
         // ---------- shared small helpers ----------
+
+        /// <summary>Segoe MDL2 Assets ships with Windows 10/11 — used for Revit-like action icons.</summary>
+        internal static readonly FontFamily IconFontFamily = new FontFamily("Segoe MDL2 Assets");
+
+        /// <summary>
+        /// Button with an MDL2 icon glyph plus optional caption. Icon-only buttons (caption
+        /// null) are compact companions, e.g. the reset half of a paired action.
+        /// </summary>
+        private static Button MakeIconButton(
+            string glyph,
+            string? caption,
+            RoutedEventHandler onClick,
+            string? tooltip = null,
+            bool destructive = false)
+        {
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            content.Children.Add(new TextBlock
+            {
+                Text = glyph,
+                FontFamily = IconFontFamily,
+                FontSize = 13,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, caption == null ? 0 : 6, 0)
+            });
+            if (caption != null)
+            {
+                content.Children.Add(new TextBlock { Text = caption, VerticalAlignment = VerticalAlignment.Center });
+            }
+
+            var button = new Button
+            {
+                Content = content,
+                Margin = new Thickness(0, 0, 8, 0),
+                Padding = new Thickness(10, 5, 10, 5),
+                ToolTip = tooltip
+            };
+
+            if (destructive)
+            {
+                button.Background = new SolidColorBrush(Color.FromRgb(0xB9, 0x1C, 0x1C));
+                button.Foreground = Brushes.White;
+            }
+
+            button.Click += onClick;
+            return button;
+        }
+
+        /// <summary>
+        /// Joins an action with its reset/counterpart as one visual unit (e.g. Focus 3D + its
+        /// reset), so related buttons read as belonging together.
+        /// </summary>
+        private static UIElement MakePair(Button primary, Button secondary)
+        {
+            primary.Margin = new Thickness(0);
+            secondary.Margin = new Thickness(2, 0, 8, 0);
+            secondary.Padding = new Thickness(7, 5, 7, 5);
+
+            var pair = new StackPanel { Orientation = Orientation.Horizontal };
+            pair.Children.Add(primary);
+            pair.Children.Add(secondary);
+            return pair;
+        }
 
         private static Button MakeButton(string caption, RoutedEventHandler onClick, bool destructive = false)
         {

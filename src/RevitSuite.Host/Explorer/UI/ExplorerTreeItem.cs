@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -14,6 +14,19 @@ namespace RevitSuite.Host.Explorer.UI
     public sealed class ExplorerTreeItem : INotifyPropertyChanged
     {
         private static readonly ExplorerTreeItem Placeholder = new ExplorerTreeItem("(loading)", 0);
+
+        /// <summary>
+        /// Window-provided classifiers so tree rows can derive their state from the
+        /// authoritative stores (the persistent checked-key set / the latest view snapshot)
+        /// instead of only remembering clicks — this is what lets checks survive
+        /// regroup/search rebuilds and lazily expanded rows appear with correct state.
+        /// Set once by the Explorer window; cleared when it closes.
+        /// </summary>
+        internal static Func<ElementRecord, bool>? CheckClassifier;
+        internal static Func<ElementRecord, bool>? HiddenClassifier;
+
+        /// <summary>Raised when the USER toggles a row's checkbox (not on programmatic re-application).</summary>
+        internal static event Action<ExplorerTreeItem, bool>? UserCheckChanged;
 
         private readonly ExplorerTreeNode? _node;
         private bool? _isChecked = false;
@@ -68,7 +81,104 @@ namespace RevitSuite.Host.Explorer.UI
         public bool? IsChecked
         {
             get => _isChecked;
-            set => SetChecked(value ?? false, updateChildren: true, updateParent: true);
+            set
+            {
+                var effective = value ?? false;
+                SetChecked(effective, updateChildren: true, updateParent: true);
+                UserCheckChanged?.Invoke(this, effective);
+            }
+        }
+
+        private bool _isHiddenIndicated;
+
+        /// <summary>
+        /// True when everything under this row is hidden in the active view (passive
+        /// indicator, computed from the last snapshot — not a live state engine).
+        /// </summary>
+        public bool IsHiddenIndicated
+        {
+            get => _isHiddenIndicated;
+            private set
+            {
+                if (_isHiddenIndicated == value)
+                {
+                    return;
+                }
+
+                _isHiddenIndicated = value;
+                OnPropertyChanged(nameof(IsHiddenIndicated));
+                OnPropertyChanged(nameof(HiddenGlyph));
+            }
+        }
+
+        /// <summary>Segoe MDL2 "Hide" glyph shown only next to hidden rows; empty otherwise.</summary>
+        public string HiddenGlyph => _isHiddenIndicated ? "" : string.Empty;
+
+        /// <summary>
+        /// Re-derives this subtree's checkbox and hidden-indicator state from the window's
+        /// classifiers. Instance rows classify directly; group rows aggregate over every
+        /// record under their node (materialized or not).
+        /// </summary>
+        internal void ApplyIndicators()
+        {
+            var checkClassifier = CheckClassifier;
+            var hiddenClassifier = HiddenClassifier;
+
+            if (Record != null)
+            {
+                if (checkClassifier != null)
+                {
+                    SetChecked(checkClassifier(Record), updateChildren: false, updateParent: false);
+                }
+
+                IsHiddenIndicated = hiddenClassifier?.Invoke(Record) == true;
+            }
+            else if (_node != null)
+            {
+                var records = new List<ElementRecord>();
+                CollectAllRecords(records);
+
+                if (checkClassifier != null)
+                {
+                    var anyChecked = false;
+                    var allChecked = records.Count > 0;
+                    foreach (var record in records)
+                    {
+                        if (checkClassifier(record))
+                        {
+                            anyChecked = true;
+                        }
+                        else
+                        {
+                            allChecked = false;
+                        }
+
+                        if (anyChecked && !allChecked)
+                        {
+                            break;
+                        }
+                    }
+
+                    SetChecked(allChecked ? true : anyChecked ? (bool?)null : false,
+                        updateChildren: false, updateParent: false);
+                }
+
+                if (hiddenClassifier != null)
+                {
+                    IsHiddenIndicated = records.Count > 0 && records.All(r => hiddenClassifier(r));
+                }
+            }
+
+            if (_childrenMaterialized)
+            {
+                foreach (var child in Children)
+                {
+                    if (!ReferenceEquals(child, Placeholder))
+                    {
+                        child.ApplyIndicators();
+                    }
+                }
+            }
         }
 
         private bool _isSelected;
@@ -130,6 +240,16 @@ namespace RevitSuite.Host.Explorer.UI
                 var child = new ExplorerTreeItem(record, this);
                 child.SetChecked(_isChecked == true, updateChildren: false, updateParent: false);
                 Children.Add(child);
+            }
+
+            // Fresh rows derive their true state (a partially-checked parent's children
+            // must not all appear unchecked, and hidden rows need their indicator).
+            if (CheckClassifier != null || HiddenClassifier != null)
+            {
+                foreach (var child in Children)
+                {
+                    child.ApplyIndicators();
+                }
             }
         }
 

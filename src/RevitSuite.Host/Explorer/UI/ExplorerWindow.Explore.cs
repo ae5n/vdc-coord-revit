@@ -18,6 +18,68 @@ namespace RevitSuite.Host.Explorer.UI
         private IReadOnlyList<ElementRecord> _exploreRecords = Array.Empty<ElementRecord>();
         private string _exploreModelTitle = string.Empty;
 
+        /// <summary>
+        /// Authoritative checked set, keyed by origin+id so it survives regroup, search,
+        /// Models-filter, and view-mode rebuilds (tree rows merely mirror it).
+        /// </summary>
+        private readonly HashSet<string> _checkedKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>Latest passive snapshot of what the active view shows (hidden indicators + Hidden view).</summary>
+        private ViewVisibilitySnapshot? _viewSnapshot;
+
+        private ComboBox _viewModeCombo = null!;
+
+        private static string KeyOf(ElementRecord record) => record.Origin + "|" + record.IdValue;
+
+        /// <summary>User toggled a row's checkbox: update the authoritative key set.</summary>
+        private void OnUserCheckChanged(ExplorerTreeItem item, bool isChecked)
+        {
+            var records = new List<ElementRecord>();
+            item.CollectAllRecords(records);
+            foreach (var record in records)
+            {
+                if (isChecked)
+                {
+                    _checkedKeys.Add(KeyOf(record));
+                }
+                else
+                {
+                    _checkedKeys.Remove(KeyOf(record));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Re-captures the view's actual visibility after an operation that changed it, then
+        /// refreshes the passive hidden indicators (and the Hidden view, if active).
+        /// </summary>
+        private void RecaptureViewState(Autodesk.Revit.UI.UIDocument uidoc)
+        {
+            try
+            {
+                var snapshot = ViewStateService.Capture(uidoc, _exploreRecords);
+                OnUi(() =>
+                {
+                    _viewSnapshot = snapshot;
+                    if (_viewModeCombo.SelectedIndex == 2)
+                    {
+                        RebuildExploreTree();
+                    }
+                    else
+                    {
+                        foreach (var root in _exploreItems)
+                        {
+                            root.ApplyIndicators();
+                        }
+                    }
+                });
+            }
+            catch
+            {
+                // Indicators self-heal on the next capture; never fail the operation.
+            }
+        }
+
         /// <summary>One checkbox row in the Models filter dropdown.</summary>
         public sealed class OriginOption : System.ComponentModel.INotifyPropertyChanged
         {
@@ -140,9 +202,27 @@ namespace RevitSuite.Host.Explorer.UI
             _searchBox.TextChanged += OnSearchChanged;
             toolbar.Children.Add(_searchBox);
 
-            toolbar.Children.Add(MakeButton("Refresh (F5)", (_, _) => RefreshExplore()));
-            toolbar.Children.Add(MakeButton("Check All", (_, _) => SetAllChecks(true)));
-            toolbar.Children.Add(MakeButton("Clear Checks", (_, _) => SetAllChecks(false)));
+            toolbar.Children.Add(MakeCaption("View"));
+            _viewModeCombo = new ComboBox
+            {
+                Width = 120,
+                Margin = new Thickness(0, 0, 12, 0),
+                ToolTip = "All: everything indexed · Checked only: your current checked set together · " +
+                          "Hidden only: everything hidden in the active view together"
+            };
+            _viewModeCombo.Items.Add("All");
+            _viewModeCombo.Items.Add("Checked only");
+            _viewModeCombo.Items.Add("Hidden only");
+            _viewModeCombo.SelectedIndex = 0;
+            _viewModeCombo.SelectionChanged += (_, _) => RebuildExploreTree();
+            toolbar.Children.Add(_viewModeCombo);
+
+            toolbar.Children.Add(MakeIconButton("", "Refresh (F5)", (_, _) => RefreshExplore(),
+                "Re-index the model"));
+            toolbar.Children.Add(MakeIconButton("", "Check All", (_, _) => SetAllChecks(true),
+                "Check everything currently shown in the tree"));
+            toolbar.Children.Add(MakeIconButton("", "Clear", (_, _) => SetAllChecks(false),
+                "Clear all checks"));
             Grid.SetRow(toolbar, 0);
             layout.Children.Add(toolbar);
 
@@ -155,6 +235,12 @@ namespace RevitSuite.Host.Explorer.UI
             _exploreTree = BuildTree();
             Grid.SetColumn(_exploreTree, 0);
             body.Children.Add(_exploreTree);
+
+            // Rows derive checkbox/hidden state from the authoritative stores, so state
+            // survives rebuilds and lazily expanded rows are born correct.
+            ExplorerTreeItem.CheckClassifier = r => _checkedKeys.Contains(KeyOf(r));
+            ExplorerTreeItem.HiddenClassifier = r => _viewSnapshot?.Classify(r) == false;
+            ExplorerTreeItem.UserCheckChanged += OnUserCheckChanged;
 
             var splitter = new GridSplitter
             {
@@ -176,46 +262,47 @@ namespace RevitSuite.Host.Explorer.UI
             Grid.SetRow(body, 1);
             layout.Children.Add(body);
 
-            // --- Actions, grouped by what they act on so the grammar is visible ---
+            // --- Actions: icons + paired action/reset groups so related buttons read together ---
             var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
 
-            UIElement MakeGroup(string caption, params Button[] buttons)
+            actions.Children.Add(new TextBlock
             {
-                var group = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Margin = new Thickness(0, 0, 18, 4)
-                };
-                group.Children.Add(new TextBlock
-                {
-                    Text = caption,
-                    Foreground = SystemColors.GrayTextBrush,
-                    FontWeight = FontWeights.SemiBold,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(0, 0, 8, 0)
-                });
-                foreach (var button in buttons)
-                {
-                    group.Children.Add(button);
-                }
+                Text = "Act on checked ☑:",
+                Foreground = SystemColors.GrayTextBrush,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 8, 0)
+            });
 
-                return group;
-            }
+            actions.Children.Add(MakeIconButton("", "Select", (_, _) => SelectChecked(),
+                "Select the checked elements in Revit"));
+            actions.Children.Add(MakeIconButton("", "Show", (_, _) => ShowChecked(),
+                "Zoom to the checked elements in Revit"));
 
-            actions.Children.Add(MakeGroup("Act on checked ☑:",
-                MakeButton("Select in Revit", (_, _) => SelectChecked()),
-                MakeButton("Show / Zoom", (_, _) => ShowChecked()),
-                MakeButton("Focus 3D", (_, _) => FocusChecked()),
-                MakeButton("Isolate", (_, _) => IsolateChecked()),
-                MakeButton("Hide", (_, _) => HideChecked()),
-                MakeButton("Unhide", (_, _) => UnhideChecked()),
-                MakeButton("Export CSV", (_, _) => ExportExploreCsv()),
-                MakeButton("Safe Delete…", (_, _) => SafeDeleteChecked(), destructive: true)));
+            actions.Children.Add(MakePair(
+                MakeIconButton("", "Focus 3D", (_, _) => FocusChecked(),
+                    "Section-box the active 3D view around the checked elements (hides other links)"),
+                MakeIconButton("", null, (_, _) => ResetFocus(),
+                    "Reset Focus — restore section box and link visibility")));
 
-            actions.Children.Add(MakeGroup("Restore view:",
-                MakeButton("Reset Focus", (_, _) => ResetFocus()),
-                MakeButton("Unhide All", (_, _) => UnhideAll()),
-                MakeButton("Reset Isolate", (_, _) => ResetIsolate())));
+            actions.Children.Add(MakePair(
+                MakeIconButton("", "Isolate", (_, _) => IsolateChecked(),
+                    "Temporarily isolate the checked host elements in the active view"),
+                MakeIconButton("", null, (_, _) => ResetIsolate(),
+                    "Reset Isolate — end temporary hide/isolate mode")));
+
+            actions.Children.Add(MakePair(
+                MakeIconButton("", "Hide", (_, _) => HideChecked(),
+                    "Hide the checked elements in the active view"),
+                MakeIconButton("", null, (_, _) => UnhideChecked(),
+                    "Unhide the checked elements (punches through link/category/element hides)")));
+
+            actions.Children.Add(MakeIconButton("", "Unhide All", (_, _) => UnhideAll(),
+                "Restore everything hidden in the active view (links, categories, elements)"));
+            actions.Children.Add(MakeIconButton("", "Export CSV", (_, _) => ExportExploreCsv(),
+                "Export the visible rows to CSV"));
+            actions.Children.Add(MakeIconButton("", "Safe Delete…", (_, _) => SafeDeleteChecked(),
+                "Delete the checked elements after a dependency preview and confirmation", destructive: true));
 
             Grid.SetRow(actions, 2);
             layout.Children.Add(actions);
@@ -359,6 +446,7 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Hiding links…", (_, uidoc) =>
             {
                 var (changed, error) = RevitActions.SetLinkVisibility(uidoc, uncheckedLinkIds, hide: true);
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(error ??
                     $"Hid {changed} link placement(s) in the active view. 'Show all links' restores them."));
             });
@@ -376,6 +464,7 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Showing links…", (_, uidoc) =>
             {
                 var (changed, error) = RevitActions.SetLinkVisibility(uidoc, allLinkIds, hide: false);
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(error ?? $"Restored {changed} link placement(s) in the active view."));
             });
         }
@@ -455,6 +544,19 @@ namespace RevitSuite.Host.Explorer.UI
             countFactory.SetBinding(TextBlock.TextProperty, new Binding("CountText"));
             countFactory.SetValue(TextBlock.ForegroundProperty, SystemColors.GrayTextBrush);
             panelFactory.AppendChild(countFactory);
+
+            // Passive hidden indicator: an eye-off glyph appears ONLY next to rows whose
+            // elements are hidden in the active view; visible rows get no icon.
+            var hiddenFactory = new FrameworkElementFactory(typeof(TextBlock));
+            hiddenFactory.SetBinding(TextBlock.TextProperty, new Binding(nameof(ExplorerTreeItem.HiddenGlyph)));
+            hiddenFactory.SetValue(TextBlock.FontFamilyProperty, IconFontFamily);
+            hiddenFactory.SetValue(TextBlock.FontSizeProperty, 11.0);
+            hiddenFactory.SetValue(TextBlock.ForegroundProperty,
+                new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB4, 0x5C, 0x0F)));
+            hiddenFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(6, 0, 0, 0));
+            hiddenFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            hiddenFactory.SetValue(FrameworkElement.ToolTipProperty, "Hidden in the active view");
+            panelFactory.AppendChild(hiddenFactory);
 
             template.VisualTree = panelFactory;
             tree.ItemTemplate = template;
@@ -558,6 +660,7 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Isolating elements…", (_, uidoc) =>
             {
                 var (isolated, error) = RevitActions.IsolateElements(uidoc, hostIds);
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(error ??
                     $"Temporarily isolated {isolated:N0} element(s) in the active view. Use Reset Isolate to restore."));
             });
@@ -787,6 +890,7 @@ namespace RevitSuite.Host.Explorer.UI
                     RevitActions.SelectMixed(uidoc, hostIds, linked);
                 }
 
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(error ??
                     $"Focused the 3D view on {hostIds.Count + linked.Count:N0} element(s)" +
                     (linked.Count > 0 ? " (other links hidden)" : string.Empty) +
@@ -799,6 +903,7 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Restoring view…", (_, uidoc) =>
             {
                 var error = RevitActions.ResetFocus(uidoc);
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(error ?? "View restored (section box and link visibility)."));
             });
         }
@@ -857,6 +962,7 @@ namespace RevitSuite.Host.Explorer.UI
                     }
                 }
 
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(string.Join("; ", messages) + ". Unhide restores them."));
             });
         }
@@ -962,6 +1068,7 @@ namespace RevitSuite.Host.Explorer.UI
                     }
                 }
 
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(messages.Count == 0
                     ? "The checked elements are not hidden in this view."
                     : $"Unhide: {string.Join("; ", messages)}."));
@@ -1018,6 +1125,7 @@ namespace RevitSuite.Host.Explorer.UI
                 }
 
                 RevitActions.ClearVisibilityTracking(uidoc);
+                RecaptureViewState(uidoc);
 
                 var isolateHint = snapshot.TemporaryIsolateActive
                     ? "  ⚠ Temporary isolate is still active — use Reset Isolate."
@@ -1033,6 +1141,7 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Resetting isolate…", (_, uidoc) =>
             {
                 var error = RevitActions.ResetIsolate(uidoc);
+                RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(error ?? "Temporary isolate mode reset."));
             });
         }
@@ -1085,6 +1194,7 @@ namespace RevitSuite.Host.Explorer.UI
                     progress: count => ReportProgress($"Indexing model… {count:N0} elements"),
                     isCancelled: () => _cancelRequested);
                 var records = warm.Records;
+                var snapshot = ViewStateService.Capture(uidoc, records);
                 var title = uidoc.Document.Title;
                 var (loadedLinks, unloadedLinks) = ElementCollectionService.CountLinkStatus(uidoc.Document);
 
@@ -1094,6 +1204,10 @@ namespace RevitSuite.Host.Explorer.UI
                     _exploreModelTitle = title;
                     _lastIndexDocKey = docKey;
                     _lastIndexUncategorized = includeUncategorized;
+                    _viewSnapshot = snapshot;
+                    // Drop checked keys for elements that no longer exist in the index.
+                    var liveKeys = new HashSet<string>(records.Select(KeyOf), StringComparer.Ordinal);
+                    _checkedKeys.RemoveWhere(key => !liveKeys.Contains(key));
                     RebuildOriginOptions();
                     RebuildExploreTree();
 
@@ -1153,14 +1267,15 @@ namespace RevitSuite.Host.Explorer.UI
             // responsive on 100k+ element indexes. A generation counter drops stale results
             // when the user changes the search/grouping before the previous build finishes.
             var generation = ++_treeBuildGeneration;
-            var records = OriginFilteredRecords();
+            // Origin/search/view-mode filtering happens here on the UI thread (it reads UI
+            // state and the checked-key set); only the pure grouping runs on the pool.
+            var records = ComputeTreeRecords();
             var grouping = CurrentGrouping;
-            var search = _searchBox.Text;
 
             IReadOnlyList<ExplorerTreeNode> nodes;
             try
             {
-                nodes = await System.Threading.Tasks.Task.Run(() => TreeBuilder.Build(records, grouping, search));
+                nodes = await System.Threading.Tasks.Task.Run(() => TreeBuilder.Build(records, grouping, null));
             }
             catch (Exception ex)
             {
@@ -1179,17 +1294,53 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 _exploreItems.Add(new ExplorerTreeItem(node, null));
             }
-        }
 
-        private IReadOnlyList<ElementRecord> GetCheckedRecords()
-        {
-            var records = new List<ElementRecord>();
-            foreach (var item in _exploreItems)
+            // Rows mirror the authoritative stores from the moment they exist.
+            foreach (var root in _exploreItems)
             {
-                item.CollectCheckedRecords(records);
+                root.ApplyIndicators();
             }
 
-            return records;
+            if (_viewModeCombo.SelectedIndex == 2 && _viewSnapshot == null)
+            {
+                SetStatus("Hidden view needs an index first — press Refresh (F5).");
+            }
+        }
+
+        /// <summary>
+        /// Checked records come from the persistent key set — the same set no matter how the
+        /// tree is currently grouped, searched, or view-filtered.
+        /// </summary>
+        private IReadOnlyList<ElementRecord> GetCheckedRecords() =>
+            _checkedKeys.Count == 0
+                ? Array.Empty<ElementRecord>()
+                : _exploreRecords.Where(r => _checkedKeys.Contains(KeyOf(r))).ToList();
+
+        /// <summary>The record set the tree currently shows: origin filter + search + view mode.</summary>
+        private IReadOnlyList<ElementRecord> ComputeTreeRecords()
+        {
+            IEnumerable<ElementRecord> records = OriginFilteredRecords();
+
+            var search = _searchBox.Text;
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                records = TreeBuilder.Filter(records, search);
+            }
+
+            switch (_viewModeCombo.SelectedIndex)
+            {
+                case 1: // Checked only — see the whole checked set together.
+                    records = records.Where(r => _checkedKeys.Contains(KeyOf(r)));
+                    break;
+                case 2: // Hidden only — see everything hidden in the active view together.
+                    var snapshot = _viewSnapshot;
+                    records = snapshot == null
+                        ? Enumerable.Empty<ElementRecord>()
+                        : records.Where(r => snapshot.Classify(r) == false);
+                    break;
+            }
+
+            return records.ToList();
         }
 
         /// <summary>
@@ -1342,12 +1493,27 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void SetAllChecks(bool value)
         {
-            foreach (var item in _exploreItems)
+            if (!value)
             {
-                item.IsChecked = value;
+                _checkedKeys.Clear();
+            }
+            else
+            {
+                // Check what the tree currently shows (origin + search + view-mode filters).
+                foreach (var record in ComputeTreeRecords())
+                {
+                    _checkedKeys.Add(KeyOf(record));
+                }
             }
 
-            SetStatus(value ? "Checked everything currently in the tree." : "Cleared all checks.");
+            foreach (var root in _exploreItems)
+            {
+                root.ApplyIndicators();
+            }
+
+            SetStatus(value
+                ? $"Checked everything currently shown in the tree ({_checkedKeys.Count:N0} total checked)."
+                : "Cleared all checks.");
         }
 
         private void ShowDetails(ExplorerTreeItem? item)
