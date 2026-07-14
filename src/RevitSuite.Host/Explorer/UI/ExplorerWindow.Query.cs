@@ -268,7 +268,7 @@ namespace RevitSuite.Host.Explorer.UI
 
             stack.Children.Add(new TextBlock
             {
-                Text = "Numbers accept units: 3'  36in  900mm  0.9m — a bare number is Revit internal feet. Press Enter to run.",
+                Text = "Numbers accept units: 3'  36in  900mm  0.9m — a bare number is read in the parameter's own display unit. Press Enter to run.",
                 Foreground = SystemColors.GrayTextBrush,
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 4, 0, 0)
@@ -647,6 +647,26 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Running query…", (_, uidoc) =>
             {
                 var results = QueryRunner.Run(uidoc, query);
+
+                // Zero results are usually a scope problem, not a matching problem — say so.
+                var zeroHint = string.Empty;
+                if (results.Count == 0)
+                {
+                    if (!query.IncludeLinkedDocuments)
+                    {
+                        var (loadedLinks, _) = ElementCollectionService.CountLinkStatus(uidoc.Document);
+                        if (loadedLinks > 0)
+                        {
+                            zeroHint = $" Tip: {loadedLinks} linked model(s) were not searched — enable 'Linked models'.";
+                        }
+                    }
+
+                    if (query.Scope != ExplorerScope.EntireProject && zeroHint.Length == 0)
+                    {
+                        zeroHint = " Tip: the scope is not 'Entire Project' — matching elements outside it are excluded.";
+                    }
+                }
+
                 OnUi(() =>
                 {
                     _queryResults.Clear();
@@ -656,7 +676,7 @@ namespace RevitSuite.Host.Explorer.UI
                     }
 
                     _resultCountText.Text = $"{results.Count:N0} matched";
-                    SetStatus($"Query matched {results.Count:N0} element(s). {FilterStore.Explain(query)}");
+                    SetStatus($"Query matched {results.Count:N0} element(s). {FilterStore.Explain(query)}{zeroHint}");
                 });
             });
         }
