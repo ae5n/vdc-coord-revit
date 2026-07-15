@@ -88,7 +88,33 @@ namespace RevitSuite.Host.Explorer.UI
         private readonly ObservableCollection<string> _parameterOptions = new ObservableCollection<string>();
         private readonly ObservableCollection<FilterStore.LoadedFilter> _savedFilters =
             new ObservableCollection<FilterStore.LoadedFilter>();
-        private readonly ObservableCollection<ElementRecord> _queryResults = new ObservableCollection<ElementRecord>();
+        /// <summary>
+        /// One result row: the element plus the display values of the condition parameters
+        /// (so a "Value &lt; 3" query shows each dimension's actual Value in the table).
+        /// Passthrough properties keep the static column bindings simple.
+        /// </summary>
+        public sealed class QueryResultRow
+        {
+            public QueryResultRow(ElementRecord record, IReadOnlyDictionary<string, string> values)
+            {
+                Record = record;
+                Values = values;
+            }
+
+            public ElementRecord Record { get; }
+            public IReadOnlyDictionary<string, string> Values { get; }
+
+            public long IdValue => Record.IdValue;
+            public string? Category => Record.Category;
+            public string? Family => Record.Family;
+            public string? TypeName => Record.TypeName;
+            public string? InstanceName => Record.InstanceName;
+            public string? LevelName => Record.LevelName;
+            public string Origin => Record.Origin;
+        }
+
+        private readonly ObservableCollection<QueryResultRow> _queryResults = new ObservableCollection<QueryResultRow>();
+        private readonly List<DataGridColumn> _valueColumns = new List<DataGridColumn>();
 
         private Dictionary<string, ParameterValueDto> _discoveredParameters =
             new Dictionary<string, ParameterValueDto>(StringComparer.OrdinalIgnoreCase);
@@ -268,7 +294,8 @@ namespace RevitSuite.Host.Explorer.UI
 
             stack.Children.Add(new TextBlock
             {
-                Text = "Numbers accept units: 3'  36in  900mm  0.9m — a bare number is Revit internal feet. Press Enter to run.",
+                Text = "Numbers accept units: 3'  |  3'-6\"  |  36in  |  36\"  |  6 1/2\"  |  900mm  |  0.9m  " +
+                       "(a bare number is read in the parameter's display unit). Press Enter to run.",
                 Foreground = SystemColors.GrayTextBrush,
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 4, 0, 0)
@@ -644,19 +671,45 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            var valueColumnNames = query.Conditions
+                .Select(c => c.ParameterDisplayName ?? c.ParameterKey)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             RunOnRevit("Running query…", (_, uidoc) =>
             {
-                var results = QueryRunner.Run(uidoc, query);
+                var results = QueryRunner.RunDetailed(uidoc, query);
+
+                // Zero results are usually a scope problem, not a matching problem — say so.
+                var zeroHint = string.Empty;
+                if (results.Count == 0)
+                {
+                    if (!query.IncludeLinkedDocuments)
+                    {
+                        var (loadedLinks, _) = ElementCollectionService.CountLinkStatus(uidoc.Document);
+                        if (loadedLinks > 0)
+                        {
+                            zeroHint = $" Tip: {loadedLinks} linked model(s) were not searched — enable 'Linked models'.";
+                        }
+                    }
+
+                    if (query.Scope != ExplorerScope.EntireProject && zeroHint.Length == 0)
+                    {
+                        zeroHint = " Tip: the scope is not 'Entire Project' — matching elements outside it are excluded.";
+                    }
+                }
+
                 OnUi(() =>
                 {
                     _queryResults.Clear();
-                    foreach (var record in results)
+                    foreach (var match in results)
                     {
-                        _queryResults.Add(record);
+                        _queryResults.Add(new QueryResultRow(match.Record, match.ConditionValues));
                     }
 
+                    RebuildValueColumns(valueColumnNames);
                     _resultCountText.Text = $"{results.Count:N0} matched";
-                    SetStatus($"Query matched {results.Count:N0} element(s). {FilterStore.Explain(query)}");
+                    SetStatus($"Query matched {results.Count:N0} element(s). {FilterStore.Explain(query)}{zeroHint}");
                 });
             });
         }
@@ -883,6 +936,33 @@ namespace RevitSuite.Host.Explorer.UI
                 ItemsSource = _queryResults
             };
             AddElementColumns(_queryResultsGrid);
+
+            // Double-click a result zooms straight to it in Revit.
+            _queryResultsGrid.MouseDoubleClick += (_, _) =>
+            {
+                if (_queryResultsGrid.SelectedItem is QueryResultRow)
+                {
+                    ActOnQueryResults(selectOnly: false);
+                }
+            };
+
+            var resultsMenu = new ContextMenu();
+            void AddResultsMenuItem(string header, Action action)
+            {
+                var item = new MenuItem { Header = header };
+                item.Click += (_, _) => action();
+                resultsMenu.Items.Add(item);
+            }
+
+            AddResultsMenuItem("Copy cell", CopyResultCell);
+            AddResultsMenuItem("Copy row(s)", CopyResultRows);
+            AddResultsMenuItem("Copy Element Id(s)", CopyResultIds);
+            AddResultsMenuItem("Copy UniqueId", CopyResultUniqueId);
+            resultsMenu.Items.Add(new Separator());
+            AddResultsMenuItem("Open parameters…", OpenParametersForSelectedResult);
+            AddResultsMenuItem("Select in Revit", () => ActOnQueryResults(selectOnly: true));
+            AddResultsMenuItem("Show / zoom", () => ActOnQueryResults(selectOnly: false));
+            _queryResultsGrid.ContextMenu = resultsMenu;
             Grid.SetRow(_queryResultsGrid, 1);
             layout.Children.Add(_queryResultsGrid);
 
@@ -908,7 +988,13 @@ namespace RevitSuite.Host.Explorer.UI
                 });
             }
 
-            AddColumn("Id", nameof(ElementRecord.IdValue), 0.6);
+            grid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Id",
+                Binding = new Binding(nameof(ElementRecord.IdValue)),
+                Width = DataGridLength.Auto,
+                MinWidth = 80
+            });
             AddColumn("Category", nameof(ElementRecord.Category), 1);
             AddColumn("Family", nameof(ElementRecord.Family), 1);
             AddColumn("Type", nameof(ElementRecord.TypeName), 1);
@@ -917,11 +1003,35 @@ namespace RevitSuite.Host.Explorer.UI
             AddColumn("Model", nameof(ElementRecord.Origin), 0.8);
         }
 
+        /// <summary>One condition-value column per queried parameter, rebuilt per run.</summary>
+        private void RebuildValueColumns(IReadOnlyList<string> parameterNames)
+        {
+            foreach (var column in _valueColumns)
+            {
+                _queryResultsGrid.Columns.Remove(column);
+            }
+
+            _valueColumns.Clear();
+
+            foreach (var name in parameterNames)
+            {
+                var column = new DataGridTextColumn
+                {
+                    Header = name,
+                    Binding = new Binding($"Values[{name}]"),
+                    Width = new DataGridLength(1, DataGridLengthUnitType.Star)
+                };
+                _valueColumns.Add(column);
+                _queryResultsGrid.Columns.Add(column);
+            }
+        }
+
         private void ActOnQueryResults(bool selectOnly)
         {
             var records = (_queryResultsGrid.SelectedItems.Count > 0
-                    ? _queryResultsGrid.SelectedItems.Cast<ElementRecord>()
+                    ? _queryResultsGrid.SelectedItems.Cast<QueryResultRow>()
                     : _queryResults)
+                .Select(row => row.Record)
                 .ToList();
 
             var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
@@ -953,6 +1063,216 @@ namespace RevitSuite.Host.Explorer.UI
             });
         }
 
+        // ---------- Result table tools ----------
+
+        private void CopyResultCell()
+        {
+            var cell = _queryResultsGrid.CurrentCell;
+            if (cell.Column == null || cell.Item == null)
+            {
+                SetStatus("Click a cell first.");
+                return;
+            }
+
+            var text = (cell.Column.GetCellContent(cell.Item) as TextBlock)?.Text;
+            if (string.IsNullOrEmpty(text))
+            {
+                SetStatus("The cell is empty.");
+                return;
+            }
+
+            Clipboard.SetText(text!);
+            SetStatus($"Copied: {text}");
+        }
+
+        private IReadOnlyList<QueryResultRow> SelectedResultRows() =>
+            _queryResultsGrid.SelectedItems.Count > 0
+                ? _queryResultsGrid.SelectedItems.Cast<QueryResultRow>().ToList()
+                : Array.Empty<QueryResultRow>();
+
+        private void CopyResultRows()
+        {
+            var rows = SelectedResultRows();
+            if (rows.Count == 0)
+            {
+                SetStatus("Select row(s) first.");
+                return;
+            }
+
+            var lines = rows.Select(row => string.Join("\t",
+                new[]
+                {
+                    row.IdValue.ToString(),
+                    row.Category ?? string.Empty,
+                    row.Family ?? string.Empty,
+                    row.TypeName ?? string.Empty,
+                    row.InstanceName ?? string.Empty,
+                    row.LevelName ?? string.Empty,
+                    row.Origin
+                }.Concat(row.Values.Values)));
+
+            Clipboard.SetText(string.Join(Environment.NewLine, lines));
+            SetStatus($"Copied {rows.Count:N0} row(s) to the clipboard (tab-separated).");
+        }
+
+        private void CopyResultIds()
+        {
+            var rows = SelectedResultRows();
+            if (rows.Count == 0)
+            {
+                SetStatus("Select row(s) first.");
+                return;
+            }
+
+            Clipboard.SetText(string.Join(",", rows.Select(r => r.IdValue).Distinct()));
+            SetStatus($"Copied {rows.Count:N0} element id(s).");
+        }
+
+        private void CopyResultUniqueId()
+        {
+            if (_queryResultsGrid.SelectedItem is not QueryResultRow row)
+            {
+                SetStatus("Select a row first.");
+                return;
+            }
+
+            Clipboard.SetText(row.Record.UniqueId);
+            SetStatus($"Copied UniqueId of element {row.IdValue}.");
+        }
+
+        /// <summary>Full parameter list of the selected result in its own copy-friendly window.</summary>
+        private void OpenParametersForSelectedResult()
+        {
+            if (_queryResultsGrid.SelectedItem is not QueryResultRow row)
+            {
+                SetStatus("Select a row first.");
+                return;
+            }
+
+            var record = row.Record;
+            RunOnRevit("Loading parameters…", (_, uidoc) =>
+            {
+                Autodesk.Revit.DB.Element? element;
+                if (record.IsLinked && record.LinkInstanceIdValue.HasValue)
+                {
+                    var link = uidoc.Document.GetElement(
+                            new Autodesk.Revit.DB.ElementId(record.LinkInstanceIdValue.Value))
+                        as Autodesk.Revit.DB.RevitLinkInstance;
+                    element = link?.GetLinkDocument()?.GetElement(new Autodesk.Revit.DB.ElementId(record.IdValue));
+                }
+                else
+                {
+                    element = uidoc.Document.GetElement(new Autodesk.Revit.DB.ElementId(record.IdValue));
+                }
+
+                if (element == null)
+                {
+                    OnUi(() => SetStatus("Element no longer exists (or its link is unloaded)."));
+                    return;
+                }
+
+                var parameters = ParameterExtractor.ExtractAll(element);
+                OnUi(() => ShowParametersWindow(record, parameters));
+            }, showBusy: false);
+        }
+
+        private void ShowParametersWindow(ElementRecord record, IReadOnlyList<ParameterValueDto> parameters)
+        {
+            var grid = new DataGrid
+            {
+                AutoGenerateColumns = false,
+                IsReadOnly = true,
+                HeadersVisibility = DataGridHeadersVisibility.Column,
+                SelectionMode = DataGridSelectionMode.Extended,
+                ClipboardCopyMode = DataGridClipboardCopyMode.IncludeHeader,
+                ItemsSource = parameters
+            };
+            grid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Parameter",
+                Binding = new Binding(nameof(ParameterValueDto.DisplayName)),
+                Width = new DataGridLength(1, DataGridLengthUnitType.Star)
+            });
+            grid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Value",
+                Binding = new Binding(nameof(ParameterValueDto.DisplayValue)),
+                Width = new DataGridLength(1, DataGridLengthUnitType.Star)
+            });
+
+            IReadOnlyList<ParameterValueDto> Selected() =>
+                grid.SelectedItems.Count > 0
+                    ? grid.SelectedItems.Cast<ParameterValueDto>().ToList()
+                    : Array.Empty<ParameterValueDto>();
+
+            void CopyPairs(IReadOnlyList<ParameterValueDto> items, string what)
+            {
+                if (items.Count == 0)
+                {
+                    SetStatus("Select parameter row(s) first.");
+                    return;
+                }
+
+                Clipboard.SetText(string.Join(Environment.NewLine,
+                    items.Select(p => $"{p.DisplayName}\t{p.DisplayValue}")));
+                SetStatus($"Copied {what} ({items.Count:N0} parameter(s), tab-separated).");
+            }
+
+            void CopyValuesOnly()
+            {
+                var items = Selected();
+                if (items.Count == 0)
+                {
+                    SetStatus("Select parameter row(s) first.");
+                    return;
+                }
+
+                Clipboard.SetText(string.Join(Environment.NewLine, items.Select(p => p.DisplayValue ?? string.Empty)));
+                SetStatus($"Copied {items.Count:N0} value(s).");
+            }
+
+            var menu = new ContextMenu();
+            void AddParamMenuItem(string header, Action action)
+            {
+                var item = new MenuItem { Header = header };
+                item.Click += (_, _) => action();
+                menu.Items.Add(item);
+            }
+
+            AddParamMenuItem("Copy value(s)", CopyValuesOnly);
+            AddParamMenuItem("Copy parameter + value", () => CopyPairs(Selected(), "selection"));
+            AddParamMenuItem("Copy all", () => CopyPairs(parameters, "all parameters"));
+            grid.ContextMenu = menu;
+
+            var toolbar = new DockPanel { Margin = new Thickness(8, 8, 8, 4) };
+            var copyAllButton = MakeButton("Copy All", (_, _) => CopyPairs(parameters, "all parameters"));
+            DockPanel.SetDock(copyAllButton, Dock.Right);
+            toolbar.Children.Add(copyAllButton);
+            toolbar.Children.Add(new TextBlock
+            {
+                Text = "Right-click for copy options · Ctrl+C copies selected rows",
+                Foreground = SystemColors.GrayTextBrush,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+
+            var layout = new DockPanel();
+            DockPanel.SetDock(toolbar, Dock.Top);
+            layout.Children.Add(toolbar);
+            layout.Children.Add(grid);
+
+            new Window
+            {
+                Title = $"Parameters — {record.DisplayName}",
+                Width = 540,
+                Height = 620,
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Content = layout
+            }.Show();
+
+            SetStatus($"Loaded {parameters.Count} parameter(s) for element {record.IdValue}.");
+        }
+
         private void ExportQueryResults()
         {
             if (_queryResults.Count == 0)
@@ -969,7 +1289,36 @@ namespace RevitSuite.Host.Explorer.UI
 
             TryFileOperation("Export", () =>
             {
-                ExportService.WriteCsv(path, ExportService.BuildElementsTable(_queryResults));
+                // Element fields plus one column per condition parameter, matching the grid.
+                var valueNames = _valueColumns.Select(c => (string)c.Header).ToList();
+                var headers = new List<string>
+                {
+                    "ElementId", "UniqueId", "Category", "Family", "Type", "Name", "Level", "Model"
+                };
+                headers.AddRange(valueNames);
+
+                var rows = _queryResults.Select(row =>
+                {
+                    var cells = new List<string>
+                    {
+                        row.IdValue.ToString(),
+                        row.Record.UniqueId,
+                        row.Category ?? string.Empty,
+                        row.Family ?? string.Empty,
+                        row.TypeName ?? string.Empty,
+                        row.InstanceName ?? string.Empty,
+                        row.LevelName ?? string.Empty,
+                        row.Origin
+                    };
+                    foreach (var name in valueNames)
+                    {
+                        cells.Add(row.Values.TryGetValue(name, out var value) ? value : string.Empty);
+                    }
+
+                    return (IReadOnlyList<string>)cells;
+                }).ToList();
+
+                ExportService.WriteCsv(path, new ExportService.Table("QueryResults", headers, rows));
                 SetStatus($"Exported {_queryResults.Count:N0} row(s) to {path}");
             });
         }
