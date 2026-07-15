@@ -25,6 +25,7 @@ namespace RevitSuite.Host.Explorer
 
         private static volatile bool _executing;
         private static long _lastExecuteEndTicks;
+        private static long _suppressEchoUntilTicks;
 
         private RevitActionBridge()
         {
@@ -40,7 +41,17 @@ namespace RevitSuite.Host.Explorer
         internal static bool IsSelfEcho =>
             _executing ||
             DateTime.UtcNow.Ticks - System.Threading.Interlocked.Read(ref _lastExecuteEndTicks)
-                < TimeSpan.FromMilliseconds(500).Ticks;
+                < TimeSpan.FromMilliseconds(2000).Ticks ||
+            DateTime.UtcNow.Ticks < System.Threading.Interlocked.Read(ref _suppressEchoUntilTicks);
+
+        /// <summary>
+        /// Extends self-echo suppression past the bridge's own window — for work the
+        /// Explorer initiates but Revit executes later (posted commands), whose
+        /// DocumentChanged must not read as a user edit.
+        /// </summary>
+        internal static void SuppressEchoFor(TimeSpan window) =>
+            System.Threading.Interlocked.Exchange(
+                ref _suppressEchoUntilTicks, DateTime.UtcNow.Add(window).Ticks);
 
         public static RevitActionBridge Instance => _instance ??= new RevitActionBridge();
 
@@ -1167,6 +1178,70 @@ namespace RevitSuite.Host.Explorer
 
                 LogManager.Error("explorer", $"Filter visibility change failed in view '{view.Name}'.", ex);
                 return (0, $"Could not change filter visibility: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Hides individual LINKED elements in the active view — true per-element parity
+        /// with host hides. View.HideElements rejects linked ids, so this uses Revit's own
+        /// UI command: pre-select link references, then post HideElements (it executes
+        /// immediately after this external event returns, no dialog).
+        /// </summary>
+        public static (int Posted, string? Error) HideLinkedElements(
+            UIApplication app, UIDocument uidoc, IReadOnlyCollection<LinkedTarget> targets)
+        {
+            var doc = uidoc.Document;
+            var references = new List<Reference>();
+
+            foreach (var group in targets.GroupBy(t => t.LinkInstanceIdValue))
+            {
+                if (doc.GetElement(new ElementId(group.Key)) is not RevitLinkInstance instance)
+                {
+                    continue;
+                }
+
+                var linkDoc = instance.GetLinkDocument();
+                if (linkDoc == null)
+                {
+                    continue;
+                }
+
+                foreach (var target in group)
+                {
+                    try
+                    {
+                        var element = linkDoc.GetElement(new ElementId(target.ElementIdValue));
+                        if (element != null)
+                        {
+                            references.Add(new Reference(element).CreateLinkReference(instance));
+                        }
+                    }
+                    catch
+                    {
+                        // Element rejects referencing — skip it, hide the rest.
+                    }
+                }
+            }
+
+            if (references.Count == 0)
+            {
+                return (0, "None of the linked elements could be resolved for hiding.");
+            }
+
+            try
+            {
+                uidoc.Selection.SetReferences(references);
+                app.PostCommand(RevitCommandId.LookupPostableCommandId(PostableCommand.HideElements));
+                // The posted hide executes after this event returns — outside the bridge's
+                // normal echo window — so extend suppression to keep auto-sync from treating
+                // the Explorer's own hide as a user edit (and rebuilding the tree).
+                RevitActionBridge.SuppressEchoFor(TimeSpan.FromSeconds(5));
+                return (references.Count, null);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Posting linked-element hide failed.", ex);
+                return (0, $"Could not hide linked elements: {ex.Message}");
             }
         }
 

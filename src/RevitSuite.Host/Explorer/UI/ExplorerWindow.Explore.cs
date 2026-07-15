@@ -28,6 +28,24 @@ namespace RevitSuite.Host.Explorer.UI
         private ViewVisibilitySnapshot? _viewSnapshot;
 
         private ComboBox _viewModeCombo = null!;
+        private TextBlock _checkedCountText = null!;
+
+        /// <summary>Live "n checked" readout next to the action buttons.</summary>
+        private void UpdateCheckedCount()
+        {
+            if (_checkedCountText == null)
+            {
+                return;
+            }
+
+            var count = _checkedKeys.Count;
+            _checkedCountText.Text = count == 0 ? "none checked" : $"{count:N0} checked";
+            _checkedCountText.Foreground = count == 0
+                ? SystemColors.GrayTextBrush
+                : new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0x15, 0x65, 0xC0));
+            _checkedCountText.FontWeight = count == 0 ? FontWeights.Normal : FontWeights.SemiBold;
+        }
 
         private static string KeyOf(ElementRecord record) => record.Origin + "|" + record.IdValue;
 
@@ -47,6 +65,8 @@ namespace RevitSuite.Host.Explorer.UI
                     _checkedKeys.Remove(KeyOf(record));
                 }
             }
+
+            UpdateCheckedCount();
         }
 
         /// <summary>
@@ -61,9 +81,12 @@ namespace RevitSuite.Host.Explorer.UI
                 OnUi(() =>
                 {
                     _viewSnapshot = snapshot;
+                    LogManager.Info("explorer-scroll",
+                        $"recapture: mode={_viewModeCombo.SelectedIndex}");
                     if (_viewModeCombo.SelectedIndex == 2)
                     {
-                        RebuildExploreTree();
+                        // Hidden-only view: hide/unhide DOES change what this mode lists.
+                        RebuildOrRefreshIndicators();
                     }
                     else
                     {
@@ -131,6 +154,72 @@ namespace RevitSuite.Host.Explorer.UI
         private StackPanel _detailsPanel = null!;
         private DispatcherTimer? _searchDebounce;
 
+        /// <summary>True while a rebuild re-applies selection — auto-scroll must stay put.</summary>
+        private bool _suppressAutoScroll;
+
+        /// <summary>Keys of the rows the tree currently shows — set by every rebuild.</summary>
+        private HashSet<string>? _lastTreeKeys;
+
+        /// <summary>
+        /// Rebuilds only when the row set actually changed; otherwise refreshes the
+        /// indicators in place. Hides/unhides (ours or Revit's) never change membership,
+        /// so they must never rebuild — rebuilding is what disturbs scroll and selection.
+        /// </summary>
+        private void RebuildOrRefreshIndicators()
+        {
+            var current = ComputeTreeRecords();
+            if (_lastTreeKeys != null &&
+                current.Count == _lastTreeKeys.Count &&
+                current.All(r => _lastTreeKeys.Contains(KeyOf(r))))
+            {
+                LogManager.Info("explorer-scroll", "membership unchanged — indicators refreshed in place");
+                foreach (var root in _exploreItems)
+                {
+                    root.ApplyIndicators();
+                }
+
+                return;
+            }
+
+            RebuildExploreTree();
+        }
+
+        private ScrollViewer? _treeScrollViewer;
+
+        private ScrollViewer? GetTreeScrollViewer()
+        {
+            if (_treeScrollViewer != null)
+            {
+                return _treeScrollViewer;
+            }
+
+            return _treeScrollViewer = FindDescendantScrollViewer(_exploreTree);
+        }
+
+        private static ScrollViewer? FindDescendantScrollViewer(System.Windows.DependencyObject? root)
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+                if (child is ScrollViewer viewer)
+                {
+                    return viewer;
+                }
+
+                if (FindDescendantScrollViewer(child) is { } nested)
+                {
+                    return nested;
+                }
+            }
+
+            return null;
+        }
+
         private UIElement BuildExploreTab()
         {
             var layout = new Grid { Margin = new Thickness(8) };
@@ -146,7 +235,10 @@ namespace RevitSuite.Host.Explorer.UI
             _scopeCombo.Items.Add("Entire Project");
             _scopeCombo.Items.Add("Active View");
             _scopeCombo.Items.Add("Current Selection");
-            _scopeCombo.SelectedIndex = 0;
+            // Active View is the default: it is where the hidden-eye indicators live, so
+            // the annotation and its reference point always match. (The last used scope is
+            // restored from settings on later launches.)
+            _scopeCombo.SelectedIndex = 1;
             toolbar.Children.Add(_scopeCombo);
 
             toolbar.Children.Add(MakeCaption("Group by"));
@@ -218,6 +310,8 @@ namespace RevitSuite.Host.Explorer.UI
             _viewModeCombo.SelectionChanged += (_, _) => RebuildExploreTree();
             toolbar.Children.Add(_viewModeCombo);
 
+            toolbar.Children.Add(BuildLegendButton());
+
             toolbar.Children.Add(MakeIconButton("", "Refresh (F5)", (_, _) => RefreshExplore(),
                 "Re-index the model"));
             toolbar.Children.Add(MakeIconButton("", "Check All", (_, _) => SetAllChecks(true),
@@ -238,9 +332,12 @@ namespace RevitSuite.Host.Explorer.UI
             body.Children.Add(_exploreTree);
 
             // Rows derive checkbox/hidden state from the authoritative stores, so state
-            // survives rebuilds and lazily expanded rows are born correct.
+            // survives rebuilds and lazily expanded rows are born correct. Hidden
+            // indicators describe the ACTIVE VIEW, so they only show where that reference
+            // point is unambiguous: Active View scope, or the explicit Hidden-only mode.
             ExplorerTreeItem.CheckClassifier = r => _checkedKeys.Contains(KeyOf(r));
-            ExplorerTreeItem.HiddenClassifier = r => _viewSnapshot?.Classify(r) == false;
+            ExplorerTreeItem.HiddenClassifier =
+                r => HiddenIndicatorsEnabled && _viewSnapshot?.Classify(r) == false;
             ExplorerTreeItem.HiddenReasonClassifier = r => _viewSnapshot?.DescribeHidden(r);
             ExplorerTreeItem.HiddenTagClassifier = r => _viewSnapshot?.HiddenTag(r);
             ExplorerTreeItem.UserCheckChanged += OnUserCheckChanged;
@@ -280,6 +377,16 @@ namespace RevitSuite.Host.Explorer.UI
                 Margin = new Thickness(0, 0, 8, 0)
             });
 
+            _checkedCountText = new TextBlock
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0),
+                ToolTip = "How many elements are currently checked across the whole tree " +
+                          "(survives search, grouping, and Models-filter changes)"
+            };
+            UpdateCheckedCount();
+            actions.Children.Add(_checkedCountText);
+
             actions.Children.Add(MakeIconButton("", "Select", (_, _) => SelectChecked(),
                 "Select the checked elements in Revit (or the highlighted row when nothing is checked)"));
             actions.Children.Add(MakeIconButton("", "Show", (_, _) => ShowChecked(),
@@ -318,6 +425,105 @@ namespace RevitSuite.Host.Explorer.UI
             layout.Children.Add(actions);
 
             return layout;
+        }
+
+        /// <summary>Popup legend for the hidden-eye tags and origin markers.</summary>
+        private UIElement BuildLegendButton()
+        {
+            var button = new System.Windows.Controls.Primitives.ToggleButton
+            {
+                Content = "Legend",
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 0, 12, 0),
+                ToolTip = "What the hidden-eye icons and tags mean"
+            };
+
+            var amber = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xB4, 0x5C, 0x0F));
+            var panel = new StackPanel { Margin = new Thickness(12) };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Hidden indicators",
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 6)
+            });
+
+            void AddEntry(string tag, string description, bool iconFont = false, bool italic = true)
+            {
+                var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+                var tagBlock = new TextBlock
+                {
+                    Text = tag,
+                    Width = 86,
+                    Foreground = amber,
+                    FontStyle = italic ? FontStyles.Italic : FontStyles.Normal,
+                    VerticalAlignment = VerticalAlignment.Top
+                };
+                if (iconFont)
+                {
+                    tagBlock.FontFamily = IconFontFamily;
+                    tagBlock.FontStyle = FontStyles.Normal;
+                }
+
+                DockPanel.SetDock(tagBlock, Dock.Left);
+                row.Children.Add(tagBlock);
+                row.Children.Add(new TextBlock
+                {
+                    Text = description,
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxWidth = 330
+                });
+                panel.Children.Add(row);
+            }
+
+            AddEntry(((char)0xED1A).ToString(), "Hidden in the active view; the tag beside it says how.",
+                iconFont: true);
+            AddEntry("elem", "Element hidden individually (right-click ▸ Hide in View ▸ Elements).");
+            AddEntry("VG", "Its category is turned off in Visibility/Graphics.");
+            AddEntry("VG+elem", "Both at once — unhide must lift both.");
+            AddEntry("filter", "Hidden by a view filter set to not visible (hover names the filter).");
+            AddEntry("link off", "The linked model's placement is hidden in this view.");
+            AddEntry("link off+VG", "Link placement hidden AND the category is off.");
+            AddEntry("hidden", "Linked element hidden inside the link (individual hide, filter, or phase — " +
+                "Revit doesn't say which). Unhide it via Revit's Reveal Hidden Elements.");
+            AddEntry("mixed", "Group: everything under it is hidden, by different mechanisms.");
+            AddEntry("n hidden", "Group: SOME items underneath are hidden — expand to find them.");
+            panel.Children.Add(new TextBlock
+            {
+                Text = "🔗 model name = the element lives in that linked model (origin, not visibility). " +
+                       "Explorer's Unhide reverses every mechanism above in one click. " +
+                       "Hidden indicators always describe the ACTIVE Revit view, so they appear only in " +
+                       "Active View scope (and in the Hidden-only view mode).",
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 420,
+                Margin = new Thickness(0, 8, 0, 0),
+                Foreground = SystemColors.GrayTextBrush
+            });
+
+            var popup = new System.Windows.Controls.Primitives.Popup
+            {
+                PlacementTarget = button,
+                Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
+                StaysOpen = false,
+                AllowsTransparency = true,
+                Child = new Border
+                {
+                    Background = SystemColors.WindowBrush,
+                    BorderBrush = SystemColors.ActiveBorderBrush,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(4),
+                    Child = panel
+                }
+            };
+
+            button.Checked += (_, _) => popup.IsOpen = true;
+            button.Unchecked += (_, _) => popup.IsOpen = false;
+            popup.Closed += (_, _) => button.IsChecked = false;
+
+            var host = new Grid();
+            host.Children.Add(button);
+            host.Children.Add(popup);
+            return host;
         }
 
         /// <summary>
@@ -530,6 +736,19 @@ namespace RevitSuite.Host.Explorer.UI
             tree.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = SystemColors.HighlightBrush;
             tree.SelectedItemChanged += (_, args) => ShowDetails(args.NewValue as ExplorerTreeItem);
 
+            // TEMP diagnostics: trace every viewport move to pin down the post-hide scroll
+            // jump. Remove once the cause is confirmed.
+            tree.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, args) =>
+            {
+                if (Math.Abs(args.VerticalChange) > 0.01)
+                {
+                    LogManager.Info("explorer-scroll",
+                        $"scroll {args.VerticalOffset - args.VerticalChange:0.##} -> {args.VerticalOffset:0.##} " +
+                        $"(extent {args.ExtentHeight:0.##}, viewport {args.ViewportHeight:0.##}, " +
+                        $"suppress={_suppressAutoScroll})");
+                }
+            }));
+
             var template = new HierarchicalDataTemplate(typeof(ExplorerTreeItem))
             {
                 ItemsSource = new Binding("Children")
@@ -557,12 +776,25 @@ namespace RevitSuite.Host.Explorer.UI
 
             // Passive hidden indicator: an eye-off glyph appears ONLY next to rows whose
             // elements are hidden in the active view; visible rows get no icon.
+            // Amber normally; a light contrasting tone on the selected row, where amber
+            // on the blue highlight is unreadable (same idea as black text turning white).
+            var indicatorStyle = new Style(typeof(TextBlock));
+            indicatorStyle.Setters.Add(new Setter(TextBlock.ForegroundProperty,
+                new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB4, 0x5C, 0x0F))));
+            var indicatorSelected = new DataTrigger
+            {
+                Binding = new Binding(nameof(ExplorerTreeItem.IsSelected)),
+                Value = true
+            };
+            indicatorSelected.Setters.Add(new Setter(TextBlock.ForegroundProperty,
+                new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD9, 0x99))));
+            indicatorStyle.Triggers.Add(indicatorSelected);
+
             var hiddenFactory = new FrameworkElementFactory(typeof(TextBlock));
             hiddenFactory.SetBinding(TextBlock.TextProperty, new Binding(nameof(ExplorerTreeItem.HiddenGlyph)));
             hiddenFactory.SetValue(TextBlock.FontFamilyProperty, IconFontFamily);
-            hiddenFactory.SetValue(TextBlock.FontSizeProperty, 11.0);
-            hiddenFactory.SetValue(TextBlock.ForegroundProperty,
-                new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB4, 0x5C, 0x0F)));
+            hiddenFactory.SetValue(TextBlock.FontSizeProperty, 13.0);
+            hiddenFactory.SetValue(FrameworkElement.StyleProperty, indicatorStyle);
             hiddenFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(6, 0, 0, 0));
             hiddenFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
             // Tooltip states WHY it is hidden (VG category vs element hide vs link).
@@ -570,20 +802,33 @@ namespace RevitSuite.Host.Explorer.UI
                 new Binding(nameof(ExplorerTreeItem.HiddenToolTip)));
             panelFactory.AppendChild(hiddenFactory);
 
-            // Compact mechanism tag right after the eye — "VG", "elem", "VG+elem", "link",
+            // Compact mechanism tag right after the eye — "VG", "elem", "VG+elem", "link off",
             // "mixed" — so the distinction is visible at a glance, not only on hover.
             var hiddenTagFactory = new FrameworkElementFactory(typeof(TextBlock));
             hiddenTagFactory.SetBinding(TextBlock.TextProperty,
                 new Binding(nameof(ExplorerTreeItem.HiddenTagText)));
             hiddenTagFactory.SetValue(TextBlock.FontSizeProperty, 10.0);
             hiddenTagFactory.SetValue(TextBlock.FontStyleProperty, FontStyles.Italic);
-            hiddenTagFactory.SetValue(TextBlock.ForegroundProperty,
-                new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB4, 0x5C, 0x0F)));
+            hiddenTagFactory.SetValue(FrameworkElement.StyleProperty, indicatorStyle);
             hiddenTagFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(3, 0, 0, 0));
             hiddenTagFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
             hiddenTagFactory.SetBinding(FrameworkElement.ToolTipProperty,
                 new Binding(nameof(ExplorerTreeItem.HiddenToolTip)));
             panelFactory.AppendChild(hiddenTagFactory);
+
+            // Partial-hidden count on group rows ("3 hidden") — a collapsed parent still
+            // reveals that hidden items live somewhere underneath it.
+            var hiddenSummaryFactory = new FrameworkElementFactory(typeof(TextBlock));
+            hiddenSummaryFactory.SetBinding(TextBlock.TextProperty,
+                new Binding(nameof(ExplorerTreeItem.HiddenSummaryText)));
+            hiddenSummaryFactory.SetValue(TextBlock.FontSizeProperty, 10.0);
+            hiddenSummaryFactory.SetValue(TextBlock.FontStyleProperty, FontStyles.Italic);
+            hiddenSummaryFactory.SetValue(FrameworkElement.StyleProperty, indicatorStyle);
+            hiddenSummaryFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(6, 0, 0, 0));
+            hiddenSummaryFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            hiddenSummaryFactory.SetBinding(FrameworkElement.ToolTipProperty,
+                new Binding(nameof(ExplorerTreeItem.HiddenToolTip)));
+            panelFactory.AppendChild(hiddenSummaryFactory);
 
             template.VisualTree = panelFactory;
             tree.ItemTemplate = template;
@@ -602,8 +847,10 @@ namespace RevitSuite.Host.Explorer.UI
             itemStyle.Setters.Add(new EventSetter(TreeViewItem.SelectedEvent,
                 new RoutedEventHandler((s, args) =>
                 {
-                    // Only the item itself, not bubbled child selections.
-                    if (ReferenceEquals(s, args.OriginalSource))
+                    // Only the item itself, not bubbled child selections — and never during
+                    // a rebuild's programmatic re-selection, where BringIntoView on a freshly
+                    // virtualized tree overshoots and throws the viewport around.
+                    if (!_suppressAutoScroll && ReferenceEquals(s, args.OriginalSource))
                     {
                         ((TreeViewItem)s).BringIntoView();
                     }
@@ -944,10 +1191,10 @@ namespace RevitSuite.Host.Explorer.UI
         }
 
         /// <summary>
-        /// Hides checked elements, as surgically as Revit allows: host elements hide
-        /// individually; checked LINKED elements of exactly one category hide that category
-        /// view-wide (Revit cannot scope categories per link — stated honestly); only
-        /// multi-category linked selections (whole models) hide the entire link.
+        /// Hides the targeted elements per-element, host and linked alike. Host ids go
+        /// through View.HideElements (bisecting); linked elements go through Revit's own
+        /// Hide command via pre-selected link references — the only per-element path the
+        /// API offers for links.
         /// </summary>
         private void HideChecked()
         {
@@ -958,19 +1205,11 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
-            var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
-            var linkedRecords = records.Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue).ToList();
-            var linkIds = linkedRecords.Select(r => r.LinkInstanceIdValue!.Value).Distinct().ToList();
-            var linkedCategories = linkedRecords
-                .Select(r => r.Category)
-                .Where(c => c != null)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Cast<string>()
-                .ToList();
-            var singleLinkedCategory = linkedCategories.Count == 1 &&
-                linkedRecords.All(r => r.Category != null);
+            var (hostIds, linkedTargets) = Partition(records);
+            LogManager.Info("explorer-scroll",
+                $"hide clicked: {hostIds.Count} host, {linkedTargets.Count} linked");
 
-            RunOnRevit("Hiding elements…", (_, uidoc) =>
+            RunOnRevit("Hiding elements…", (app, uidoc) =>
             {
                 var messages = new List<string>();
 
@@ -981,26 +1220,44 @@ namespace RevitSuite.Host.Explorer.UI
                         (skipped > 0 ? $" ({skipped} cannot be hidden in this view)" : string.Empty));
                 }
 
-                if (linkIds.Count > 0)
+                var postedLinked = 0;
+                if (linkedTargets.Count > 0)
                 {
-                    if (singleLinkedCategory)
-                    {
-                        var (_, error) = RevitActions.SetCategoriesHidden(
-                            uidoc, new[] { linkedCategories[0] }, hide: true);
-                        messages.Add(error ?? $"hid category '{linkedCategories[0]}' view-wide " +
-                            "(host + all links — Revit cannot hide a category inside just one link)");
-                    }
-                    else
-                    {
-                        var (changed, error) = RevitActions.SetLinkVisibility(uidoc, linkIds, hide: true);
-                        messages.Add(error ?? $"hid {changed} whole link placement(s) — Revit cannot hide single linked elements");
-                    }
+                    // Per-element parity with host hides: Revit applies the posted hide
+                    // right after this action (its API has no direct call for linked ids).
+                    MarkSelectionPush();
+                    var (posted, error) = RevitActions.HideLinkedElements(app, uidoc, linkedTargets);
+                    postedLinked = posted;
+                    messages.Add(error ?? $"hiding {posted:N0} linked element(s)");
                 }
 
                 RecaptureViewState(uidoc);
-                OnUi(() => SetStatus(WithFallbackNote(fallbackNote,
-                    string.Join("; ", messages) + ". Unhide restores them.")));
+                OnUi(() =>
+                {
+                    SetStatus(WithFallbackNote(fallbackNote,
+                        string.Join("; ", messages) + ". Unhide restores them."));
+                    if (postedLinked > 0)
+                    {
+                        // The posted command lands after this action, so the first recapture
+                        // ran too early for the linked rows — recapture again shortly.
+                        // In-place indicator update only; the tree is NEVER rebuilt by the
+                        // Explorer's own hide (that is what kept host hides scroll-stable).
+                        ScheduleRecapture(TimeSpan.FromMilliseconds(2000));
+                    }
+                });
             });
+        }
+
+        /// <summary>One-shot delayed recapture: refreshes eye indicators in place, no rebuild.</summary>
+        private void ScheduleRecapture(TimeSpan delay)
+        {
+            var timer = new DispatcherTimer { Interval = delay };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                RunOnRevit("Refreshing indicators…", (_, uidoc) => RecaptureViewState(uidoc), showBusy: false);
+            };
+            timer.Start();
         }
 
         /// <summary>
@@ -1022,6 +1279,12 @@ namespace RevitSuite.Host.Explorer.UI
             // nature — stated honestly), or Unhide would visibly do nothing for them.
             var hiddenFilters = _viewSnapshot?.HiddenFilterNamesFor(records)
                                 ?? (IReadOnlyList<string>)Array.Empty<string>();
+
+            // Individually hidden LINKED elements have no unhide API — count them so the
+            // user learns the limitation instead of watching the button silently fail.
+            var lockedLinked = _viewSnapshot == null
+                ? 0
+                : records.Count(r => r.IsLinked && _viewSnapshot.HiddenTag(r) == "hidden");
 
             var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
             var linkedRecords = records.Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue).ToList();
@@ -1120,9 +1383,15 @@ namespace RevitSuite.Host.Explorer.UI
                 }
 
                 RecaptureViewState(uidoc);
-                OnUi(() => SetStatus(messages.Count == 0
-                    ? "The targeted elements are not hidden in this view."
-                    : WithFallbackNote(fallbackNote, $"Unhide: {string.Join("; ", messages)}.")));
+                var lockedHint = lockedLinked > 0
+                    ? $"  ⚠ {lockedLinked} linked element(s) are individually hidden — Revit's API cannot " +
+                      "unhide those; use Reveal Hidden Elements in Revit."
+                    : string.Empty;
+                OnUi(() => SetStatus((messages.Count == 0
+                    ? lockedLinked > 0
+                        ? "Nothing restorable here."
+                        : "The targeted elements are not hidden in this view."
+                    : WithFallbackNote(fallbackNote, $"Unhide: {string.Join("; ", messages)}.")) + lockedHint));
             });
         }
 
@@ -1190,9 +1459,14 @@ namespace RevitSuite.Host.Explorer.UI
                 var isolateHint = snapshot.TemporaryIsolateActive
                     ? "  ⚠ Temporary isolate is still active — use Reset Isolate."
                     : string.Empty;
+                var lockedLinked = records.Count(r => r.IsLinked && snapshot.HiddenTag(r) == "hidden");
+                var lockedHint = lockedLinked > 0
+                    ? $"  ⚠ {lockedLinked} linked element(s) are individually hidden — Revit's API cannot " +
+                      "unhide those; use Reveal Hidden Elements in Revit."
+                    : string.Empty;
                 OnUi(() => SetStatus((messages.Count == 0
                     ? "Nothing permanently hidden in this view."
-                    : $"Unhid {string.Join(", ", messages)}.") + isolateHint));
+                    : $"Unhid {string.Join(", ", messages)}.") + isolateHint + lockedHint));
             });
         }
 
@@ -1205,6 +1479,13 @@ namespace RevitSuite.Host.Explorer.UI
                 OnUi(() => SetStatus(error ?? "Temporary isolate mode reset."));
             });
         }
+
+        /// <summary>
+        /// Hidden-eye indicators show only when their active-view reference point is
+        /// unambiguous: Active View scope, or the explicit "Hidden only" view mode.
+        /// </summary>
+        private bool HiddenIndicatorsEnabled =>
+            CurrentScope == ExplorerScope.ActiveView || _viewModeCombo.SelectedIndex == 2;
 
         private ExplorerScope CurrentScope => _scopeCombo.SelectedIndex switch
         {
@@ -1274,8 +1555,9 @@ namespace RevitSuite.Host.Explorer.UI
                     // Drop checked keys for elements that no longer exist in the index.
                     var liveKeys = new HashSet<string>(records.Select(KeyOf), StringComparer.Ordinal);
                     _checkedKeys.RemoveWhere(key => !liveKeys.Contains(key));
+                    UpdateCheckedCount();
                     RebuildOriginOptions();
-                    RebuildExploreTree();
+                    RebuildOrRefreshIndicators();
 
                     var perModel = string.Join(" · ", records
                         .GroupBy(r => r.Origin, StringComparer.OrdinalIgnoreCase)
@@ -1363,6 +1645,16 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            // Pin the viewport: repopulating a virtualized tree makes WPF move the scroll
+            // position on its own, so the offset is captured here and re-asserted once
+            // layout settles.
+            var scrollViewer = GetTreeScrollViewer();
+            var scrollOffset = scrollViewer?.VerticalOffset;
+            LogManager.Info("explorer-scroll",
+                $"rebuild: {nodes.Count} roots, offset {scrollOffset?.ToString("0.##") ?? "n/a"}, " +
+                $"selectedKey={selectedKey ?? "none"}, expanded={expandedPaths.Count}");
+
+            _lastTreeKeys = new HashSet<string>(records.Select(KeyOf), StringComparer.Ordinal);
             _exploreItems.Clear();
             foreach (var node in nodes)
             {
@@ -1375,8 +1667,25 @@ namespace RevitSuite.Host.Explorer.UI
                 root.ApplyIndicators();
             }
 
+            // Restores must not move the viewport: containers realize (and raise Selected)
+            // asynchronously during layout, so the scroll offset is re-asserted and the
+            // suppression flag lifted only once the UI goes idle.
+            _suppressAutoScroll = true;
             RestoreExpandedGroupPaths(expandedPaths);
             RestoreSelectedRow(selectedKey);
+            _ = Dispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    if (scrollOffset is { } offset && GetTreeScrollViewer() is { } viewer)
+                    {
+                        LogManager.Info("explorer-scroll",
+                            $"rebuild idle: re-asserting offset {offset:0.##} (was {viewer.VerticalOffset:0.##})");
+                        viewer.ScrollToVerticalOffset(offset);
+                    }
+
+                    _suppressAutoScroll = false;
+                }),
+                DispatcherPriority.ContextIdle);
 
             if (_viewModeCombo.SelectedIndex == 2 && _viewSnapshot == null)
             {
@@ -1759,6 +2068,7 @@ namespace RevitSuite.Host.Explorer.UI
                 root.ApplyIndicators();
             }
 
+            UpdateCheckedCount();
             SetStatus(value
                 ? $"Checked everything currently shown in the tree ({_checkedKeys.Count:N0} total checked)."
                 : "Cleared all checks.");

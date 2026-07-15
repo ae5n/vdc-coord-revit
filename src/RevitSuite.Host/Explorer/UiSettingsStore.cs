@@ -8,7 +8,7 @@ namespace RevitSuite.Host.Explorer
     internal sealed class ExplorerUiSettings
     {
         /// <summary>Bumped when a saved setting needs a one-time migration (see Load).</summary>
-        public const int CurrentVersion = 2;
+        public const int CurrentVersion = 3;
 
         public int SettingsVersion { get; set; }
         public double? WindowLeft { get; set; }
@@ -39,6 +39,13 @@ namespace RevitSuite.Host.Explorer
                     if (settings.SettingsVersion < 2)
                     {
                         settings.IncludeLinks = true;
+                    }
+
+                    // v3: Active View became the default scope (hidden indicators live there).
+                    // One-time switch; from v3 onward the user's scope choice sticks.
+                    if (settings.SettingsVersion < 3)
+                    {
+                        settings.ScopeIndex = 1;
                         settings.SettingsVersion = CurrentVersion;
                     }
 

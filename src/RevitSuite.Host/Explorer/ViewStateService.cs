@@ -19,6 +19,8 @@ namespace RevitSuite.Host.Explorer
         private readonly HashSet<long> _hiddenLinkInstanceIds;
         private readonly HashSet<string> _hiddenCategoryNames;
         private readonly Dictionary<long, string> _filterNameByHostId;
+        private readonly Dictionary<long, HashSet<long>> _visibleLinkedIdsByInstance;
+        private readonly HashSet<string> _visibleCategoryNames;
 
         public ViewVisibilitySnapshot(
             long viewIdValue,
@@ -29,7 +31,9 @@ namespace RevitSuite.Host.Explorer
             HashSet<long> elementHiddenHostIds,
             HashSet<long> hiddenLinkInstanceIds,
             HashSet<string> hiddenCategoryNames,
-            Dictionary<long, string> filterNameByHostId)
+            Dictionary<long, string> filterNameByHostId,
+            Dictionary<long, HashSet<long>> visibleLinkedIdsByInstance,
+            HashSet<string> visibleCategoryNames)
         {
             ViewIdValue = viewIdValue;
             ViewName = viewName;
@@ -40,6 +44,8 @@ namespace RevitSuite.Host.Explorer
             _hiddenLinkInstanceIds = hiddenLinkInstanceIds;
             _hiddenCategoryNames = hiddenCategoryNames;
             _filterNameByHostId = filterNameByHostId;
+            _visibleLinkedIdsByInstance = visibleLinkedIdsByInstance;
+            _visibleCategoryNames = visibleCategoryNames;
         }
 
         public long ViewIdValue { get; }
@@ -67,7 +73,12 @@ namespace RevitSuite.Host.Explorer
         {
             if (record.IsLinked)
             {
-                if (record.LinkInstanceIdValue is { } linkId && _hiddenLinkInstanceIds.Contains(linkId))
+                if (record.LinkInstanceIdValue is not { } linkId)
+                {
+                    return true;
+                }
+
+                if (_hiddenLinkInstanceIds.Contains(linkId))
                 {
                     return false;
                 }
@@ -77,6 +88,24 @@ namespace RevitSuite.Host.Explorer
                     return false;
                 }
 
+                // Per-element link truth (Revit 2024+ link-aware view collector): drawn →
+                // visible. Not drawn → hidden, but ONLY when its category demonstrably draws
+                // in this view (guards against calling out-of-range/non-graphical records
+                // hidden — the linked counterpart of the host IsHidden disambiguation, which
+                // Revit does not offer for linked elements).
+                if (_visibleLinkedIdsByInstance.TryGetValue(linkId, out var visibleInLink))
+                {
+                    if (visibleInLink.Contains(record.IdValue))
+                    {
+                        return true;
+                    }
+
+                    return record.Category != null && _visibleCategoryNames.Contains(record.Category)
+                        ? false
+                        : (bool?)null;
+                }
+
+                // Collector unavailable for this view kind — legacy assumption.
                 return true;
             }
 
@@ -111,7 +140,14 @@ namespace RevitSuite.Host.Explorer
                         : "Hidden: the link instance is hidden in this view";
                 }
 
-                return $"Hidden: category '{record.Category}' is off in Visibility/Graphics";
+                if (record.Category != null && _hiddenCategoryNames.Contains(record.Category))
+                {
+                    return $"Hidden: category '{record.Category}' is off in Visibility/Graphics";
+                }
+
+                return "Hidden inside the link: individually hidden element, view filter, phase, or view " +
+                       "range (Revit does not report which for linked elements). Individually hidden " +
+                       "linked elements can only be unhidden via Revit's Reveal Hidden Elements mode.";
             }
 
             var categoryOff = record.Category != null && _hiddenCategoryNames.Contains(record.Category);
@@ -143,9 +179,11 @@ namespace RevitSuite.Host.Explorer
         }
 
         /// <summary>
-        /// Compact hide-mechanism tag rendered next to the eye glyph in the tree:
-        /// "VG" (category off), "elem" (element hide), "VG+elem" (both), "link"
-        /// (link instance hidden), "link+VG". Null when not hidden.
+        /// Compact hide-MECHANISM tag rendered next to the eye glyph in the tree:
+        /// "VG" (category off), "elem" (element hide), "VG+elem" (both), "filter"
+        /// (visibility-off view filter), "link off" (the link instance is hidden —
+        /// distinct from the 🔗 origin marker, which merely says where the element
+        /// lives), "link off+VG". Null when not hidden.
         /// </summary>
         public string? HiddenTag(ElementRecord record)
         {
@@ -160,9 +198,12 @@ namespace RevitSuite.Host.Explorer
             {
                 var linkHidden = record.LinkInstanceIdValue is { } linkId &&
                                  _hiddenLinkInstanceIds.Contains(linkId);
-                return linkHidden
-                    ? categoryOff ? "link+VG" : "link"
-                    : "VG";
+                if (linkHidden)
+                {
+                    return categoryOff ? "link off+VG" : "link off";
+                }
+
+                return categoryOff ? "VG" : "hidden";
             }
 
             var elementHidden = _elementHiddenHostIds.Contains(record.IdValue);
@@ -339,6 +380,60 @@ namespace RevitSuite.Host.Explorer
                 // Filter APIs unavailable for this view kind — filter hides stay undetected.
             }
 
+            // Per-element link truth (Revit 2024+): a link-aware view collector per visible
+            // link instance says exactly which linked elements the view draws — this is how
+            // right-click hides INSIDE links become detectable.
+            var visibleLinkedIdsByInstance = new Dictionary<long, HashSet<long>>();
+            foreach (var linkId in records
+                         .Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue)
+                         .Select(r => r.LinkInstanceIdValue!.Value)
+                         .Distinct())
+            {
+                if (hiddenLinks.Contains(linkId))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var visibleInLink = new HashSet<long>();
+                    foreach (var id in new FilteredElementCollector(doc, view.Id, new ElementId(linkId))
+                                 .WhereElementIsNotElementType()
+                                 .ToElementIds())
+                    {
+                        visibleInLink.Add(id.Value);
+                    }
+
+                    visibleLinkedIdsByInstance[linkId] = visibleInLink;
+                }
+                catch
+                {
+                    // View kind rejects link collection — linked truth unavailable, classify
+                    // falls back to link/category level for this instance.
+                }
+            }
+
+            // Categories that demonstrably draw in this view (host + links) — the N/A guard
+            // for linked records, where Revit offers no IsHidden to disambiguate.
+            var visibleCategoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var record in records)
+            {
+                if (record.Category == null)
+                {
+                    continue;
+                }
+
+                var isVisible = record.IsLinked
+                    ? record.LinkInstanceIdValue is { } instanceId &&
+                      visibleLinkedIdsByInstance.TryGetValue(instanceId, out var set) &&
+                      set.Contains(record.IdValue)
+                    : visibleHostIds.Contains(record.IdValue);
+                if (isVisible)
+                {
+                    visibleCategoryNames.Add(record.Category);
+                }
+            }
+
             var temporaryIsolate = false;
             try
             {
@@ -352,7 +447,7 @@ namespace RevitSuite.Host.Explorer
             return new ViewVisibilitySnapshot(
                 view.Id.Value, view.Name, temporaryIsolate,
                 visibleHostIds, hiddenHostIds, elementHiddenHostIds, hiddenLinks, hiddenCategoryNames,
-                filterNameByHostId);
+                filterNameByHostId, visibleLinkedIdsByInstance, visibleCategoryNames);
         }
 
         /// <summary>

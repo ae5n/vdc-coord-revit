@@ -116,6 +116,7 @@ namespace RevitSuite.Host.Explorer.UI
             var note = viewChanged
                 ? changes > 0 ? $"view + {changes:N0} change(s)" : "view changed"
                 : $"{changes:N0} change(s)";
+            LogManager.Info("explorer-scroll", $"auto-sync fires: {note}");
             RefreshExplore(silent: true, autoSyncNote: note);
         }
 

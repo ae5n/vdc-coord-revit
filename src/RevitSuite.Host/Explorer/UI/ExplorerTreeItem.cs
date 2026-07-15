@@ -126,6 +126,26 @@ namespace RevitSuite.Host.Explorer.UI
         /// <summary>Inline hide-mechanism tag next to the eye ("VG", "elem", …); empty when visible.</summary>
         public string HiddenTagText => _hiddenTag ?? string.Empty;
 
+        private string? _hiddenSummary;
+
+        /// <summary>
+        /// Group rows only: "n hidden" when SOME (not all) descendants are hidden, so a
+        /// collapsed parent still reveals it contains hidden items. Empty otherwise
+        /// (all-hidden groups show the full eye + tag instead).
+        /// </summary>
+        public string HiddenSummaryText => _hiddenSummary ?? string.Empty;
+
+        private void SetHiddenSummary(string? summary)
+        {
+            if (_hiddenSummary == summary)
+            {
+                return;
+            }
+
+            _hiddenSummary = summary;
+            OnPropertyChanged(nameof(HiddenSummaryText));
+        }
+
         private void SetHiddenReason(string? reason, string? tag)
         {
             if (_hiddenReason != reason)
@@ -165,6 +185,7 @@ namespace RevitSuite.Host.Explorer.UI
                 SetHiddenReason(
                     _isHiddenIndicated ? HiddenReasonClassifier?.Invoke(Record) : null,
                     _isHiddenIndicated ? HiddenTagClassifier?.Invoke(Record) : null);
+                SetHiddenSummary(null);
             }
             else if (_node != null)
             {
@@ -198,7 +219,8 @@ namespace RevitSuite.Host.Explorer.UI
 
                 if (hiddenClassifier != null)
                 {
-                    IsHiddenIndicated = records.Count > 0 && records.All(r => hiddenClassifier(r));
+                    var hiddenCount = records.Count(r => hiddenClassifier(r));
+                    IsHiddenIndicated = records.Count > 0 && hiddenCount == records.Count;
                     if (_isHiddenIndicated)
                     {
                         // One shared mechanism shows its tag; a mix is labeled as such.
@@ -213,10 +235,22 @@ namespace RevitSuite.Host.Explorer.UI
                             $"All {records.Count:N0} element(s) under this group are hidden in the active view " +
                             "(expand for per-element reasons)",
                             tag);
+                        SetHiddenSummary(null);
+                    }
+                    else if (hiddenCount > 0)
+                    {
+                        // Partially hidden: no eye (the group is not all-hidden), but the
+                        // collapsed parent must still reveal it contains hidden items.
+                        SetHiddenReason(
+                            $"{hiddenCount:N0} of {records.Count:N0} element(s) under this group are hidden " +
+                            "in the active view (expand for per-element reasons)",
+                            null);
+                        SetHiddenSummary($"{hiddenCount:N0} hidden");
                     }
                     else
                     {
                         SetHiddenReason(null, null);
+                        SetHiddenSummary(null);
                     }
                 }
             }
