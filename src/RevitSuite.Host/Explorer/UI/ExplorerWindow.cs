@@ -154,6 +154,8 @@ namespace RevitSuite.Host.Explorer.UI
                 LogManager.Error("explorer", "Could not subscribe to Revit selection changes.", ex);
             }
 
+            SubscribeAutoSync(app, _instance);
+
             _instance.Closed += (_, _) =>
             {
                 try
@@ -168,9 +170,18 @@ namespace RevitSuite.Host.Explorer.UI
                     // Best effort; Revit may be shutting down.
                 }
 
+                if (_subscribedApp != null)
+                {
+                    UnsubscribeAutoSync(_subscribedApp);
+                }
+
+                _instance?._autoSyncDebounce?.Stop();
+
                 // Static classifier/event hooks reference this window instance — clear them.
                 ExplorerTreeItem.CheckClassifier = null;
                 ExplorerTreeItem.HiddenClassifier = null;
+                ExplorerTreeItem.HiddenReasonClassifier = null;
+                ExplorerTreeItem.HiddenTagClassifier = null;
                 if (_instance != null)
                 {
                     ExplorerTreeItem.UserCheckChanged -= _instance.OnUserCheckChanged;
@@ -270,6 +281,7 @@ namespace RevitSuite.Host.Explorer.UI
             Loaded += (_, _) => RefreshExplore();
 
             PreviewKeyDown += OnWindowKeyDown;
+            WireAutoSyncWindowEvents();
             SetStatus("Indexing starts automatically. F5 re-indexes, Ctrl+F jumps to search.");
         }
 

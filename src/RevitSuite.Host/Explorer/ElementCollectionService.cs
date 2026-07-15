@@ -59,6 +59,9 @@ namespace RevitSuite.Host.Explorer
                     break;
 
                 case ExplorerScope.ActiveView:
+                    // Legacy path: the Explorer window no longer collects view-scoped — it keeps
+                    // the full index warm and narrows to the view via the visibility snapshot
+                    // (so hidden elements stay listed). Kept for completeness of this public API.
                     AppendElements(
                         doc,
                         new FilteredElementCollector(doc, uidoc.ActiveView.Id)
@@ -103,11 +106,12 @@ namespace RevitSuite.Host.Explorer
         public sealed record WarmResult(IReadOnlyList<ElementRecord> Records, string Note);
 
         /// <summary>
-        /// Forma-style warm indexing for EntireProject scope: linked models come from the
-        /// session cache (they cannot change while loaded), and the host is patched from
-        /// DocumentChanged deltas instead of re-swept when possible. Falls back to a full
-        /// sweep on the first run, heavy churn, or option changes. Other scopes delegate
-        /// to the plain <see cref="Collect"/>.
+        /// Forma-style warm indexing: linked models come from the session cache (they
+        /// cannot change while loaded), and the host is patched from DocumentChanged
+        /// deltas instead of re-swept when possible. Falls back to a full sweep on the
+        /// first run, heavy churn, or option changes. Applies to EntireProject and
+        /// ActiveView (the latter is narrowed to the view on the UI side via the
+        /// visibility snapshot); CurrentSelection delegates to the plain <see cref="Collect"/>.
         /// </summary>
         public static WarmResult CollectWarm(
             UIDocument uidoc,
@@ -118,11 +122,11 @@ namespace RevitSuite.Host.Explorer
             Action<int>? progress = null,
             Func<bool>? isCancelled = null)
         {
-            if (scope != ExplorerScope.EntireProject)
+            if (scope == ExplorerScope.CurrentSelection)
             {
                 return new WarmResult(
                     Collect(uidoc, scope, includeLinkedModels, includeUncategorized, progress, isCancelled),
-                    "full index (view/selection scope)");
+                    "full index (selection scope)");
             }
 
             var doc = uidoc.Document;

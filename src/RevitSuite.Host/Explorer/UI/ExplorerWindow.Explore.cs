@@ -182,7 +182,8 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 Content = "Sync from Revit",
                 IsChecked = true,
-                ToolTip = "When you select elements in Revit, find and highlight them here automatically.",
+                ToolTip = "Two-way live sync: selecting in Revit highlights here, and model edits, " +
+                          "hide/unhide, and view switches update the tree automatically (no F5 needed).",
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 12, 0)
             };
@@ -240,6 +241,8 @@ namespace RevitSuite.Host.Explorer.UI
             // survives rebuilds and lazily expanded rows are born correct.
             ExplorerTreeItem.CheckClassifier = r => _checkedKeys.Contains(KeyOf(r));
             ExplorerTreeItem.HiddenClassifier = r => _viewSnapshot?.Classify(r) == false;
+            ExplorerTreeItem.HiddenReasonClassifier = r => _viewSnapshot?.DescribeHidden(r);
+            ExplorerTreeItem.HiddenTagClassifier = r => _viewSnapshot?.HiddenTag(r);
             ExplorerTreeItem.UserCheckChanged += OnUserCheckChanged;
 
             var splitter = new GridSplitter
@@ -267,7 +270,10 @@ namespace RevitSuite.Host.Explorer.UI
 
             actions.Children.Add(new TextBlock
             {
-                Text = "Act on checked ☑:",
+                Text = "Act on ☑ / highlighted:",
+                ToolTip = "Actions target the checked rows. When nothing is checked, they act on " +
+                          "the highlighted row instead (the status bar says so). Space toggles the " +
+                          "highlighted row's checkbox. Safe Delete is checked-only.",
                 Foreground = SystemColors.GrayTextBrush,
                 FontWeight = FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -275,34 +281,38 @@ namespace RevitSuite.Host.Explorer.UI
             });
 
             actions.Children.Add(MakeIconButton("", "Select", (_, _) => SelectChecked(),
-                "Select the checked elements in Revit"));
+                "Select the checked elements in Revit (or the highlighted row when nothing is checked)"));
             actions.Children.Add(MakeIconButton("", "Show", (_, _) => ShowChecked(),
-                "Zoom to the checked elements in Revit"));
+                "Zoom to the checked elements in Revit (or the highlighted row when nothing is checked)"));
 
             actions.Children.Add(MakePair(
                 MakeIconButton("", "Focus 3D", (_, _) => FocusChecked(),
-                    "Section-box the active 3D view around the checked elements (hides other links)"),
+                    "Section-box the active 3D view around the checked elements — or the highlighted row " +
+                    "when nothing is checked (hides other links)"),
                 MakeIconButton("", null, (_, _) => ResetFocus(),
                     "Reset Focus — restore section box and link visibility")));
 
             actions.Children.Add(MakePair(
                 MakeIconButton("", "Isolate", (_, _) => IsolateChecked(),
-                    "Temporarily isolate the checked host elements in the active view"),
+                    "Temporarily isolate the checked host elements in the active view " +
+                    "(or the highlighted row when nothing is checked)"),
                 MakeIconButton("", null, (_, _) => ResetIsolate(),
                     "Reset Isolate — end temporary hide/isolate mode")));
 
             actions.Children.Add(MakePair(
                 MakeIconButton("", "Hide", (_, _) => HideChecked(),
-                    "Hide the checked elements in the active view"),
+                    "Hide the checked elements in the active view (or the highlighted row when nothing is checked)"),
                 MakeIconButton("", null, (_, _) => UnhideChecked(),
-                    "Unhide the checked elements (punches through link/category/element hides)")));
+                    "Unhide the checked elements — or the highlighted row when nothing is checked " +
+                    "(punches through link/category/element hides)")));
 
             actions.Children.Add(MakeIconButton("", "Unhide All", (_, _) => UnhideAll(),
                 "Restore everything hidden in the active view (links, categories, elements)"));
             actions.Children.Add(MakeIconButton("", "Export CSV", (_, _) => ExportExploreCsv(),
                 "Export the visible rows to CSV"));
             actions.Children.Add(MakeIconButton("", "Safe Delete…", (_, _) => SafeDeleteChecked(),
-                "Delete the checked elements after a dependency preview and confirmation", destructive: true));
+                "Delete the CHECKED elements only (never the highlighted row) after a dependency preview and confirmation",
+                destructive: true));
 
             Grid.SetRow(actions, 2);
             layout.Children.Add(actions);
@@ -555,8 +565,25 @@ namespace RevitSuite.Host.Explorer.UI
                 new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB4, 0x5C, 0x0F)));
             hiddenFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(6, 0, 0, 0));
             hiddenFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
-            hiddenFactory.SetValue(FrameworkElement.ToolTipProperty, "Hidden in the active view");
+            // Tooltip states WHY it is hidden (VG category vs element hide vs link).
+            hiddenFactory.SetBinding(FrameworkElement.ToolTipProperty,
+                new Binding(nameof(ExplorerTreeItem.HiddenToolTip)));
             panelFactory.AppendChild(hiddenFactory);
+
+            // Compact mechanism tag right after the eye — "VG", "elem", "VG+elem", "link",
+            // "mixed" — so the distinction is visible at a glance, not only on hover.
+            var hiddenTagFactory = new FrameworkElementFactory(typeof(TextBlock));
+            hiddenTagFactory.SetBinding(TextBlock.TextProperty,
+                new Binding(nameof(ExplorerTreeItem.HiddenTagText)));
+            hiddenTagFactory.SetValue(TextBlock.FontSizeProperty, 10.0);
+            hiddenTagFactory.SetValue(TextBlock.FontStyleProperty, FontStyles.Italic);
+            hiddenTagFactory.SetValue(TextBlock.ForegroundProperty,
+                new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB4, 0x5C, 0x0F)));
+            hiddenTagFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(3, 0, 0, 0));
+            hiddenTagFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            hiddenTagFactory.SetBinding(FrameworkElement.ToolTipProperty,
+                new Binding(nameof(ExplorerTreeItem.HiddenToolTip)));
+            panelFactory.AppendChild(hiddenTagFactory);
 
             template.VisualTree = panelFactory;
             tree.ItemTemplate = template;
@@ -584,6 +611,21 @@ namespace RevitSuite.Host.Explorer.UI
             tree.ItemContainerStyle = itemStyle;
 
             // Double-click an instance row zooms straight to it — host or linked.
+            // Space toggles the highlighted row's checkbox — same path as a mouse click
+            // (the IsChecked setter raises UserCheckChanged, updating the checked-key set).
+            tree.PreviewKeyDown += (_, args) =>
+            {
+                if (args.Key != System.Windows.Input.Key.Space ||
+                    args.OriginalSource is TextBox ||
+                    tree.SelectedItem is not ExplorerTreeItem item)
+                {
+                    return;
+                }
+
+                item.IsChecked = item.IsChecked != true;
+                args.Handled = true;
+            };
+
             tree.MouseDoubleClick += (_, _) =>
             {
                 if (tree.SelectedItem is not ExplorerTreeItem { Record: { } record })
@@ -648,12 +690,12 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void IsolateChecked()
         {
-            var (hostIds, linked) = PartitionChecked();
+            var (hostIds, linked) = Partition(GetActionRecords(out var fallbackNote));
             if (hostIds.Count == 0)
             {
                 SetStatus(linked.Count > 0
-                    ? "Only linked elements are checked — Revit can only isolate host elements (hide/show the whole link instead)."
-                    : "Nothing is checked — tick checkbox(es) in the tree first.");
+                    ? "Only linked elements are targeted — Revit can only isolate host elements (hide/show the whole link instead)."
+                    : NothingToActOn);
                 return;
             }
 
@@ -661,8 +703,8 @@ namespace RevitSuite.Host.Explorer.UI
             {
                 var (isolated, error) = RevitActions.IsolateElements(uidoc, hostIds);
                 RecaptureViewState(uidoc);
-                OnUi(() => SetStatus(error ??
-                    $"Temporarily isolated {isolated:N0} element(s) in the active view. Use Reset Isolate to restore."));
+                OnUi(() => SetStatus(error ?? WithFallbackNote(fallbackNote,
+                    $"Temporarily isolated {isolated:N0} element(s) in the active view. Use Reset Isolate to restore.")));
             });
         }
 
@@ -837,14 +879,7 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void CopyElementIds()
         {
-            var records = GetCheckedRecords();
-            if (records.Count == 0 && _exploreTree.SelectedItem is ExplorerTreeItem highlighted)
-            {
-                var fallback = new List<ElementRecord>();
-                highlighted.CollectAllRecords(fallback);
-                records = fallback;
-            }
-
+            var records = GetActionRecords(out _);
             if (records.Count == 0)
             {
                 SetStatus("Nothing checked or highlighted to copy.");
@@ -873,10 +908,10 @@ namespace RevitSuite.Host.Explorer.UI
         /// </summary>
         private void FocusChecked()
         {
-            var (hostIds, linked) = PartitionChecked();
+            var (hostIds, linked) = Partition(GetActionRecords(out var fallbackNote));
             if (hostIds.Count == 0 && linked.Count == 0)
             {
-                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                SetStatus(NothingToActOn);
                 return;
             }
 
@@ -891,10 +926,10 @@ namespace RevitSuite.Host.Explorer.UI
                 }
 
                 RecaptureViewState(uidoc);
-                OnUi(() => SetStatus(error ??
+                OnUi(() => SetStatus(error ?? WithFallbackNote(fallbackNote,
                     $"Focused the 3D view on {hostIds.Count + linked.Count:N0} element(s)" +
                     (linked.Count > 0 ? " (other links hidden)" : string.Empty) +
-                    ". Reset Focus restores the view."));
+                    ". Reset Focus restores the view.")));
             });
         }
 
@@ -916,10 +951,10 @@ namespace RevitSuite.Host.Explorer.UI
         /// </summary>
         private void HideChecked()
         {
-            var records = GetCheckedRecords();
+            var records = GetActionRecords(out var fallbackNote);
             if (records.Count == 0)
             {
-                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                SetStatus(NothingToActOn);
                 return;
             }
 
@@ -963,7 +998,8 @@ namespace RevitSuite.Host.Explorer.UI
                 }
 
                 RecaptureViewState(uidoc);
-                OnUi(() => SetStatus(string.Join("; ", messages) + ". Unhide restores them."));
+                OnUi(() => SetStatus(WithFallbackNote(fallbackNote,
+                    string.Join("; ", messages) + ". Unhide restores them.")));
             });
         }
 
@@ -975,12 +1011,17 @@ namespace RevitSuite.Host.Explorer.UI
         /// </summary>
         private void UnhideChecked()
         {
-            var records = GetCheckedRecords();
+            var records = GetActionRecords(out var fallbackNote);
             if (records.Count == 0)
             {
-                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                SetStatus(NothingToActOn);
                 return;
             }
+
+            // Filters that hide any targeted record must be lifted too (view-wide by
+            // nature — stated honestly), or Unhide would visibly do nothing for them.
+            var hiddenFilters = _viewSnapshot?.HiddenFilterNamesFor(records)
+                                ?? (IReadOnlyList<string>)Array.Empty<string>();
 
             var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
             var linkedRecords = records.Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue).ToList();
@@ -1068,10 +1109,20 @@ namespace RevitSuite.Host.Explorer.UI
                     }
                 }
 
+                if (hiddenFilters.Count > 0)
+                {
+                    var (count, error) = RevitActions.SetFiltersVisible(uidoc, hiddenFilters);
+                    if (error == null && count > 0)
+                    {
+                        messages.Add($"restored view filter(s) {string.Join(", ", hiddenFilters.Select(f => $"'{f}'"))} " +
+                            "(view-wide — affects everything they match)");
+                    }
+                }
+
                 RecaptureViewState(uidoc);
                 OnUi(() => SetStatus(messages.Count == 0
-                    ? "The checked elements are not hidden in this view."
-                    : $"Unhide: {string.Join("; ", messages)}."));
+                    ? "The targeted elements are not hidden in this view."
+                    : WithFallbackNote(fallbackNote, $"Unhide: {string.Join("; ", messages)}.")));
             });
         }
 
@@ -1124,6 +1175,15 @@ namespace RevitSuite.Host.Explorer.UI
                     }
                 }
 
+                if (snapshot.HiddenFilterNames.Count > 0)
+                {
+                    var (count, error) = RevitActions.SetFiltersVisible(uidoc, snapshot.HiddenFilterNames);
+                    if (error == null && count > 0)
+                    {
+                        messages.Add($"{count} view filter(s) ({string.Join(", ", snapshot.HiddenFilterNames)})");
+                    }
+                }
+
                 RevitActions.ClearVisibilityTracking(uidoc);
                 RecaptureViewState(uidoc);
 
@@ -1169,7 +1229,11 @@ namespace RevitSuite.Host.Explorer.UI
         private string? _lastIndexDocKey;
         private bool _lastIndexUncategorized;
 
-        private void RefreshExplore()
+        /// <summary>
+        /// Silent mode (auto-sync) re-indexes without the busy overlay or progress updates,
+        /// so it never steals focus or flashes UI while the user works in Revit.
+        /// </summary>
+        private void RefreshExplore(bool silent = false, string? autoSyncNote = null)
         {
             var scope = CurrentScope;
             var includeLinks = _includeLinksCheck.IsChecked == true;
@@ -1191,8 +1255,10 @@ namespace RevitSuite.Host.Explorer.UI
                     previousRecords: string.Equals(docKey, lastDocKey, StringComparison.OrdinalIgnoreCase)
                         ? previous
                         : null,
-                    progress: count => ReportProgress($"Indexing model… {count:N0} elements"),
-                    isCancelled: () => _cancelRequested);
+                    progress: silent
+                        ? null
+                        : new Action<int>(count => ReportProgress($"Indexing model… {count:N0} elements")),
+                    isCancelled: silent ? null : new Func<bool>(() => _cancelRequested));
                 var records = warm.Records;
                 var snapshot = ViewStateService.Capture(uidoc, records);
                 var title = uidoc.Document.Title;
@@ -1229,9 +1295,15 @@ namespace RevitSuite.Host.Explorer.UI
                     }
 
                     var linkHint = linkNotes.Count > 0 ? "  " + string.Join("  ", linkNotes) + "." : string.Empty;
-                    SetStatus($"Indexed {records.Count:N0} element(s) ({ScopeLabel(scope)}): {perModel} [{warm.Note}]{linkHint}");
+                    // Active View scope keeps the full index warm and narrows in the tree,
+                    // so report both numbers.
+                    var headline = scope == ExplorerScope.ActiveView
+                        ? $"{records.Count(r => snapshot.Classify(r) != null):N0} in active view ({records.Count:N0} indexed)"
+                        : $"Indexed {records.Count:N0} element(s) ({ScopeLabel(scope)})";
+                    var prefix = autoSyncNote == null ? string.Empty : $"Auto-synced ({autoSyncNote}) — ";
+                    SetStatus($"{prefix}{headline}: {perModel} [{warm.Note}]{linkHint}");
                 });
-            });
+            }, showBusy: !silent);
         }
 
         private static string ScopeLabel(ExplorerScope scope) => scope switch
@@ -1271,6 +1343,8 @@ namespace RevitSuite.Host.Explorer.UI
             // state and the checked-key set); only the pure grouping runs on the pool.
             var records = ComputeTreeRecords();
             var grouping = CurrentGrouping;
+            var expandedPaths = CollectExpandedGroupPaths();
+            var selectedKey = SelectedRowKey();
 
             IReadOnlyList<ExplorerTreeNode> nodes;
             try
@@ -1301,9 +1375,139 @@ namespace RevitSuite.Host.Explorer.UI
                 root.ApplyIndicators();
             }
 
+            RestoreExpandedGroupPaths(expandedPaths);
+            RestoreSelectedRow(selectedKey);
+
             if (_viewModeCombo.SelectedIndex == 2 && _viewSnapshot == null)
             {
                 SetStatus("Hidden view needs an index first — press Refresh (F5).");
+            }
+        }
+
+        /// <summary>Rebuilding replaces every row, so expansion is remembered by group label path.</summary>
+        private const int MaxRestoredExpansions = 500;
+
+        private HashSet<string> CollectExpandedGroupPaths()
+        {
+            var paths = new HashSet<string>(StringComparer.Ordinal);
+
+            void Visit(ExplorerTreeItem item, string parentPath)
+            {
+                if (item.IsInstance || !item.IsExpanded)
+                {
+                    return;
+                }
+
+                var path = parentPath + "\u0001" + item.Label;
+                paths.Add(path);
+                foreach (var child in item.Children)
+                {
+                    Visit(child, path);
+                }
+            }
+
+            foreach (var root in _exploreItems)
+            {
+                Visit(root, string.Empty);
+            }
+
+            return paths;
+        }
+
+        private void RestoreExpandedGroupPaths(HashSet<string> paths)
+        {
+            if (paths.Count == 0 || paths.Count > MaxRestoredExpansions)
+            {
+                return;
+            }
+
+            void Visit(ExplorerTreeItem item, string parentPath)
+            {
+                if (item.IsInstance)
+                {
+                    return;
+                }
+
+                var path = parentPath + "\u0001" + item.Label;
+                if (!paths.Contains(path))
+                {
+                    return;
+                }
+
+                // Expanding materializes children, which are born with correct indicators.
+                item.IsExpanded = true;
+                foreach (var child in item.Children)
+                {
+                    Visit(child, path);
+                }
+            }
+
+            foreach (var root in _exploreItems)
+            {
+                Visit(root, string.Empty);
+            }
+        }
+
+        private string? SelectedRowKey()
+        {
+            if (_exploreTree?.SelectedItem is not ExplorerTreeItem item)
+            {
+                return null;
+            }
+
+            if (item.Record != null)
+            {
+                return "r:" + KeyOf(item.Record);
+            }
+
+            var path = string.Empty;
+            for (var current = item; current != null; current = current.Parent)
+            {
+                path = "\u0001" + current.Label + path;
+            }
+
+            return "g:" + path;
+        }
+
+        /// <summary>Re-selects the previously highlighted row without scrolling the viewport.</summary>
+        private void RestoreSelectedRow(string? selectedKey)
+        {
+            if (selectedKey == null)
+            {
+                return;
+            }
+
+            bool Visit(ExplorerTreeItem item, string parentPath)
+            {
+                var path = parentPath + "\u0001" + item.Label;
+                var key = item.Record != null ? "r:" + KeyOf(item.Record) : "g:" + path;
+                if (key == selectedKey)
+                {
+                    item.IsSelected = true;
+                    return true;
+                }
+
+                // Only rows the restore pass has already materialized can match.
+                if (!item.IsInstance && item.IsExpanded)
+                {
+                    foreach (var child in item.Children)
+                    {
+                        if (Visit(child, path))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+
+            foreach (var root in _exploreItems)
+            {
+                if (Visit(root, string.Empty))
+                {
+                    return;
+                }
             }
         }
 
@@ -1316,10 +1520,20 @@ namespace RevitSuite.Host.Explorer.UI
                 ? Array.Empty<ElementRecord>()
                 : _exploreRecords.Where(r => _checkedKeys.Contains(KeyOf(r))).ToList();
 
-        /// <summary>The record set the tree currently shows: origin filter + search + view mode.</summary>
+        /// <summary>The record set the tree currently shows: scope + origin filter + search + view mode.</summary>
         private IReadOnlyList<ElementRecord> ComputeTreeRecords()
         {
             IEnumerable<ElementRecord> records = OriginFilteredRecords();
+
+            // Active View scope: the index holds the full federation (kept warm); the view
+            // narrows it here via the visibility snapshot. Hidden-in-view records classify
+            // false and STAY listed (with the hidden-eye indicator) — only records with no
+            // presence in the view at all (out of range/crop, view-specific elsewhere,
+            // non-graphical) classify null and drop out.
+            if (CurrentScope == ExplorerScope.ActiveView && _viewSnapshot is { } scopeSnapshot)
+            {
+                records = records.Where(r => scopeSnapshot.Classify(r) != null);
+            }
 
             var search = _searchBox.Text;
             if (!string.IsNullOrWhiteSpace(search))
@@ -1343,17 +1557,49 @@ namespace RevitSuite.Host.Explorer.UI
             return records.ToList();
         }
 
+        private const string NothingToActOn =
+            "Nothing checked or highlighted — tick checkbox(es) or click a row first.";
+
         /// <summary>
-        /// Splits checked records into host ids and linked targets. Checked rows ONLY —
-        /// no silent fallback to the highlighted row: that guessed behind the user's back
-        /// (e.g. "selected Levels while it was unchecked" because a Level happened to be
-        /// the highlighted row).
+        /// The records an action button targets: the checked set always wins; when NOTHING
+        /// is checked, the highlighted tree row is used instead and <paramref name="fallbackNote"/>
+        /// says so — an announced fallback, never a silent guess (the old silent fallback
+        /// "selected Levels while it was unchecked" because a Level happened to be highlighted).
+        /// Safe Delete deliberately does NOT use this — it stays checked-only.
         /// </summary>
-        private (List<long> HostIds, List<RevitActions.LinkedTarget> Linked) PartitionChecked()
+        private IReadOnlyList<ElementRecord> GetActionRecords(out string? fallbackNote)
         {
+            fallbackNote = null;
             var checkedRecords = GetCheckedRecords();
-            var hostIds = checkedRecords.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
-            var linked = checkedRecords
+            if (checkedRecords.Count > 0)
+            {
+                return checkedRecords;
+            }
+
+            if (_exploreTree?.SelectedItem is ExplorerTreeItem highlighted)
+            {
+                var records = new List<ElementRecord>();
+                highlighted.CollectAllRecords(records);
+                if (records.Count > 0)
+                {
+                    fallbackNote = $"Nothing checked — acting on highlighted '{highlighted.Label}' " +
+                                   $"({records.Count:N0} element{(records.Count == 1 ? string.Empty : "s")}).";
+                    return records;
+                }
+            }
+
+            return Array.Empty<ElementRecord>();
+        }
+
+        private static string WithFallbackNote(string? note, string message) =>
+            note == null ? message : note + " " + message;
+
+        /// <summary>Splits records into host ids and linked targets.</summary>
+        private static (List<long> HostIds, List<RevitActions.LinkedTarget> Linked) Partition(
+            IReadOnlyList<ElementRecord> records)
+        {
+            var hostIds = records.Where(r => !r.IsLinked).Select(r => r.IdValue).Distinct().ToList();
+            var linked = records
                 .Where(r => r.IsLinked && r.LinkInstanceIdValue.HasValue)
                 .Select(r => new RevitActions.LinkedTarget(r.LinkInstanceIdValue!.Value, r.IdValue))
                 .Distinct()
@@ -1363,10 +1609,10 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void SelectChecked()
         {
-            var (hostIds, linked) = PartitionChecked();
+            var (hostIds, linked) = Partition(GetActionRecords(out var fallbackNote));
             if (hostIds.Count == 0 && linked.Count == 0)
             {
-                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                SetStatus(NothingToActOn);
                 return;
             }
 
@@ -1374,17 +1620,17 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Selecting elements…", (_, uidoc) =>
             {
                 var (selected, failed, error) = RevitActions.SelectMixed(uidoc, hostIds, linked);
-                OnUi(() => SetStatus(error ?? BuildActionStatus(
-                    $"Selected {selected:N0} element(s)", failed, linked.Count)));
+                OnUi(() => SetStatus(error ?? WithFallbackNote(fallbackNote, BuildActionStatus(
+                    $"Selected {selected:N0} element(s)", failed, linked.Count))));
             });
         }
 
         private void ShowChecked()
         {
-            var (hostIds, linked) = PartitionChecked();
+            var (hostIds, linked) = Partition(GetActionRecords(out var fallbackNote));
             if (hostIds.Count == 0 && linked.Count == 0)
             {
-                SetStatus("Nothing is checked — tick checkbox(es) in the tree first.");
+                SetStatus(NothingToActOn);
                 return;
             }
 
@@ -1392,8 +1638,8 @@ namespace RevitSuite.Host.Explorer.UI
             RunOnRevit("Showing elements…", (_, uidoc) =>
             {
                 var (shown, error) = RevitActions.ShowMixed(uidoc, hostIds, linked);
-                OnUi(() => SetStatus(error ?? BuildActionStatus(
-                    $"Showing {shown:N0} element(s)", 0, linked.Count)));
+                OnUi(() => SetStatus(error ?? WithFallbackNote(fallbackNote, BuildActionStatus(
+                    $"Showing {shown:N0} element(s)", 0, linked.Count))));
             });
         }
 
@@ -1415,8 +1661,8 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void ExportExploreCsv()
         {
-            // Export exactly what the tree shows: Models filter plus search filter.
-            var visible = TreeBuilder.Filter(OriginFilteredRecords(), _searchBox.Text ?? string.Empty).ToList();
+            // Export exactly what the tree shows: scope, Models filter, search, and view mode.
+            var visible = ComputeTreeRecords();
             if (visible.Count == 0)
             {
                 SetStatus("Nothing to export — refresh the model index first.");
@@ -1441,12 +1687,14 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void SafeDeleteChecked()
         {
-            var (hostIds, linked) = PartitionChecked();
+            // Deliberately NO highlighted-row fallback: deleting is destructive, and a group
+            // row (e.g. "Levels") merely being highlighted must never become a delete target.
+            var (hostIds, linked) = Partition(GetCheckedRecords());
             if (hostIds.Count == 0)
             {
                 SetStatus(linked.Count > 0
                     ? "Only linked elements are checked — elements inside links can only be deleted in the link's own file."
-                    : "Nothing is checked — tick checkbox(es) in the tree first.");
+                    : "Safe Delete acts on checked rows only — tick checkbox(es) in the tree first.");
                 return;
             }
 
@@ -1590,6 +1838,16 @@ namespace RevitSuite.Host.Explorer.UI
             AddRow("Owner View", record.OwnerViewName);
             AddRow("Design Option", record.DesignOptionName);
             AddRow("Origin", record.Origin);
+            // View state distinguishes the hide mechanism — VG category off vs element
+            // hidden vs hidden link — because each needs a different unhide.
+            AddRow("View state", _viewSnapshot == null
+                ? null
+                : _viewSnapshot.Classify(record) switch
+                {
+                    true => "Visible in the active view",
+                    false => _viewSnapshot.DescribeHidden(record),
+                    null => "Not applicable in the active view (nothing to draw here)"
+                });
             AddRow("Flags", string.Join(", ", new[]
             {
                 record.IsViewSpecific ? "View-specific" : null,

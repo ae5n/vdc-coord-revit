@@ -23,9 +23,24 @@ namespace RevitSuite.Host.Explorer
 
         private ExternalEvent? _event;
 
+        private static volatile bool _executing;
+        private static long _lastExecuteEndTicks;
+
         private RevitActionBridge()
         {
         }
+
+        /// <summary>
+        /// True while a bridge action is running on the Revit thread (or just finished),
+        /// so DocumentChanged events raised by the Explorer's own operations can be told
+        /// apart from genuine user edits. Transactions committed inside a bridge action
+        /// raise DocumentChanged synchronously during Execute; the trailing window mops
+        /// up any post-commit regeneration events.
+        /// </summary>
+        internal static bool IsSelfEcho =>
+            _executing ||
+            DateTime.UtcNow.Ticks - System.Threading.Interlocked.Read(ref _lastExecuteEndTicks)
+                < TimeSpan.FromMilliseconds(500).Ticks;
 
         public static RevitActionBridge Instance => _instance ??= new RevitActionBridge();
 
@@ -52,16 +67,25 @@ namespace RevitSuite.Host.Explorer
 
         public void Execute(UIApplication app)
         {
-            while (_queue.TryDequeue(out var action))
+            _executing = true;
+            try
             {
-                try
+                while (_queue.TryDequeue(out var action))
                 {
-                    action(app);
+                    try
+                    {
+                        action(app);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogManager.Error("explorer-bridge", "Explorer bridge action failed.", ex);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    LogManager.Error("explorer-bridge", "Explorer bridge action failed.", ex);
-                }
+            }
+            finally
+            {
+                _executing = false;
+                System.Threading.Interlocked.Exchange(ref _lastExecuteEndTicks, DateTime.UtcNow.Ticks);
             }
         }
 
@@ -1086,6 +1110,63 @@ namespace RevitSuite.Host.Explorer
 
                 LogManager.Error("explorer", $"Category visibility change failed in view '{view.Name}'.", ex);
                 return (0, $"Could not change category visibility: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Restores visibility of the named view filters (VG ▸ Filters) in the active view.
+        /// View-wide by nature — a filter cannot be lifted for just one element.
+        /// </summary>
+        public static (int Changed, string? Error) SetFiltersVisible(
+            UIDocument uidoc, IReadOnlyCollection<string> filterNames)
+        {
+            var doc = uidoc.Document;
+            var view = uidoc.ActiveView;
+            var wanted = new HashSet<string>(filterNames, StringComparer.OrdinalIgnoreCase);
+
+            var targets = new List<ElementId>();
+            try
+            {
+                foreach (var filterId in view.GetFilters())
+                {
+                    var name = doc.GetElement(filterId)?.Name;
+                    if (name != null && wanted.Contains(name) && !view.GetFilterVisibility(filterId))
+                    {
+                        targets.Add(filterId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return (0, $"Could not read view filters: {ex.Message}");
+            }
+
+            if (targets.Count == 0)
+            {
+                return (0, null);
+            }
+
+            using var tx = new Transaction(doc, "Model Explorer - Show Filtered Elements");
+            try
+            {
+                tx.Start();
+                foreach (var id in targets)
+                {
+                    view.SetFilterVisibility(id, true);
+                }
+
+                tx.Commit();
+                return (targets.Count, null);
+            }
+            catch (Exception ex)
+            {
+                if (tx.HasStarted() && !tx.HasEnded())
+                {
+                    tx.RollBack();
+                }
+
+                LogManager.Error("explorer", $"Filter visibility change failed in view '{view.Name}'.", ex);
+                return (0, $"Could not change filter visibility: {ex.Message}");
             }
         }
 

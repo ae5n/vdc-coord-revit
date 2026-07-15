@@ -25,6 +25,12 @@ namespace RevitSuite.Host.Explorer.UI
         internal static Func<ElementRecord, bool>? CheckClassifier;
         internal static Func<ElementRecord, bool>? HiddenClassifier;
 
+        /// <summary>WHY a record is hidden (VG category vs element hide vs link) — eye tooltip.</summary>
+        internal static Func<ElementRecord, string?>? HiddenReasonClassifier;
+
+        /// <summary>Compact hide-mechanism tag ("VG", "elem", …) shown inline next to the eye.</summary>
+        internal static Func<ElementRecord, string?>? HiddenTagClassifier;
+
         /// <summary>Raised when the USER toggles a row's checkbox (not on programmatic re-application).</summary>
         internal static event Action<ExplorerTreeItem, bool>? UserCheckChanged;
 
@@ -111,6 +117,30 @@ namespace RevitSuite.Host.Explorer.UI
             }
         }
 
+        private string? _hiddenReason;
+        private string? _hiddenTag;
+
+        /// <summary>Eye-glyph tooltip: the specific hide mechanism when known.</summary>
+        public string HiddenToolTip => _hiddenReason ?? "Hidden in the active view";
+
+        /// <summary>Inline hide-mechanism tag next to the eye ("VG", "elem", …); empty when visible.</summary>
+        public string HiddenTagText => _hiddenTag ?? string.Empty;
+
+        private void SetHiddenReason(string? reason, string? tag)
+        {
+            if (_hiddenReason != reason)
+            {
+                _hiddenReason = reason;
+                OnPropertyChanged(nameof(HiddenToolTip));
+            }
+
+            if (_hiddenTag != tag)
+            {
+                _hiddenTag = tag;
+                OnPropertyChanged(nameof(HiddenTagText));
+            }
+        }
+
         /// <summary>Segoe MDL2 "Hide" glyph shown only next to hidden rows; empty otherwise.</summary>
         public string HiddenGlyph => _isHiddenIndicated ? "" : string.Empty;
 
@@ -132,6 +162,9 @@ namespace RevitSuite.Host.Explorer.UI
                 }
 
                 IsHiddenIndicated = hiddenClassifier?.Invoke(Record) == true;
+                SetHiddenReason(
+                    _isHiddenIndicated ? HiddenReasonClassifier?.Invoke(Record) : null,
+                    _isHiddenIndicated ? HiddenTagClassifier?.Invoke(Record) : null);
             }
             else if (_node != null)
             {
@@ -166,6 +199,25 @@ namespace RevitSuite.Host.Explorer.UI
                 if (hiddenClassifier != null)
                 {
                     IsHiddenIndicated = records.Count > 0 && records.All(r => hiddenClassifier(r));
+                    if (_isHiddenIndicated)
+                    {
+                        // One shared mechanism shows its tag; a mix is labeled as such.
+                        string? tag = null;
+                        if (HiddenTagClassifier is { } tagClassifier)
+                        {
+                            var tags = records.Select(tagClassifier).Distinct().ToList();
+                            tag = tags.Count == 1 ? tags[0] : "mixed";
+                        }
+
+                        SetHiddenReason(
+                            $"All {records.Count:N0} element(s) under this group are hidden in the active view " +
+                            "(expand for per-element reasons)",
+                            tag);
+                    }
+                    else
+                    {
+                        SetHiddenReason(null, null);
+                    }
                 }
             }
 

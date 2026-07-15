@@ -15,8 +15,10 @@ namespace RevitSuite.Host.Explorer
     {
         private readonly HashSet<long> _visibleHostIds;
         private readonly HashSet<long> _hiddenHostIds;
+        private readonly HashSet<long> _elementHiddenHostIds;
         private readonly HashSet<long> _hiddenLinkInstanceIds;
         private readonly HashSet<string> _hiddenCategoryNames;
+        private readonly Dictionary<long, string> _filterNameByHostId;
 
         public ViewVisibilitySnapshot(
             long viewIdValue,
@@ -24,16 +26,20 @@ namespace RevitSuite.Host.Explorer
             bool temporaryIsolateActive,
             HashSet<long> visibleHostIds,
             HashSet<long> hiddenHostIds,
+            HashSet<long> elementHiddenHostIds,
             HashSet<long> hiddenLinkInstanceIds,
-            HashSet<string> hiddenCategoryNames)
+            HashSet<string> hiddenCategoryNames,
+            Dictionary<long, string> filterNameByHostId)
         {
             ViewIdValue = viewIdValue;
             ViewName = viewName;
             TemporaryIsolateActive = temporaryIsolateActive;
             _visibleHostIds = visibleHostIds;
             _hiddenHostIds = hiddenHostIds;
+            _elementHiddenHostIds = elementHiddenHostIds;
             _hiddenLinkInstanceIds = hiddenLinkInstanceIds;
             _hiddenCategoryNames = hiddenCategoryNames;
+            _filterNameByHostId = filterNameByHostId;
         }
 
         public long ViewIdValue { get; }
@@ -51,6 +57,10 @@ namespace RevitSuite.Host.Explorer
         public IReadOnlyCollection<long> HiddenHostIds => _hiddenHostIds;
         public IReadOnlyCollection<long> HiddenLinkInstanceIds => _hiddenLinkInstanceIds;
         public IReadOnlyCollection<string> HiddenCategoryNames => _hiddenCategoryNames;
+
+        /// <summary>Visibility-off view filters that actually hide indexed elements.</summary>
+        public IReadOnlyCollection<string> HiddenFilterNames =>
+            _filterNameByHostId.Values.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         /// <summary>true = visible, false = hidden, null = not applicable in this view.</summary>
         public bool? Classify(ElementRecord record)
@@ -78,6 +88,112 @@ namespace RevitSuite.Host.Explorer
             // Not visible: hidden if Revit says so (element hide / category / filter),
             // otherwise it simply has nothing to draw here — not applicable, never a lie.
             return _hiddenHostIds.Contains(record.IdValue) ? false : (bool?)null;
+        }
+
+        /// <summary>
+        /// WHY a record is hidden — the two Revit hide mechanisms are independent and both
+        /// must be lifted for the element to reappear, so the distinction is surfaced
+        /// instead of a bare "hidden". Null when the record is not hidden.
+        /// </summary>
+        public string? DescribeHidden(ElementRecord record)
+        {
+            if (Classify(record) != false)
+            {
+                return null;
+            }
+
+            if (record.IsLinked)
+            {
+                if (record.LinkInstanceIdValue is { } linkId && _hiddenLinkInstanceIds.Contains(linkId))
+                {
+                    return record.Category != null && _hiddenCategoryNames.Contains(record.Category)
+                        ? $"Hidden: link instance hidden AND category '{record.Category}' off in Visibility/Graphics — unhide must lift both"
+                        : "Hidden: the link instance is hidden in this view";
+                }
+
+                return $"Hidden: category '{record.Category}' is off in Visibility/Graphics";
+            }
+
+            var categoryOff = record.Category != null && _hiddenCategoryNames.Contains(record.Category);
+            var elementHidden = _elementHiddenHostIds.Contains(record.IdValue);
+
+            if (categoryOff && elementHidden)
+            {
+                return $"Hidden: element hidden (right-click ▸ Hide in View) AND category '{record.Category}' " +
+                       "off in Visibility/Graphics — unhide must lift both";
+            }
+
+            if (elementHidden)
+            {
+                return "Hidden: element hidden in this view (right-click ▸ Hide in View ▸ Elements)";
+            }
+
+            if (categoryOff)
+            {
+                return $"Hidden: category '{record.Category}' is off in Visibility/Graphics";
+            }
+
+            if (_filterNameByHostId.TryGetValue(record.IdValue, out var filterName))
+            {
+                return $"Hidden: matches view filter '{filterName}', which is set to not visible " +
+                       "in Visibility/Graphics ▸ Filters";
+            }
+
+            return "Hidden in the active view";
+        }
+
+        /// <summary>
+        /// Compact hide-mechanism tag rendered next to the eye glyph in the tree:
+        /// "VG" (category off), "elem" (element hide), "VG+elem" (both), "link"
+        /// (link instance hidden), "link+VG". Null when not hidden.
+        /// </summary>
+        public string? HiddenTag(ElementRecord record)
+        {
+            if (Classify(record) != false)
+            {
+                return null;
+            }
+
+            var categoryOff = record.Category != null && _hiddenCategoryNames.Contains(record.Category);
+
+            if (record.IsLinked)
+            {
+                var linkHidden = record.LinkInstanceIdValue is { } linkId &&
+                                 _hiddenLinkInstanceIds.Contains(linkId);
+                return linkHidden
+                    ? categoryOff ? "link+VG" : "link"
+                    : "VG";
+            }
+
+            var elementHidden = _elementHiddenHostIds.Contains(record.IdValue);
+            if (categoryOff || elementHidden)
+            {
+                return categoryOff
+                    ? elementHidden ? "VG+elem" : "VG"
+                    : "elem";
+            }
+
+            return _filterNameByHostId.ContainsKey(record.IdValue) ? "filter" : "hidden";
+        }
+
+        /// <summary>
+        /// Names of the visibility-off view filters responsible for hiding any of the given
+        /// records — lets Unhide lift the right filters (view-wide, stated honestly).
+        /// </summary>
+        public IReadOnlyList<string> HiddenFilterNamesFor(IEnumerable<ElementRecord> records)
+        {
+            var names = new List<string>();
+            foreach (var record in records)
+            {
+                if (!record.IsLinked &&
+                    _filterNameByHostId.TryGetValue(record.IdValue, out var name) &&
+                    !names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    names.Add(name);
+                }
+            }
+
+            return names;
         }
     }
 
@@ -133,7 +249,11 @@ namespace RevitSuite.Host.Explorer
             }
 
             // Classify the not-visible host records: explicitly hidden vs nothing-to-draw.
+            // The element-hide flag is checked even when the category is already off — the
+            // two mechanisms stack in Revit, and knowing BOTH apply changes how the user
+            // (and Unhide) must restore the element.
             var hiddenHostIds = new HashSet<long>();
+            var elementHiddenHostIds = new HashSet<long>();
             foreach (var record in records)
             {
                 if (record.IsLinked || visibleHostIds.Contains(record.IdValue))
@@ -141,10 +261,10 @@ namespace RevitSuite.Host.Explorer
                     continue;
                 }
 
-                if (record.Category != null && hiddenCategoryNames.Contains(record.Category))
+                var categoryOff = record.Category != null && hiddenCategoryNames.Contains(record.Category);
+                if (categoryOff)
                 {
                     hiddenHostIds.Add(record.IdValue);
-                    continue;
                 }
 
                 try
@@ -153,6 +273,7 @@ namespace RevitSuite.Host.Explorer
                     if (element != null && element.IsHidden(view))
                     {
                         hiddenHostIds.Add(record.IdValue);
+                        elementHiddenHostIds.Add(record.IdValue);
                     }
                 }
                 catch
@@ -185,6 +306,39 @@ namespace RevitSuite.Host.Explorer
                 // No links.
             }
 
+            // VG Filters: elements still unexplained (not visible, not element/category-hidden)
+            // are tested against the view's visibility-OFF filters — only those candidates,
+            // so the cost stays proportional to what's actually unaccounted for. An element
+            // matching such a filter is reported hidden-by-filter (it may additionally be
+            // outside the view's range/crop — Revit offers no cheap way to separate that).
+            var filterNameByHostId = new Dictionary<long, string>();
+            try
+            {
+                var candidateIds = new List<ElementId>();
+                foreach (var record in records)
+                {
+                    if (!record.IsLinked &&
+                        !visibleHostIds.Contains(record.IdValue) &&
+                        !hiddenHostIds.Contains(record.IdValue))
+                    {
+                        candidateIds.Add(new ElementId(record.IdValue));
+                    }
+                }
+
+                if (candidateIds.Count > 0)
+                {
+                    CollectFilterHidden(doc, view, candidateIds, filterNameByHostId);
+                    foreach (var id in filterNameByHostId.Keys)
+                    {
+                        hiddenHostIds.Add(id);
+                    }
+                }
+            }
+            catch
+            {
+                // Filter APIs unavailable for this view kind — filter hides stay undetected.
+            }
+
             var temporaryIsolate = false;
             try
             {
@@ -197,7 +351,84 @@ namespace RevitSuite.Host.Explorer
 
             return new ViewVisibilitySnapshot(
                 view.Id.Value, view.Name, temporaryIsolate,
-                visibleHostIds, hiddenHostIds, hiddenLinks, hiddenCategoryNames);
+                visibleHostIds, hiddenHostIds, elementHiddenHostIds, hiddenLinks, hiddenCategoryNames,
+                filterNameByHostId);
+        }
+
+        /// <summary>
+        /// Marks candidates matched by any enabled, visibility-off view filter. Rule-based
+        /// filters combine their category set with their element filter; selection-based
+        /// filters contribute their explicit id list.
+        /// </summary>
+        private static void CollectFilterHidden(
+            Document doc,
+            View view,
+            ICollection<ElementId> candidateIds,
+            Dictionary<long, string> filterNameByHostId)
+        {
+            foreach (var filterId in view.GetFilters())
+            {
+                try
+                {
+                    var enabled = true;
+                    try
+                    {
+                        enabled = view.GetIsFilterEnabled(filterId);
+                    }
+                    catch
+                    {
+                        // Older view kinds: treat as enabled.
+                    }
+
+                    if (!enabled || view.GetFilterVisibility(filterId))
+                    {
+                        continue;
+                    }
+
+                    var filterElement = doc.GetElement(filterId);
+                    var filterName = filterElement?.Name ?? "view filter";
+
+                    if (filterElement is SelectionFilterElement selection)
+                    {
+                        var selected = new HashSet<long>(selection.GetElementIds().Select(id => id.Value));
+                        foreach (var id in candidateIds)
+                        {
+                            if (selected.Contains(id.Value) && !filterNameByHostId.ContainsKey(id.Value))
+                            {
+                                filterNameByHostId[id.Value] = filterName;
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    if (filterElement is not ParameterFilterElement parameterFilter)
+                    {
+                        continue;
+                    }
+
+                    ElementFilter combined = new ElementMulticategoryFilter(parameterFilter.GetCategories());
+                    var ruleFilter = parameterFilter.GetElementFilter();
+                    if (ruleFilter != null)
+                    {
+                        combined = new LogicalAndFilter(combined, ruleFilter);
+                    }
+
+                    foreach (var id in new FilteredElementCollector(doc, candidateIds)
+                                 .WherePasses(combined)
+                                 .ToElementIds())
+                    {
+                        if (!filterNameByHostId.ContainsKey(id.Value))
+                        {
+                            filterNameByHostId[id.Value] = filterName;
+                        }
+                    }
+                }
+                catch
+                {
+                    // A malformed filter never breaks the snapshot.
+                }
+            }
         }
     }
 }
