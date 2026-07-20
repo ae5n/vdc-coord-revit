@@ -31,6 +31,9 @@ namespace RevitSuite.Host.Explorer.UI
         /// <summary>Compact hide-mechanism tag ("VG", "elem", …) shown inline next to the eye.</summary>
         internal static Func<ElementRecord, string?>? HiddenTagClassifier;
 
+        /// <summary>True when the record is part of the current Revit selection (multi-select sync).</summary>
+        internal static Func<ElementRecord, bool>? RevitSelectionClassifier;
+
         /// <summary>Raised when the USER toggles a row's checkbox (not on programmatic re-application).</summary>
         internal static event Action<ExplorerTreeItem, bool>? UserCheckChanged;
 
@@ -117,6 +120,28 @@ namespace RevitSuite.Host.Explorer.UI
             }
         }
 
+        private bool _isRevitSelected;
+
+        /// <summary>
+        /// Highlights EVERY row that is in the current Revit selection — the tree's own
+        /// (single) selection only marks the first revealed element, so multi-selects in
+        /// Revit need this separate passive marker to be visible in full.
+        /// </summary>
+        public bool IsRevitSelected
+        {
+            get => _isRevitSelected;
+            private set
+            {
+                if (_isRevitSelected == value)
+                {
+                    return;
+                }
+
+                _isRevitSelected = value;
+                OnPropertyChanged(nameof(IsRevitSelected));
+            }
+        }
+
         private string? _hiddenReason;
         private string? _hiddenTag;
 
@@ -186,6 +211,7 @@ namespace RevitSuite.Host.Explorer.UI
                     _isHiddenIndicated ? HiddenReasonClassifier?.Invoke(Record) : null,
                     _isHiddenIndicated ? HiddenTagClassifier?.Invoke(Record) : null);
                 SetHiddenSummary(null);
+                IsRevitSelected = RevitSelectionClassifier?.Invoke(Record) == true;
             }
             else if (_node != null)
             {

@@ -25,59 +25,67 @@ namespace RevitSuite.Host.Explorer.UI
         private static readonly TimeSpan ViewSwitchDelay = TimeSpan.FromMilliseconds(500);
         private static readonly TimeSpan DirtyFlushDelay = TimeSpan.FromMilliseconds(300);
 
-        /// <summary>Runs on Revit's event thread — extract plain data, then hop to the UI thread.</summary>
+        /// <summary>
+        /// Runs on Revit's event thread — extract plain data, then hop to the UI thread.
+        /// NOTHING may escape: an unhandled exception on Revit's event thread crashes Revit.
+        /// </summary>
         private void OnRevitDocumentChanged(object? sender, Autodesk.Revit.DB.Events.DocumentChangedEventArgs e)
         {
-            // Self-echo: transactions committed by the Explorer's own bridge actions raise
-            // DocumentChanged too; those ops already recapture view state themselves.
-            if (!_syncFromRevitEnabled || RevitActionBridge.IsSelfEcho)
-            {
-                return;
-            }
-
-            int changes;
             try
             {
+                // Self-echo: transactions committed by the Explorer's own bridge actions raise
+                // DocumentChanged too; those ops already recapture view state themselves.
+                if (!_syncFromRevitEnabled || RevitActionBridge.IsSelfEcho)
+                {
+                    return;
+                }
+
                 var doc = e.GetDocument();
                 if (doc == null || doc.IsLinked)
                 {
                     return;
                 }
 
-                changes = e.GetAddedElementIds().Count
-                          + e.GetModifiedElementIds().Count
-                          + e.GetDeletedElementIds().Count;
+                var changes = e.GetAddedElementIds().Count
+                              + e.GetModifiedElementIds().Count
+                              + e.GetDeletedElementIds().Count;
                 if (changes == 0)
                 {
                     return;
                 }
+
+                OnUi(() =>
+                {
+                    _pendingAutoSyncChanges += changes;
+                    RequestAutoSync(DocumentChangeDelay);
+                });
             }
             catch
             {
-                // Event args can be finicky mid-edit; a missed sync beats a crash.
-                return;
+                // A missed sync beats a crash.
             }
-
-            OnUi(() =>
-            {
-                _pendingAutoSyncChanges += changes;
-                RequestAutoSync(DocumentChangeDelay);
-            });
         }
 
-        /// <summary>Runs on Revit's event thread.</summary>
+        /// <summary>Runs on Revit's event thread — nothing may escape.</summary>
         private void OnRevitViewActivated(object? sender, Autodesk.Revit.UI.Events.ViewActivatedEventArgs e)
         {
-            if (!_syncFromRevitEnabled)
+            try
             {
-                return;
-            }
+                if (!_syncFromRevitEnabled)
+                {
+                    return;
+                }
 
-            OnUi(() =>
+                OnUi(() =>
+                {
+                    _autoSyncViewChanged = true;
+                    RequestAutoSync(ViewSwitchDelay);
+                });
+            }
+            catch
             {
-                _autoSyncViewChanged = true;
-                RequestAutoSync(ViewSwitchDelay);
-            });
+                // A missed sync beats a crash.
+            }
         }
 
         /// <summary>UI thread. Restarts the debounce; the most recent request's delay wins.</summary>
@@ -92,6 +100,19 @@ namespace RevitSuite.Host.Explorer.UI
         }
 
         private void OnAutoSyncTick(object? sender, EventArgs e)
+        {
+            try
+            {
+                AutoSyncTickCore();
+            }
+            catch (Exception ex)
+            {
+                // Timer ticks run on the dispatcher inside Revit's process — never throw.
+                LogManager.Error("explorer", "Auto-sync tick failed.", ex);
+            }
+        }
+
+        private void AutoSyncTickCore()
         {
             _autoSyncDebounce?.Stop();
 

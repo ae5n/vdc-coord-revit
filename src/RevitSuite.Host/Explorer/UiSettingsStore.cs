@@ -8,7 +8,7 @@ namespace RevitSuite.Host.Explorer
     internal sealed class ExplorerUiSettings
     {
         /// <summary>Bumped when a saved setting needs a one-time migration (see Load).</summary>
-        public const int CurrentVersion = 3;
+        public const int CurrentVersion = 5;
 
         public int SettingsVersion { get; set; }
         public double? WindowLeft { get; set; }
@@ -46,6 +46,14 @@ namespace RevitSuite.Host.Explorer
                     if (settings.SettingsVersion < 3)
                     {
                         settings.ScopeIndex = 1;
+                    }
+
+                    // v4/v5: the default window height changed (v4 shrank it, v5 settled on
+                    // 700). Drop the remembered height once so the new default applies;
+                    // explicit resizes from then on stick.
+                    if (settings.SettingsVersion < 5)
+                    {
+                        settings.WindowHeight = null;
                         settings.SettingsVersion = CurrentVersion;
                     }
 

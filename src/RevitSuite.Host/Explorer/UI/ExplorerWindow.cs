@@ -44,8 +44,23 @@ namespace RevitSuite.Host.Explorer.UI
         private void MarkSelectionPush() =>
             System.Threading.Interlocked.Exchange(ref _lastSelectionPushTicks, DateTime.UtcNow.Ticks);
 
-        /// <summary>Runs on Revit's event thread — extract plain data, then hop to the UI thread.</summary>
+        /// <summary>
+        /// Runs on Revit's event thread — extract plain data, then hop to the UI thread.
+        /// The whole body is exception-bounded: an escape here crashes Revit.
+        /// </summary>
         private void OnRevitSelectionChanged(object? sender, Autodesk.Revit.UI.Events.SelectionChangedEventArgs e)
+        {
+            try
+            {
+                OnRevitSelectionChangedCore(e);
+            }
+            catch
+            {
+                // A missed selection sync beats a crash.
+            }
+        }
+
+        private void OnRevitSelectionChangedCore(Autodesk.Revit.UI.Events.SelectionChangedEventArgs e)
         {
             if (!_syncFromRevitEnabled || !IsVisible)
             {
@@ -93,6 +108,8 @@ namespace RevitSuite.Host.Explorer.UI
             var linkedTargets = linked.Distinct().ToList();
             if (hostIds.Count == 0 && linkedTargets.Count == 0)
             {
+                // Selection cleared in Revit — the tree markers must clear with it.
+                OnUi(ClearRevitSelectionMarkers);
                 return;
             }
 
@@ -182,6 +199,7 @@ namespace RevitSuite.Host.Explorer.UI
                 ExplorerTreeItem.HiddenClassifier = null;
                 ExplorerTreeItem.HiddenReasonClassifier = null;
                 ExplorerTreeItem.HiddenTagClassifier = null;
+                ExplorerTreeItem.RevitSelectionClassifier = null;
                 if (_instance != null)
                 {
                     ExplorerTreeItem.UserCheckChanged -= _instance.OnUserCheckChanged;
@@ -197,10 +215,12 @@ namespace RevitSuite.Host.Explorer.UI
         private ExplorerWindow()
         {
             Title = "Model Explorer";
+            // Sized to sit comfortably beside the Revit canvas on a 1080p laptop screen
+            // rather than dominating it; users who want more drag it (and that sticks).
             Width = 1180;
-            Height = 760;
+            Height = 700;
             MinWidth = 900;
-            MinHeight = 560;
+            MinHeight = 480;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
             var root = new Grid();
@@ -310,9 +330,13 @@ namespace RevitSuite.Host.Explorer.UI
         {
             var settings = ExplorerUiSettings.Load();
 
-            if (settings.WindowWidth is > 400 && settings.WindowHeight is > 300)
+            if (settings.WindowWidth is > 400)
             {
                 Width = settings.WindowWidth.Value;
+            }
+
+            if (settings.WindowHeight is > 300)
+            {
                 Height = settings.WindowHeight.Value;
             }
 
@@ -402,7 +426,30 @@ namespace RevitSuite.Host.Explorer.UI
             });
         }
 
-        private void OnUi(Action action) => Dispatcher.BeginInvoke(action);
+        /// <summary>
+        /// Marshals to the UI thread with a hard exception boundary: the Explorer runs
+        /// inside Revit's process, so an unhandled dispatcher exception crashes Revit
+        /// itself. Nothing queued here is allowed to escape.
+        /// </summary>
+        private void OnUi(Action action) => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Explorer UI update failed.", ex);
+                try
+                {
+                    SetStatus($"Error: {ex.Message}");
+                }
+                catch
+                {
+                    // Status bar itself unavailable — nothing more to do.
+                }
+            }
+        }));
 
         private void SetBusy(string message)
         {
@@ -447,6 +494,13 @@ namespace RevitSuite.Host.Explorer.UI
         /// <summary>Segoe MDL2 Assets ships with Windows 10/11 — used for Revit-like action icons.</summary>
         internal static readonly FontFamily IconFontFamily = new FontFamily("Segoe MDL2 Assets");
 
+        // Restrained icon accents: amber = takes visibility away, green = gives it back.
+        // Matches the amber used by the hidden-eye indicators; nothing else is tinted.
+        private static readonly SolidColorBrush HideAccentBrush =
+            new SolidColorBrush(Color.FromRgb(0xB4, 0x5C, 0x0F));
+        private static readonly SolidColorBrush UnhideAccentBrush =
+            new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
+
         /// <summary>
         /// Button with an MDL2 icon glyph plus optional caption. Icon-only buttons (caption
         /// null) are compact companions, e.g. the reset half of a paired action.
@@ -456,17 +510,24 @@ namespace RevitSuite.Host.Explorer.UI
             string? caption,
             RoutedEventHandler onClick,
             string? tooltip = null,
-            bool destructive = false)
+            bool destructive = false,
+            Brush? iconBrush = null)
         {
             var content = new StackPanel { Orientation = Orientation.Horizontal };
-            content.Children.Add(new TextBlock
+            var icon = new TextBlock
             {
                 Text = glyph,
                 FontFamily = IconFontFamily,
                 FontSize = 13,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, caption == null ? 0 : 6, 0)
-            });
+            };
+            if (iconBrush != null && !destructive)
+            {
+                icon.Foreground = iconBrush;
+            }
+
+            content.Children.Add(icon);
             if (caption != null)
             {
                 content.Children.Add(new TextBlock { Text = caption, VerticalAlignment = VerticalAlignment.Center });

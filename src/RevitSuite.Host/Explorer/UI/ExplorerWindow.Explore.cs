@@ -67,6 +67,7 @@ namespace RevitSuite.Host.Explorer.UI
             }
 
             UpdateCheckedCount();
+            UpdateCheckedSelectionTable();
         }
 
         /// <summary>
@@ -150,6 +151,7 @@ namespace RevitSuite.Host.Explorer.UI
         private int _treeBuildGeneration;
         private bool _suppressOriginRebuild;
         private TextBox _searchBox = null!;
+        private TextBlock _searchCountText = null!;
         private TreeView _exploreTree = null!;
         private StackPanel _detailsPanel = null!;
         private DispatcherTimer? _searchDebounce;
@@ -227,10 +229,16 @@ namespace RevitSuite.Host.Explorer.UI
             layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            // --- Toolbar ---
-            var toolbar = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+            // --- Toolbar: two deliberate rows instead of one accidental wrap ---
+            // Row 1 = WHAT the tree shows (scope, grouping, view mode, models, toggles).
+            // Row 2 = FINDING and bulk checks (search with clear + match count, refresh, checks).
+            var toolbar = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+            var row1 = new WrapPanel { Margin = new Thickness(0, 0, 0, 6) };
+            var row2 = new WrapPanel();
+            toolbar.Children.Add(row1);
+            toolbar.Children.Add(row2);
 
-            toolbar.Children.Add(MakeCaption("Scope"));
+            row1.Children.Add(MakeCaption("Scope"));
             _scopeCombo = new ComboBox { Width = 150, Margin = new Thickness(0, 0, 12, 0) };
             _scopeCombo.Items.Add("Entire Project");
             _scopeCombo.Items.Add("Active View");
@@ -239,9 +247,9 @@ namespace RevitSuite.Host.Explorer.UI
             // the annotation and its reference point always match. (The last used scope is
             // restored from settings on later launches.)
             _scopeCombo.SelectedIndex = 1;
-            toolbar.Children.Add(_scopeCombo);
+            row1.Children.Add(_scopeCombo);
 
-            toolbar.Children.Add(MakeCaption("Group by"));
+            row1.Children.Add(MakeCaption("Group by"));
             _groupingCombo = new ComboBox { Width = 130, Margin = new Thickness(0, 0, 12, 0) };
             foreach (var mode in Enum.GetNames(typeof(GroupingMode)))
             {
@@ -250,7 +258,7 @@ namespace RevitSuite.Host.Explorer.UI
 
             _groupingCombo.SelectedIndex = 0;
             _groupingCombo.SelectionChanged += (_, _) => RebuildExploreTree();
-            toolbar.Children.Add(_groupingCombo);
+            row1.Children.Add(_groupingCombo);
 
             _includeLinksCheck = new CheckBox
             {
@@ -259,7 +267,6 @@ namespace RevitSuite.Host.Explorer.UI
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 12, 0)
             };
-            toolbar.Children.Add(_includeLinksCheck);
 
             _includeUncategorizedCheck = new CheckBox
             {
@@ -268,7 +275,6 @@ namespace RevitSuite.Host.Explorer.UI
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 12, 0)
             };
-            toolbar.Children.Add(_includeUncategorizedCheck);
 
             var syncCheck = new CheckBox
             {
@@ -281,21 +287,8 @@ namespace RevitSuite.Host.Explorer.UI
             };
             syncCheck.Checked += (_, _) => _syncFromRevitEnabled = true;
             syncCheck.Unchecked += (_, _) => _syncFromRevitEnabled = false;
-            toolbar.Children.Add(syncCheck);
 
-            toolbar.Children.Add(BuildModelsFilter());
-
-            toolbar.Children.Add(MakeCaption("Search"));
-            _searchBox = new TextBox
-            {
-                Width = 220,
-                Margin = new Thickness(0, 0, 12, 0),
-                ToolTip = "Search category, family, type, name, level, workset, or element id. Ctrl+F focuses, Esc clears."
-            };
-            _searchBox.TextChanged += OnSearchChanged;
-            toolbar.Children.Add(_searchBox);
-
-            toolbar.Children.Add(MakeCaption("View"));
+            row1.Children.Add(MakeCaption("View"));
             _viewModeCombo = new ComboBox
             {
                 Width = 120,
@@ -308,15 +301,76 @@ namespace RevitSuite.Host.Explorer.UI
             _viewModeCombo.Items.Add("Hidden only");
             _viewModeCombo.SelectedIndex = 0;
             _viewModeCombo.SelectionChanged += (_, _) => RebuildExploreTree();
-            toolbar.Children.Add(_viewModeCombo);
+            row1.Children.Add(_viewModeCombo);
 
-            toolbar.Children.Add(BuildLegendButton());
+            row1.Children.Add(BuildModelsFilter());
+            row1.Children.Add(_includeLinksCheck);
+            row1.Children.Add(_includeUncategorizedCheck);
+            row1.Children.Add(syncCheck);
+            row1.Children.Add(BuildLegendButton());
 
-            toolbar.Children.Add(MakeIconButton("", "Refresh (F5)", (_, _) => RefreshExplore(),
+            // --- Row 2: search first — it is the most used control on this tab ---
+            row2.Children.Add(MakeCaption("Search"));
+            _searchBox = new TextBox
+            {
+                Width = 280,
+                Padding = new Thickness(2, 3, 22, 3),
+                VerticalContentAlignment = VerticalAlignment.Center,
+                ToolTip = "Search category, family, type, name, level, workset, or element id. " +
+                          "Ctrl+F focuses, Esc or ✕ clears."
+            };
+            _searchBox.TextChanged += OnSearchChanged;
+
+            // Inline ✕ appears while there is text; clearing refocuses the box so the next
+            // search starts immediately.
+            var searchClearButton = new Button
+            {
+                Width = 20,
+                Height = 20,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 2, 0),
+                Background = System.Windows.Media.Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Visibility = Visibility.Collapsed,
+                ToolTip = "Clear search (Esc)",
+                Content = new TextBlock
+                {
+                    Text = ((char)0xE711).ToString(),
+                    FontFamily = IconFontFamily,
+                    FontSize = 10,
+                    Foreground = SystemColors.GrayTextBrush
+                }
+            };
+            searchClearButton.Click += (_, _) =>
+            {
+                _searchBox.Clear();
+                _searchBox.Focus();
+            };
+            _searchBox.TextChanged += (_, _) =>
+                searchClearButton.Visibility = string.IsNullOrEmpty(_searchBox.Text)
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
+
+            var searchHost = new Grid { Margin = new Thickness(0, 0, 6, 0) };
+            searchHost.Children.Add(_searchBox);
+            searchHost.Children.Add(searchClearButton);
+            row2.Children.Add(searchHost);
+
+            _searchCountText = new TextBlock
+            {
+                Foreground = SystemColors.GrayTextBrush,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0),
+                MinWidth = 80
+            };
+            row2.Children.Add(_searchCountText);
+
+            row2.Children.Add(MakeIconButton("", "Refresh (F5)", (_, _) => RefreshExplore(),
                 "Re-index the model"));
-            toolbar.Children.Add(MakeIconButton("", "Check All", (_, _) => SetAllChecks(true),
+            row2.Children.Add(MakeIconButton("", "Check All", (_, _) => SetAllChecks(true),
                 "Check everything currently shown in the tree"));
-            toolbar.Children.Add(MakeIconButton("", "Clear", (_, _) => SetAllChecks(false),
+            row2.Children.Add(MakeIconButton("", "Clear", (_, _) => SetAllChecks(false),
                 "Clear all checks"));
             Grid.SetRow(toolbar, 0);
             layout.Children.Add(toolbar);
@@ -340,6 +394,7 @@ namespace RevitSuite.Host.Explorer.UI
                 r => HiddenIndicatorsEnabled && _viewSnapshot?.Classify(r) == false;
             ExplorerTreeItem.HiddenReasonClassifier = r => _viewSnapshot?.DescribeHidden(r);
             ExplorerTreeItem.HiddenTagClassifier = r => _viewSnapshot?.HiddenTag(r);
+            ExplorerTreeItem.RevitSelectionClassifier = r => _revitSelectionKeys.Contains(KeyOf(r));
             ExplorerTreeItem.UserCheckChanged += OnUserCheckChanged;
 
             var splitter = new GridSplitter
@@ -408,13 +463,16 @@ namespace RevitSuite.Host.Explorer.UI
 
             actions.Children.Add(MakePair(
                 MakeIconButton("", "Hide", (_, _) => HideChecked(),
-                    "Hide the checked elements in the active view (or the highlighted row when nothing is checked)"),
+                    "Hide the checked elements in the active view (or the highlighted row when nothing is checked)",
+                    iconBrush: HideAccentBrush),
                 MakeIconButton("", null, (_, _) => UnhideChecked(),
                     "Unhide the checked elements — or the highlighted row when nothing is checked " +
-                    "(punches through link/category/element hides)")));
+                    "(punches through link/category/element hides)",
+                    iconBrush: UnhideAccentBrush)));
 
             actions.Children.Add(MakeIconButton("", "Unhide All", (_, _) => UnhideAll(),
-                "Restore everything hidden in the active view (links, categories, elements)"));
+                "Restore everything hidden in the active view (links, categories, elements)",
+                iconBrush: UnhideAccentBrush));
             actions.Children.Add(MakeIconButton("", "Export CSV", (_, _) => ExportExploreCsv(),
                 "Export the visible rows to CSV"));
             actions.Children.Add(MakeIconButton("", "Safe Delete…", (_, _) => SafeDeleteChecked(),
@@ -757,6 +815,30 @@ namespace RevitSuite.Host.Explorer.UI
             var panelFactory = new FrameworkElementFactory(typeof(StackPanel));
             panelFactory.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
 
+            // Rows that are part of the current Revit selection get a light-blue wash so a
+            // multi-select in Revit is visible in FULL here (the tree's own selection can
+            // only sit on one row). The focused row keeps the system highlight (later
+            // trigger wins), so the wash never fights it.
+            var rowStyle = new Style(typeof(StackPanel));
+            var revitSelectedTrigger = new DataTrigger
+            {
+                Binding = new Binding(nameof(ExplorerTreeItem.IsRevitSelected)),
+                Value = true
+            };
+            revitSelectedTrigger.Setters.Add(new Setter(Panel.BackgroundProperty,
+                new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromArgb(0x59, 0x4D, 0x9F, 0xF5))));
+            rowStyle.Triggers.Add(revitSelectedTrigger);
+            var treeSelectedTrigger = new DataTrigger
+            {
+                Binding = new Binding(nameof(ExplorerTreeItem.IsSelected)),
+                Value = true
+            };
+            treeSelectedTrigger.Setters.Add(new Setter(Panel.BackgroundProperty,
+                System.Windows.Media.Brushes.Transparent));
+            rowStyle.Triggers.Add(treeSelectedTrigger);
+            panelFactory.SetValue(FrameworkElement.StyleProperty, rowStyle);
+
             var checkFactory = new FrameworkElementFactory(typeof(CheckBox));
             checkFactory.SetValue(CheckBox.IsThreeStateProperty, true);
             checkFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
@@ -976,18 +1058,39 @@ namespace RevitSuite.Host.Explorer.UI
             var totalSelected = hostIds.Count + linked.Count;
             if (matches.Count == 0)
             {
+                ClearRevitSelectionMarkers();
                 SetStatus($"Revit selection: {totalSelected} element(s) — none in the current index (try Refresh).");
                 return;
             }
+
+            // EVERY matched row gets the selection marker — the tree's own single selection
+            // can only sit on one row, so multi-selects rely on the markers + the table.
+            SetRevitSelectionMarkers(matches);
 
             // When the pick came from inside a link, reveal the linked element itself,
             // never the link-instance row that carried it.
             var first = (linked.Count > 0 ? matches.FirstOrDefault(r => r.IsLinked) : null) ?? matches[0];
             var revealed = FindAndReveal(first);
-            var more = matches.Count > 1 ? $" (+{matches.Count - 1} more selected)" : string.Empty;
+
+            if (matches.Count > 1)
+            {
+                // Multi-select: the details area becomes a table of the whole selection.
+                // Deferred container realization from the reveal re-raises single details
+                // afterwards — suppressed until the dispatcher settles.
+                _suppressDetailsForSelectionTable = true;
+                ShowSelectionTable(matches);
+                _ = Dispatcher.BeginInvoke(
+                    new Action(() => _suppressDetailsForSelectionTable = false),
+                    DispatcherPriority.ContextIdle);
+                SetStatus($"Revit selection: {matches.Count:N0} element(s) marked in the tree" +
+                          (revealed ? $", revealed {first.DisplayName}" : string.Empty) +
+                          ". The table on the right shows them all.");
+                return;
+            }
+
             SetStatus(revealed
-                ? $"Revit selection: revealed {first.DisplayName}{(first.IsLinked ? $" from {first.Origin}" : string.Empty)}{more}."
-                : $"Revit selection: {first.DisplayName} is hidden by the current search/Models filter{more}.");
+                ? $"Revit selection: revealed {first.DisplayName}{(first.IsLinked ? $" from {first.Origin}" : string.Empty)}."
+                : $"Revit selection: {first.DisplayName} is hidden by the current search/Models filter.");
         }
 
         /// <summary>Expands the record's group path, selects its row, and scrolls to it. Returns false when filtered out.</summary>
@@ -1556,6 +1659,11 @@ namespace RevitSuite.Host.Explorer.UI
                     var liveKeys = new HashSet<string>(records.Select(KeyOf), StringComparer.Ordinal);
                     _checkedKeys.RemoveWhere(key => !liveKeys.Contains(key));
                     UpdateCheckedCount();
+                    if (_checksTableActive)
+                    {
+                        // Keep a checks-driven table in step with the refreshed index.
+                        UpdateCheckedSelectionTable();
+                    }
                     RebuildOriginOptions();
                     RebuildOrRefreshIndicators();
 
@@ -1628,6 +1736,11 @@ namespace RevitSuite.Host.Explorer.UI
             var expandedPaths = CollectExpandedGroupPaths();
             var selectedKey = SelectedRowKey();
 
+            // Live search feedback next to the box: how many elements match right now.
+            _searchCountText.Text = string.IsNullOrWhiteSpace(_searchBox.Text)
+                ? string.Empty
+                : $"{records.Count:N0} match(es)";
+
             IReadOnlyList<ExplorerTreeNode> nodes;
             try
             {
@@ -1645,6 +1758,25 @@ namespace RevitSuite.Host.Explorer.UI
                 return;
             }
 
+            // Everything below runs as an async-void continuation on the dispatcher — an
+            // escaped exception here would crash Revit itself, so it is hard-bounded.
+            try
+            {
+                ApplyTreeBuildResult(nodes, records, expandedPaths, selectedKey);
+            }
+            catch (Exception ex)
+            {
+                LogManager.Error("explorer", "Applying tree rebuild failed.", ex);
+                SetStatus($"Error rebuilding tree: {ex.Message}");
+            }
+        }
+
+        private void ApplyTreeBuildResult(
+            IReadOnlyList<ExplorerTreeNode> nodes,
+            IReadOnlyList<ElementRecord> records,
+            HashSet<string> expandedPaths,
+            string? selectedKey)
+        {
             // Pin the viewport: repopulating a virtualized tree makes WPF move the scroll
             // position on its own, so the offset is captured here and re-asserted once
             // layout settles.
@@ -2069,6 +2201,7 @@ namespace RevitSuite.Host.Explorer.UI
             }
 
             UpdateCheckedCount();
+            UpdateCheckedSelectionTable();
             SetStatus(value
                 ? $"Checked everything currently shown in the tree ({_checkedKeys.Count:N0} total checked)."
                 : "Cleared all checks.");
@@ -2076,6 +2209,14 @@ namespace RevitSuite.Host.Explorer.UI
 
         private void ShowDetails(ExplorerTreeItem? item)
         {
+            if (_suppressDetailsForSelectionTable)
+            {
+                return;
+            }
+
+            // A deliberate row click takes the details area back from a checks-driven table
+            // (the next check toggle brings the table right back).
+            _checksTableActive = false;
             _detailsPanel.Children.Clear();
             _detailsRecord = item?.Record;
             if (item == null)
